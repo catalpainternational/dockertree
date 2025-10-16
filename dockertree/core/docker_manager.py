@@ -1,0 +1,452 @@
+"""
+Docker management for dockertree CLI.
+
+This module provides Docker operations including network creation, volume management,
+container lifecycle, and compose file execution.
+"""
+
+import subprocess
+import shutil
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from ..config.settings import (
+    CADDY_NETWORK, 
+    get_compose_command, 
+    get_volume_names,
+    DEFAULT_ENV_VARS
+)
+from ..utils.logging import log_info, log_success, log_warning, log_error, show_progress
+from ..utils.validation import validate_docker_running, validate_network_exists, validate_volume_exists
+
+
+class DockerManager:
+    """Manages Docker operations for dockertree CLI."""
+    
+    def __init__(self):
+        """Initialize Docker manager."""
+        self.compose_cmd = get_compose_command()
+        self._validate_docker()
+    
+    def _validate_docker(self) -> None:
+        """Validate Docker is running."""
+        if not validate_docker_running():
+            raise RuntimeError("Docker is not running. Please start Docker and try again.")
+    
+    def create_network(self, network_name: str = CADDY_NETWORK) -> bool:
+        """Create external network if it doesn't exist."""
+        if validate_network_exists(network_name):
+            log_info(f"Network {network_name} already exists")
+            return True
+        
+        log_info(f"Creating external network: {network_name}")
+        try:
+            subprocess.run(
+                ["docker", "network", "create", network_name],
+                check=True,
+                capture_output=True
+            )
+            log_success(f"Network {network_name} created")
+            return True
+        except subprocess.CalledProcessError as e:
+            log_error(f"Failed to create network {network_name}: {e}")
+            return False
+        except Exception as e:
+            log_error(f"Failed to create network {network_name}: {e}")
+            return False
+    
+    def copy_volume(self, source_volume: str, target_volume: str) -> bool:
+        """Copy volume data from source to target."""
+        log_info(f"Copying volume {source_volume} to {target_volume}...")
+        
+        # Check if source volume exists
+        if not validate_volume_exists(source_volume):
+            log_warning(f"Source volume {source_volume} does not exist, creating empty target volume")
+            return self._create_volume(target_volume)
+        
+        # Create target volume if it doesn't exist
+        if not self._create_volume(target_volume):
+            return False
+        
+        # Copy volume data
+        try:
+            subprocess.run([
+                "docker", "run", "--rm",
+                "-v", f"{source_volume}:/source:ro",
+                "-v", f"{target_volume}:/dest",
+                "alpine", "sh", "-c", "cp -r /source/* /dest/ 2>/dev/null || true"
+            ], check=True, capture_output=True)
+            log_success(f"Volume copy completed: {source_volume} -> {target_volume}")
+            return True
+        except subprocess.CalledProcessError:
+            log_warning("Volume copy had issues, but continuing with empty volume")
+            return True
+    
+    def _create_volume(self, volume_name: str) -> bool:
+        """Create a Docker volume."""
+        try:
+            subprocess.run(
+                ["docker", "volume", "create", volume_name],
+                check=True,
+                capture_output=True
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            log_error(f"Failed to create volume {volume_name}: {e}")
+            return False
+    
+    def create_worktree_volumes(self, branch_name: str, project_name: str = None, force_copy: bool = False) -> bool:
+        """Create worktree-specific volumes, copying only if needed.
+        
+        Note: Only creates postgres, redis, and media volumes. Caddy volumes 
+        are shared globally across all worktrees and should not be copied.
+        """
+        volume_names = get_volume_names(branch_name)
+        
+        # Use project name from config if not provided
+        if project_name is None:
+            from ..config.settings import get_project_name
+            project_name = get_project_name()
+        
+        project_volumes = {
+            "postgres": f"{project_name}_{volume_names['postgres'].split('_', 1)[1]}",
+            "redis": f"{project_name}_{volume_names['redis'].split('_', 1)[1]}",
+            "media": f"{project_name}_{volume_names['media'].split('_', 1)[1]}",
+        }
+        
+        # Check if all volumes already exist
+        all_volumes_exist = all(validate_volume_exists(vol_name) for vol_name in volume_names.values())
+        
+        if all_volumes_exist and not force_copy:
+            log_info(f"Worktree volumes already exist for {branch_name}, skipping copy")
+            return True
+        
+        # Determine appropriate log message
+        if all_volumes_exist and force_copy:
+            log_info(f"Recreating worktree-specific volumes for {branch_name}")
+        else:
+            log_info(f"Creating worktree-specific volumes for {branch_name}")
+        
+        success = True
+        for volume_type, source_volume in project_volumes.items():
+            target_volume = volume_names[volume_type]
+            if not self.copy_volume(source_volume, target_volume):
+                success = False
+        
+        if success:
+            log_success(f"Worktree volumes created for {branch_name}")
+        return success
+    
+    def remove_volumes(self, branch_name: str) -> bool:
+        """Remove worktree-specific volumes.
+        
+        Note: Only removes postgres, redis, and media volumes. Caddy volumes 
+        are shared globally across all worktrees and should never be deleted 
+        during worktree removal.
+        """
+        log_info(f"Removing worktree-specific volumes for {branch_name}")
+        
+        volume_names = get_volume_names(branch_name)
+        success = True
+        
+        for volume_type, volume_name in volume_names.items():
+            if validate_volume_exists(volume_name):
+                try:
+                    subprocess.run(
+                        ["docker", "volume", "rm", volume_name],
+                        check=True,
+                        capture_output=True
+                    )
+                    log_info(f"Removed volume: {volume_name}")
+                except subprocess.CalledProcessError:
+                    log_warning(f"Failed to remove volume {volume_name}")
+                    success = False
+            else:
+                log_warning(f"Volume {volume_name} not found")
+        
+        return success
+    
+    def backup_volumes(self, branch_name: str, backup_dir: Path) -> Optional[Path]:
+        """Backup worktree volumes to a tar file."""
+        backup_file = backup_dir / f"backup_{branch_name}.tar"
+        volume_names = get_volume_names(branch_name)
+        
+        log_info(f"Backing up volumes for {branch_name} to {backup_file}")
+        
+        # Create backup directory
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        temp_backup_dir = backup_dir / "temp_backup"
+        temp_backup_dir.mkdir(exist_ok=True)
+        
+        try:
+            # Backup each volume
+            for volume_type, volume_name in volume_names.items():
+                if validate_volume_exists(volume_name):
+                    log_info(f"Backing up volume: {volume_name}")
+                    volume_backup = temp_backup_dir / f"{volume_name}.tar.gz"
+                    
+                    subprocess.run([
+                        "docker", "run", "--rm",
+                        "-v", f"{volume_name}:/data",
+                        "-v", f"{temp_backup_dir}:/backup",
+                        "alpine", "tar", "czf", f"/backup/{volume_name}.tar.gz", "-C", "/data", "."
+                    ], check=True, capture_output=True)
+                else:
+                    log_warning(f"Volume {volume_name} not found, skipping")
+            
+            # Create combined backup
+            subprocess.run([
+                "tar", "czf", str(backup_file), "-C", str(temp_backup_dir), "."
+            ], check=True, capture_output=True)
+            
+            # Cleanup temp directory
+            shutil.rmtree(temp_backup_dir)
+            
+            log_success(f"Backup created: {backup_file}")
+            return backup_file
+            
+        except subprocess.CalledProcessError as e:
+            log_error(f"Failed to create backup: {e}")
+            # Cleanup temp directory
+            if temp_backup_dir.exists():
+                shutil.rmtree(temp_backup_dir)
+            return None
+    
+    def restore_volumes(self, branch_name: str, backup_file: Path) -> bool:
+        """Restore worktree volumes from a backup file."""
+        if not backup_file.exists():
+            log_error(f"Backup file {backup_file} not found")
+            return False
+        
+        log_info(f"Restoring volumes for {branch_name} from {backup_file}")
+        
+        volume_names = get_volume_names(branch_name)
+        restore_temp_dir = backup_file.parent / "restore_temp"
+        
+        try:
+            # Extract backup
+            restore_temp_dir.mkdir(exist_ok=True)
+            subprocess.run([
+                "tar", "xzf", str(backup_file), "-C", str(restore_temp_dir)
+            ], check=True, capture_output=True)
+            
+            # Restore each volume
+            for volume_type, volume_name in volume_names.items():
+                volume_backup = restore_temp_dir / f"{volume_name}.tar.gz"
+                if volume_backup.exists():
+                    log_info(f"Restoring volume: {volume_name}")
+                    
+                    # Create volume
+                    self._create_volume(volume_name)
+                    
+                    # Restore data
+                    subprocess.run([
+                        "docker", "run", "--rm",
+                        "-v", f"{volume_name}:/data",
+                        "-v", f"{restore_temp_dir}:/backup",
+                        "alpine", "tar", "xzf", f"/backup/{volume_name}.tar.gz", "-C", "/data"
+                    ], check=True, capture_output=True)
+                else:
+                    log_warning(f"Volume backup {volume_name}.tar.gz not found in backup")
+            
+            # Cleanup
+            shutil.rmtree(restore_temp_dir)
+            log_success(f"Volumes restored for {branch_name}")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            log_error(f"Failed to restore volumes: {e}")
+            # Cleanup
+            if restore_temp_dir.exists():
+                shutil.rmtree(restore_temp_dir)
+            return False
+    
+    def run_compose_command(self, 
+                          compose_file: Path, 
+                          command: List[str], 
+                          env_file: Optional[Path] = None,
+                          project_name: Optional[str] = None,
+                          working_dir: Optional[Path] = None,
+                          extra_flags: Optional[List[str]] = None) -> bool:
+        """Run a docker compose command.
+        
+        Args:
+            compose_file: Path to the compose file
+            command: Command to run (e.g., ["up", "-d"])
+            env_file: Optional environment file
+            project_name: Optional project name
+            working_dir: Optional working directory
+            extra_flags: Optional list of additional flags to append to the command
+        """
+        # Handle docker compose v2 vs v1 command format
+        if self.compose_cmd == "docker compose":
+            cmd = ["docker", "compose"]
+        else:
+            cmd = [self.compose_cmd]
+        
+        if env_file and env_file.exists():
+            cmd.extend(["--env-file", str(env_file)])
+        
+        if project_name:
+            cmd.extend(["-p", project_name])
+        
+        cmd.extend(["-f", str(compose_file)])
+        cmd.extend(command)
+        
+        # Add any extra flags at the end
+        if extra_flags:
+            cmd.extend(extra_flags)
+        
+        # Use working_dir if provided, otherwise fall back to project root
+        if working_dir is None:
+            from ..config.settings import get_project_root
+            working_dir = get_project_root()
+        
+        # Convert to absolute path to ensure Docker resolves it correctly
+        working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
+        
+        # Set environment variables for build context
+        import os
+        env = os.environ.copy()
+        env["PROJECT_ROOT"] = str(working_dir)  # Absolute path to worktree or project root
+        env["COMPOSE_PROJECT_ROOT"] = str(working_dir)
+        env["PWD"] = str(working_dir)
+        
+        # Debug logging for path resolution
+        log_info(f"Docker Compose execution context:")
+        log_info(f"  Working directory: {working_dir}")
+        log_info(f"  PROJECT_ROOT: {env['PROJECT_ROOT']}")
+        log_info(f"  Compose file: {compose_file}")
+        log_info(f"  Command: {' '.join(cmd)}")
+        
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=working_dir, env=env)
+            return True
+        except subprocess.CalledProcessError as e:
+            log_error(f"Docker compose command failed: {e}")
+            if e.stdout:
+                log_error(f"STDOUT: {e.stdout}")
+            if e.stderr:
+                log_error(f"STDERR: {e.stderr}")
+            return False
+
+    def run_compose_command_with_profile(self, compose_file: Path, compose_override: Path,
+                                       command: List[str], env_file: Optional[Path] = None,
+                                       project_name: Optional[str] = None,
+                                       working_dir: Optional[Path] = None) -> bool:
+        """Run a docker compose command with override file and dockertree profile."""
+        # Handle docker compose v2 vs v1 command format
+        if self.compose_cmd == "docker compose":
+            cmd = ["docker", "compose"]
+        else:
+            cmd = [self.compose_cmd]
+
+        if env_file and env_file.exists():
+            cmd.extend(["--env-file", str(env_file)])
+
+        if project_name:
+            cmd.extend(["-p", project_name])
+
+        # Add main compose file and override file with dockertree profile
+        cmd.extend(["-f", str(compose_file)])
+        cmd.extend(["-f", str(compose_override)])
+        cmd.extend(["--profile", "dockertree"])
+        cmd.extend(command)
+
+        # Set working directory - use worktree_path if provided, otherwise project root
+        if working_dir is None:
+            from ..config.settings import get_project_root
+            # For worktree operations, use the worktree directory as working directory
+            # This ensures environment files and relative paths work correctly
+            working_dir = get_project_root()
+
+        # Convert to absolute path to ensure Docker resolves it correctly
+        working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
+
+        # Set environment variables for build context
+        import os
+        env = os.environ.copy()
+        env["PROJECT_ROOT"] = str(working_dir)  # Absolute path to worktree or project root
+        env["COMPOSE_PROJECT_ROOT"] = str(working_dir)
+        env["PWD"] = str(working_dir)
+
+        # Debug logging for path resolution
+        log_info(f"Docker Compose execution context (with profile):")
+        log_info(f"  Working directory: {working_dir}")
+        log_info(f"  PROJECT_ROOT: {env['PROJECT_ROOT']}")
+        log_info(f"  Compose file: {compose_file}")
+        log_info(f"  Override file: {compose_override}")
+        log_info(f"  Command: {' '.join(cmd)}")
+
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=working_dir, env=env)
+            return True
+        except subprocess.CalledProcessError as e:
+            log_error(f"Docker compose command with override failed: {e}")
+            log_error(f"Command executed: {' '.join(cmd)}")
+            log_error(f"Working directory: {working_dir}")
+            if e.stdout:
+                log_error(f"STDOUT: {e.stdout}")
+            if e.stderr:
+                log_error(f"STDERR: {e.stderr}")
+            return False
+
+    def start_services(self, compose_file: Path, env_file: Optional[Path] = None,
+                      project_name: Optional[str] = None, working_dir: Optional[Path] = None) -> bool:
+        """Start services using docker compose."""
+        return self.run_compose_command(compose_file, ["up", "-d"], env_file, project_name, working_dir)
+
+    def start_services_with_override(self, compose_file: Path, compose_override: Path,
+                                   env_file: Optional[Path] = None, project_name: Optional[str] = None,
+                                   working_dir: Optional[Path] = None) -> bool:
+        """Start services using docker compose with override file and dockertree profile."""
+        return self.run_compose_command_with_profile(compose_file, compose_override, ["up", "-d"],
+                                                   env_file, project_name, working_dir)
+    
+    def stop_services(self, compose_file: Path, env_file: Optional[Path] = None,
+                     project_name: Optional[str] = None, working_dir: Optional[Path] = None) -> bool:
+        """Stop services using docker compose."""
+        return self.run_compose_command(compose_file, ["down"], env_file, project_name, working_dir)
+    
+    def get_volume_sizes(self) -> Dict[str, str]:
+        """Get sizes of all worktree volumes."""
+        sizes = {}
+        try:
+            result = subprocess.run([
+                "docker", "volume", "ls", "-q"
+            ], capture_output=True, text=True, check=True)
+            
+            volumes = result.stdout.strip().split('\n')
+            for volume in volumes:
+                if volume and any(suffix in volume for suffix in ["_postgres_data", "_redis_data", "_media_files"]):
+                    try:
+                        size_result = subprocess.run([
+                            "docker", "run", "--rm", "-v", f"{volume}:/data",
+                            "alpine", "du", "-sh", "/data"
+                        ], capture_output=True, text=True, check=True)
+                        size = size_result.stdout.split()[0]
+                        sizes[volume] = size
+                    except subprocess.CalledProcessError:
+                        sizes[volume] = "unknown"
+            
+        except subprocess.CalledProcessError:
+            pass
+        
+        return sizes
+    
+    def list_volumes(self) -> List[str]:
+        """List all worktree volumes."""
+        volumes = []
+        try:
+            result = subprocess.run([
+                "docker", "volume", "ls", "-q"
+            ], capture_output=True, text=True, check=True)
+            
+            for volume in result.stdout.strip().split('\n'):
+                if volume and any(suffix in volume for suffix in ["_postgres_data", "_redis_data", "_media_files"]):
+                    volumes.append(volume)
+                    
+        except subprocess.CalledProcessError:
+            pass
+        
+        return volumes

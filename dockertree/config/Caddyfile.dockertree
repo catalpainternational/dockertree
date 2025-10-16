@@ -1,0 +1,22 @@
+# Global Caddyfile for Dockertree
+# This file provides dynamic routing for worktree environments using Docker integration
+
+{
+    # Basic configuration
+    auto_https off
+    servers {
+        protocols h1 h2
+    }
+    # Enable admin API for dynamic configuration
+    admin 0.0.0.0:2019
+}
+
+# Default route for unknown domains
+:80 {
+    respond "Dockertree Global Caddy Proxy Ready - No worktree found for this domain" 200
+    
+    log {
+        output stdout
+        format console
+    }
+}

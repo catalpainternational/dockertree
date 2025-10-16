@@ -1,0 +1,46 @@
+# Global Caddy Proxy for Dockertree
+# This file defines only the global Caddy proxy container
+# Used by: dockertree start/stop commands
+
+services:
+  caddy:
+    image: caddy:2
+    container_name: dockertree_caddy_proxy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "2019:2019"  # Caddy admin API
+    environment:
+      CADDY_EMAIL: ${CADDY_EMAIL:-admin@catalpa.build}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - {CADDYFILE_PATH}:/etc/caddy/Caddyfile
+    networks:
+      - dockertree_caddy_proxy
+
+  caddy-monitor:
+    image: python:3.11-slim
+    container_name: caddy_monitor
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - {MONITOR_SCRIPT_PATH}:/app/monitor.py
+    command: ["sh", "-c", "pip install --no-cache-dir docker requests && python /app/monitor.py"]
+    depends_on:
+      - caddy
+    networks:
+      - dockertree_caddy_proxy
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+    name: dockertree_caddy_data
+    external: true
+  caddy_config:
+    name: dockertree_caddy_config
+    external: true
+
+networks:
+  dockertree_caddy_proxy:
+    external: true

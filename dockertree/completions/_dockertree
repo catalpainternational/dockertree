@@ -1,0 +1,236 @@
+#compdef dockertree
+# Zsh completion script for dockertree CLI
+# This script provides tab completion for dockertree commands and subcommands
+# Uses state-based completion to prevent file completion fallback
+
+_dockertree() {
+    local ret=1
+    local -a context state state_descr line
+    typeset -A opt_args
+
+    # Main commands with descriptions
+    local -a commands
+    commands=(
+        'start:Start global Caddy container'
+        'stop:Stop global Caddy container'
+        'create:Create worktree in worktrees directory'
+        'up:Start worktree environment for specified branch'
+        'down:Stop worktree environment for specified branch'
+        'delete:Delete worktree and branch completely'
+        'remove:Remove worktree and containers/volumes but keep git branch'
+        'remove-all:Remove all worktrees and containers/volumes but keep git branches'
+        'delete-all:Delete all worktrees, containers, and volumes'
+        'list:List active worktrees'
+        'prune:Remove prunable worktree references'
+        'volumes:Volume management commands'
+        'setup:Initialize dockertree for this project'
+        'help:Show help information'
+        'completion:Shell completion management'
+        '-D:Alias for delete command'
+        '-r:Alias for remove command'
+    )
+
+    # Volume subcommands
+    local -a volume_subcommands
+    volume_subcommands=(
+        'list:List all worktree volumes'
+        'size:Show volume sizes'
+        'backup:Backup worktree volumes'
+        'restore:Restore worktree volumes from backup'
+        'clean:Clean up worktree volumes'
+    )
+
+    # Completion subcommands
+    local -a completion_subcommands
+    completion_subcommands=(
+        'install:Install shell completion'
+        'uninstall:Remove shell completion'
+        'status:Show completion installation status'
+    )
+
+    # Shell options
+    local -a shells
+    shells=(bash zsh)
+
+    # Use _arguments for the entire command structure
+    _arguments -C \
+        '1: :->cmds' \
+        '*::arg:->args' \
+    && ret=0
+
+    case "$state" in
+        cmds)
+            # First argument: complete with main commands
+            _describe -t commands 'dockertree commands' commands && ret=0
+            ;;
+        args)
+            # Subsequent arguments: depends on the command
+            case $words[1] in
+                create)
+                    # For create, complete with git branches
+                    _dockertree_git_branches && ret=0
+                    ;;
+                up)
+                    # For up, complete with worktrees and flags
+                    _arguments \
+                        '1: :_dockertree_worktrees' \
+                        '-d[Run in detached mode]' \
+                        '--detach[Run in detached mode]' \
+                    && ret=0
+                    ;;
+                down)
+                    # For down, complete with worktrees
+                    _dockertree_worktrees && ret=0
+                    ;;
+                delete|-D)
+                    # For delete, complete with worktrees and flags
+                    _arguments \
+                        '1: :_dockertree_worktrees' \
+                        '--force[Force removal even with unmerged changes]' \
+                    && ret=0
+                    ;;
+                remove|-r)
+                    # For remove, complete with worktrees and flags
+                    _arguments \
+                        '1: :_dockertree_worktrees' \
+                        '--force[Force removal even with unmerged changes]' \
+                    && ret=0
+                    ;;
+                delete-all)
+                    # For delete-all, only flags
+                    _arguments \
+                        '--force[Force removal even with unmerged changes]' \
+                    && ret=0
+                    ;;
+                remove-all)
+                    # For remove-all, only flags
+                    _arguments \
+                        '--force[Force removal even with unmerged changes]' \
+                    && ret=0
+                    ;;
+                volumes)
+                    # For volumes, handle subcommands
+                    _arguments -C \
+                        '1: :->volume_cmds' \
+                        '*::arg:->volume_args' \
+                    && ret=0
+
+                    case "$state" in
+                        volume_cmds)
+                            _describe -t volume-commands 'volume commands' volume_subcommands && ret=0
+                            ;;
+                        volume_args)
+                            case $words[2] in
+                                backup|clean)
+                                    # For backup/clean, complete with worktree names
+                                    _dockertree_worktrees && ret=0
+                                    ;;
+                                restore)
+                                    # For restore, complete with backup files
+                                    _arguments \
+                                        '1: :_dockertree_worktrees' \
+                                        '2:backup file:_files -g "*.tar"' \
+                                    && ret=0
+                                    ;;
+                                list|size)
+                                    # No additional arguments
+                                    ret=0
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                completion)
+                    # For completion, handle subcommands
+                    _arguments -C \
+                        '1: :->completion_cmds' \
+                        '*::arg:->completion_args' \
+                    && ret=0
+
+                    case "$state" in
+                        completion_cmds)
+                            _describe -t completion-commands 'completion commands' completion_subcommands && ret=0
+                            ;;
+                        completion_args)
+                            case $words[2] in
+                                install)
+                                    # For install, complete with shell options
+                                    _describe -t shells 'shells' shells && ret=0
+                                    ;;
+                                uninstall|status)
+                                    # No additional arguments
+                                    ret=0
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                setup)
+                    # For setup, complete with flags
+                    _arguments \
+                        '--project-name[Project name (default: directory name)]:project name:' \
+                    && ret=0
+                    ;;
+                start|stop|list|prune|help)
+                    # These commands take no arguments
+                    ret=0
+                    ;;
+                *)
+                    # Unknown command - don't complete anything
+                    ret=0
+                    ;;
+            esac
+            ;;
+    esac
+
+    return ret
+}
+
+# Helper function to get worktree names
+_dockertree_worktrees() {
+    local -a worktrees
+    local worktree_output
+
+    # Get worktrees from dockertree command
+    worktree_output="$(dockertree _completion worktrees 2>/dev/null)"
+    
+    if [[ -n "$worktree_output" ]]; then
+        # Split output into array
+        worktrees=("${(@f)worktree_output}")
+        
+        if [[ ${#worktrees[@]} -gt 0 ]]; then
+            # Provide completions
+            _describe -t worktrees 'worktrees' worktrees
+            return 0
+        fi
+    fi
+    
+    # No worktrees found - return success to prevent file completion
+    return 0
+}
+
+# Helper function to get git branches
+_dockertree_git_branches() {
+    local -a branches
+    local branch_output
+
+    # Get git branches from dockertree command
+    branch_output="$(dockertree _completion git 2>/dev/null)"
+    
+    if [[ -n "$branch_output" ]]; then
+        # Split output into array
+        branches=("${(@f)branch_output}")
+        
+        if [[ ${#branches[@]} -gt 0 ]]; then
+            # Provide completions
+            _describe -t branches 'git branches' branches
+            return 0
+        fi
+    fi
+    
+    # No branches found - return success to prevent file completion
+    return 0
+}
+
+# Register the completion function
+_dockertree "$@"
