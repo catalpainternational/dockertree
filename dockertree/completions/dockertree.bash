@@ -7,10 +7,16 @@ _dockertree_completion() {
     _init_completion || return
     
     # Main commands (including aliases)
-    local commands="start-proxy stop-proxy start stop create up down delete remove remove-all delete-all list prune volumes setup help completion -D -r"
+    local commands="start-proxy stop-proxy start stop create delete remove remove-all delete-all list prune volumes setup help completion -D -r"
     
     # Commands that need worktree names
-    local worktree_cmds="create up down delete remove"
+    local worktree_cmds="create delete remove"
+    
+    # Commands that can be used with worktree names (new pattern)
+    local worktree_actions="up down"
+    
+    # Docker compose passthrough commands
+    local compose_commands="exec logs ps run build pull push restart start stop config images port top events kill pause unpause scale"
     
     # Volume subcommands
     local volume_subcmds="list size backup restore clean"
@@ -26,7 +32,10 @@ _dockertree_completion() {
     
     # Handle main command completion
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        # First position: complete with commands OR worktree names
+        local worktrees=$(dockertree _completion worktrees 2>/dev/null)
+        local all_options="$commands $worktrees"
+        COMPREPLY=( $(compgen -W "$all_options" -- "$cur") )
         return
     fi
     
@@ -37,22 +46,80 @@ _dockertree_completion() {
             local git_branches=$(dockertree _completion git 2>/dev/null)
             COMPREPLY=( $(compgen -W "$git_branches" -- "$cur") )
             ;;
-        up)
-            # For 'up' command, complete with worktree names or flags
+        up|down)
+            # For up/down commands, complete with worktree names or flags
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "-d --detach" -- "$cur") )
+                if [[ "${words[1]}" == "up" ]]; then
+                    COMPREPLY=( $(compgen -W "-d --detach" -- "$cur") )
+                else
+                    COMPREPLY=()
+                fi
             else
                 local worktrees=$(dockertree _completion worktrees 2>/dev/null)
                 COMPREPLY=( $(compgen -W "$worktrees" -- "$cur") )
             fi
             ;;
-        down|delete|remove|-D|-r)
-            # For down/delete/remove (including aliases), complete with worktree names and flags
+        delete|remove|-D|-r)
+            # For delete/remove (including aliases), complete with worktree names and flags
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "--force" -- "$cur") )
             else
                 local worktrees=$(dockertree _completion worktrees 2>/dev/null)
                 COMPREPLY=( $(compgen -W "$worktrees" -- "$cur") )
+            fi
+            ;;
+        *)
+            # Check if first word is a worktree name and second word is up/down or docker compose command
+            if [[ $cword -eq 2 ]]; then
+                # Check if first word is not a command (i.e., it's a worktree name)
+                if [[ ! " $commands " =~ " ${words[1]} " ]]; then
+                    # This is a worktree name, complete with up/down or docker compose commands
+                    local all_worktree_options="$worktree_actions $compose_commands"
+                    COMPREPLY=( $(compgen -W "$all_worktree_options" -- "$cur") )
+                    return
+                fi
+            elif [[ $cword -eq 3 && ! " $commands " =~ " ${words[1]} " ]]; then
+                # Third position after worktree_name up/down or docker compose command
+                if [[ "${words[2]}" == "up" ]]; then
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "-d --detach" -- "$cur") )
+                    else
+                        COMPREPLY=()
+                    fi
+                elif [[ "${words[2]}" == "exec" ]]; then
+                    # After worktree_name exec, complete with service names
+                    local services=$(dockertree _completion services 2>/dev/null)
+                    if [[ -z "$services" ]]; then
+                        services="web db redis postgres mysql nginx apache"
+                    fi
+                    COMPREPLY=( $(compgen -W "$services" -- "$cur") )
+                elif [[ "${words[2]}" == "logs" ]]; then
+                    # After worktree_name logs, complete with service names and flags
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "-f --follow --tail --since --until" -- "$cur") )
+                    else
+                        local services=$(dockertree _completion services 2>/dev/null)
+                        if [[ -z "$services" ]]; then
+                            services="web db redis postgres mysql nginx apache"
+                        fi
+                        COMPREPLY=( $(compgen -W "$services" -- "$cur") )
+                    fi
+                elif [[ "${words[2]}" == "run" ]]; then
+                    # After worktree_name run, complete with service names and flags
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--rm --no-deps --entrypoint" -- "$cur") )
+                    else
+                        local services=$(dockertree _completion services 2>/dev/null)
+                        if [[ -z "$services" ]]; then
+                            services="web db redis postgres mysql nginx apache"
+                        fi
+                        COMPREPLY=( $(compgen -W "$services" -- "$cur") )
+                    fi
+                else
+                    # For other docker compose commands, just pass through
+                    COMPREPLY=()
+                fi
+                return
             fi
             ;;
         volumes)

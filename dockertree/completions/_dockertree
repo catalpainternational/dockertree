@@ -14,8 +14,6 @@ _dockertree() {
         'start:Start global Caddy container'
         'stop:Stop global Caddy container'
         'create:Create worktree in worktrees directory'
-        'up:Start worktree environment for specified branch'
-        'down:Stop worktree environment for specified branch'
         'delete:Delete worktree and branch completely'
         'remove:Remove worktree and containers/volumes but keep git branch'
         'remove-all:Remove all worktrees and containers/volumes but keep git branches'
@@ -28,6 +26,37 @@ _dockertree() {
         'completion:Shell completion management'
         '-D:Alias for delete command'
         '-r:Alias for remove command'
+    )
+    
+    # Worktree actions (new pattern)
+    local -a worktree_actions
+    worktree_actions=(
+        'up:Start worktree environment for specified branch'
+        'down:Stop worktree environment for specified branch'
+    )
+    
+    # Docker compose passthrough commands
+    local -a compose_commands
+    compose_commands=(
+        'exec:Execute a command in a running container'
+        'logs:View output from containers'
+        'ps:List containers'
+        'run:Run a one-off command'
+        'build:Build or rebuild services'
+        'pull:Pull service images'
+        'push:Push service images'
+        'restart:Restart services'
+        'start:Start services'
+        'stop:Stop services'
+        'config:Validate and view the Compose file'
+        'images:List images used by the created containers'
+        'port:Print the public port for a port binding'
+        'top:Display the running processes'
+        'events:Receive real time events from containers'
+        'kill:Force stop service containers'
+        'pause:Pause services'
+        'unpause:Unpause services'
+        'scale:Set number of containers for a service'
     )
 
     # Volume subcommands
@@ -60,8 +89,18 @@ _dockertree() {
 
     case "$state" in
         cmds)
-            # First argument: complete with main commands
-            _describe -t commands 'dockertree commands' commands && ret=0
+            # First argument: complete with main commands OR worktree names
+            local -a all_options
+            all_options=("${commands[@]}")
+            # Add worktree names to completion
+            local worktrees_output
+            worktrees_output="$(dockertree _completion worktrees 2>/dev/null)"
+            if [[ -n "$worktrees_output" ]]; then
+                local -a worktree_names
+                worktree_names=("${(@f)worktrees_output}")
+                all_options+=("${worktree_names[@]}")
+            fi
+            _describe -t commands 'dockertree commands or worktrees' all_options && ret=0
             ;;
         args)
             # Subsequent arguments: depends on the command
@@ -70,17 +109,17 @@ _dockertree() {
                     # For create, complete with git branches
                     _dockertree_git_branches && ret=0
                     ;;
-                up)
-                    # For up, complete with worktrees and flags
-                    _arguments \
-                        '1: :_dockertree_worktrees' \
-                        '-d[Run in detached mode]' \
-                        '--detach[Run in detached mode]' \
-                    && ret=0
-                    ;;
-                down)
-                    # For down, complete with worktrees
-                    _dockertree_worktrees && ret=0
+                up|down)
+                    # For up/down commands, complete with worktrees and flags
+                    if [[ "${words[1]}" == "up" ]]; then
+                        _arguments \
+                            '1: :_dockertree_worktrees' \
+                            '-d[Run in detached mode]' \
+                            '--detach[Run in detached mode]' \
+                        && ret=0
+                    else
+                        _dockertree_worktrees && ret=0
+                    fi
                     ;;
                 delete|-D)
                     # For delete, complete with worktrees and flags
@@ -176,8 +215,58 @@ _dockertree() {
                     ret=0
                     ;;
                 *)
-                    # Unknown command - don't complete anything
-                    ret=0
+                    # Check if first word is a worktree name (not a command)
+                    local is_command=false
+                    for cmd in "${commands[@]}"; do
+                        if [[ "$cmd" == "$words[1]:*" ]]; then
+                            is_command=true
+                            break
+                        fi
+                    done
+                    
+                    if [[ "$is_command" == false ]]; then
+                        # This is a worktree name, complete with up/down or docker compose commands
+                        if [[ $#words -eq 2 ]]; then
+                            # Second position: up/down or docker compose commands
+                            local -a all_worktree_options
+                            all_worktree_options=("${worktree_actions[@]}")
+                            all_worktree_options+=("${compose_commands[@]}")
+                            _describe -t worktree-actions 'worktree actions or docker compose commands' all_worktree_options && ret=0
+                        elif [[ $#words -eq 3 && "$words[2]" == "up" ]]; then
+                            # Third position after worktree_name up
+                            _arguments \
+                                '-d[Run in detached mode]' \
+                                '--detach[Run in detached mode]' \
+                            && ret=0
+                        elif [[ $#words -ge 3 && "$words[2]" == "exec" ]]; then
+                            # After worktree_name exec, complete with service names
+                            _dockertree_services && ret=0
+                        elif [[ $#words -ge 3 && "$words[2]" == "logs" ]]; then
+                            # After worktree_name logs, complete with service names and flags
+                            _arguments \
+                                '1: :_dockertree_services' \
+                                '-f[Follow log output]' \
+                                '--follow[Follow log output]' \
+                                '--tail[Number of lines to show from the end of logs]:number:' \
+                                '--since[Show logs since timestamp]:timestamp:' \
+                                '--until[Show logs before timestamp]:timestamp:' \
+                            && ret=0
+                        elif [[ $#words -ge 3 && "$words[2]" == "run" ]]; then
+                            # After worktree_name run, complete with service names and flags
+                            _arguments \
+                                '1: :_dockertree_services' \
+                                '--rm[Remove container after run]' \
+                                '--no-deps[Don\'t start linked services]' \
+                                '--entrypoint[Override the entrypoint of the image]:command:' \
+                            && ret=0
+                        else
+                            # For other docker compose commands, just pass through
+                            ret=0
+                        fi
+                    else
+                        # Unknown command - don't complete anything
+                        ret=0
+                    fi
                     ;;
             esac
             ;;
@@ -229,6 +318,32 @@ _dockertree_git_branches() {
     fi
     
     # No branches found - return success to prevent file completion
+    return 0
+}
+
+# Helper function to get service names
+_dockertree_services() {
+    local -a services
+    local service_output
+
+    # Get service names from dockertree command
+    service_output="$(dockertree _completion services 2>/dev/null)"
+    
+    if [[ -n "$service_output" ]]; then
+        # Split output into array
+        services=("${(@f)service_output}")
+        
+        if [[ ${#services[@]} -gt 0 ]]; then
+            # Provide completions
+            _describe -t services 'services' services
+            return 0
+        fi
+    fi
+    
+    # Fallback to common service names
+    local -a common_services
+    common_services=(web db redis postgres mysql nginx apache)
+    _describe -t services 'services' common_services
     return 0
 }
 

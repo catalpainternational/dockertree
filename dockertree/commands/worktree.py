@@ -18,7 +18,7 @@ from ..utils.path_utils import (
     get_worktree_branch_name,
     ensure_main_repo
 )
-from ..utils.validation import validate_branch_exists
+from ..utils.validation import validate_branch_exists, validate_worktree_name_not_reserved
 from ..utils.validation import validate_worktree_directory
 from ..utils.pattern_matcher import has_wildcard, get_matching_branches
 from ..utils.confirmation import confirm_batch_operation
@@ -97,6 +97,9 @@ class WorktreeManager:
             # Copy the entire .dockertree directory, excluding worktrees
             shutil.copytree(source_dockertree, target_dockertree, ignore=ignore_worktrees)
             
+            # Ensure README.md is copied (in case it was missing)
+            self._ensure_readme_in_worktree(target_dockertree)
+            
             log_success("Copied .dockertree configuration to worktree")
             return True
             
@@ -104,10 +107,44 @@ class WorktreeManager:
             log_error(f"Failed to copy .dockertree to worktree: {e}")
             return False
     
+    def _ensure_readme_in_worktree(self, worktree_dockertree_dir: Path) -> bool:
+        """Ensure README.md exists in worktree .dockertree directory."""
+        try:
+            from ..config.settings import get_script_dir
+            
+            # Check if README.md already exists
+            readme_path = worktree_dockertree_dir / "README.md"
+            if readme_path.exists():
+                return True
+            
+            # Get source README.md from package
+            script_dir = get_script_dir()
+            source_readme = script_dir / "config" / "README.md"
+            
+            if not source_readme.exists():
+                log_warning(f"Source README.md not found: {source_readme}")
+                return False
+            
+            # Copy README.md to worktree .dockertree directory
+            import shutil
+            shutil.copy2(source_readme, readme_path)
+            
+            log_info("Added README.md to worktree .dockertree directory")
+            return True
+            
+        except Exception as e:
+            log_warning(f"Failed to copy README.md to worktree: {e}")
+            return False
+    
     def create_worktree(self, branch_name: str) -> bool:
         """Create a new worktree."""
         if not branch_name:
             log_error("Branch name is required")
+            return False
+        
+        # Check if branch name is a reserved command name
+        if not validate_worktree_name_not_reserved(branch_name):
+            log_error(f"Branch name '{branch_name}' is reserved and cannot be used as a worktree name")
             return False
         
         log_info(f"Creating worktree for branch: {branch_name}")
@@ -161,7 +198,7 @@ class WorktreeManager:
                 log_success(f"Worktree created for {branch_name}")
                 log_info(f"📁 Location: {relative_path}")
                 log_info(f"💡 Navigate: cd {relative_path}")
-                log_info(f"🚀 Next: dockertree up {branch_name}")
+                log_info(f"🚀 Next: dockertree {branch_name} up")
             except ValueError:
                 # Fallback if relative path calculation fails
                 log_success(f"Worktree created for {branch_name}")

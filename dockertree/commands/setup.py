@@ -615,13 +615,41 @@ services:
                 yaml.dump(config, f, default_flow_style=False, sort_keys=False)
             
             log_success(f"Created config file: {config_file}")
+            
+            # Copy README.md to .dockertree directory
+            if not self._copy_readme_file():
+                log_warning("Failed to copy README.md to .dockertree directory")
+            
             return True
             
         except Exception as e:
             log_error(f"Failed to create config file: {e}")
             return False
     
-    
+    def _copy_readme_file(self) -> bool:
+        """Copy README.md from package to .dockertree directory."""
+        try:
+            from ..config.settings import get_script_dir
+            
+            # Get source README.md from package
+            script_dir = get_script_dir()
+            source_readme = script_dir / "config" / "README.md"
+            
+            if not source_readme.exists():
+                log_warning(f"Source README.md not found: {source_readme}")
+                return False
+            
+            # Copy to .dockertree directory
+            target_readme = self.dockertree_dir / "README.md"
+            import shutil
+            shutil.copy2(source_readme, target_readme)
+            
+            log_success(f"Copied README.md to: {target_readme}")
+            return True
+            
+        except Exception as e:
+            log_error(f"Failed to copy README.md: {e}")
+            return False
     
     def _validate_project_root(self) -> bool:
         """Validate that PROJECT_ROOT environment variable is set correctly."""

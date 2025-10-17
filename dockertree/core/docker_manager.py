@@ -450,3 +450,85 @@ class DockerManager:
             pass
         
         return volumes
+    
+    def run_compose_passthrough(self, branch_name: str, compose_args: List[str]) -> bool:
+        """Run docker compose command with automatic override file resolution.
+        
+        Args:
+            branch_name: Name of the worktree/branch
+            compose_args: Docker compose arguments to pass through
+            
+        Returns:
+            True if command succeeded, False otherwise
+        """
+        from ..core.git_manager import GitManager
+        from ..utils.path_utils import get_compose_override_path, get_env_compose_file_path
+        from ..config.settings import get_project_name, sanitize_project_name
+        
+        # Validate worktree exists
+        git_manager = GitManager()
+        if not git_manager.validate_worktree_exists(branch_name):
+            log_error(f"Worktree for branch '{branch_name}' does not exist")
+            return False
+        
+        # Get worktree path
+        worktree_path = git_manager.find_worktree_path(branch_name)
+        if not worktree_path:
+            log_error(f"Could not find worktree directory for branch '{branch_name}'")
+            return False
+        
+        # Get compose override file
+        compose_override_path = get_compose_override_path(worktree_path)
+        if not compose_override_path or not compose_override_path.exists():
+            log_error(f"Compose override file not found for worktree '{branch_name}'")
+            return False
+        
+        # Get environment file
+        env_file = get_env_compose_file_path(worktree_path)
+        if not env_file.exists():
+            log_error(f"Environment file not found: {env_file}")
+            return False
+        
+        # Get project name
+        project_name = sanitize_project_name(get_project_name())
+        compose_project_name = f"{project_name}-{branch_name}"
+        
+        # Build docker compose command
+        if self.compose_cmd == "docker compose":
+            cmd = ["docker", "compose"]
+        else:
+            cmd = [self.compose_cmd]
+        
+        # Add environment file
+        cmd.extend(["--env-file", str(env_file)])
+        
+        # Add project name
+        cmd.extend(["-p", compose_project_name])
+        
+        # Add compose override file
+        cmd.extend(["-f", str(compose_override_path)])
+        
+        # Add the passthrough arguments
+        cmd.extend(compose_args)
+        
+        # Set environment variables
+        import os
+        env = os.environ.copy()
+        env["PROJECT_ROOT"] = str(worktree_path)
+        env["COMPOSE_PROJECT_ROOT"] = str(worktree_path)
+        env["PWD"] = str(worktree_path)
+        
+        log_info(f"Running docker compose command for worktree '{branch_name}':")
+        log_info(f"  Working directory: {worktree_path}")
+        log_info(f"  Compose file: {compose_override_path}")
+        log_info(f"  Environment file: {env_file}")
+        log_info(f"  Project name: {compose_project_name}")
+        log_info(f"  Command: {' '.join(cmd)}")
+        
+        try:
+            # Run command and stream output to user
+            result = subprocess.run(cmd, cwd=worktree_path, env=env)
+            return result.returncode == 0
+        except Exception as e:
+            log_error(f"Failed to run docker compose command: {e}")
+            return False

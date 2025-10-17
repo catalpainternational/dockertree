@@ -91,6 +91,16 @@ Dockertree CLI provides complete environment isolation through:
 | `remove <branch>` | Remove worktree (keep branch) | `dockertree remove feature-auth` |
 | `delete <branch>` | Delete worktree and branch | `dockertree delete feature-auth` |
 
+### Docker Compose Passthrough
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `<branch> exec <service> <cmd>` | Execute command in container | `dockertree feature-auth exec web python manage.py migrate` |
+| `<branch> logs <service>` | View container logs | `dockertree feature-auth logs web` |
+| `<branch> ps` | List containers | `dockertree feature-auth ps` |
+| `<branch> run <service> <cmd>` | Run one-off command | `dockertree feature-auth run --rm web python manage.py test` |
+| `<branch> <compose-cmd>` | Any docker compose command | `dockertree feature-auth build`, `dockertree feature-auth restart web` |
+
 ### Wildcard Operations
 
 | Command | Description | Example |
@@ -134,6 +144,7 @@ When you run `dockertree setup`, it creates a `.dockertree/` directory with:
 - `config.yml` - Project configuration
 - `docker-compose.worktree.yml` - Transformed compose file (generated from existing docker-compose.yml)
 - `Caddyfile.dockertree` - Caddy configuration
+- `README.md` - User guide optimized for coding agents
 - `worktrees/` - Worktree directories
 
 ### Configuration File
@@ -223,6 +234,27 @@ dockertree up test-migration -d
 
 # Clean up test environment
 dockertree delete test-migration
+```
+
+### Docker Compose Integration
+```bash
+# Execute Django management commands
+dockertree feature-auth exec web python manage.py migrate
+dockertree feature-auth exec web python manage.py collectstatic
+
+# View application logs
+dockertree feature-auth logs web
+dockertree feature-auth logs -f web  # Follow logs
+
+# Run one-off commands
+dockertree feature-auth run --rm web python manage.py test
+dockertree feature-auth run --rm web bash
+
+# Check container status
+dockertree feature-auth ps
+
+# Restart services
+dockertree feature-auth restart web
 ```
 
 ## 🔍 Troubleshooting
@@ -466,10 +498,12 @@ The dockertree CLI follows a modular architecture designed for easy extension:
 - ✅ Dynamic routing with Caddy
 - ✅ Volume management and backup
 - ✅ Git worktree integration
+- ✅ Docker Compose passthrough commands
 - ✅ Comprehensive error handling
 - ✅ Rich console output
 - ✅ Type safety throughout
 - ✅ Project-agnostic setup
+- ✅ User guide in each .dockertree directory
 
 ---
 

@@ -21,25 +21,82 @@ from .utils.pattern_matcher import has_wildcard
 
 
 class DockertreeCLI(click.MultiCommand):
-    """Custom MultiCommand to handle dash-prefixed aliases."""
+    """Custom MultiCommand to handle worktree-name-first pattern and dash-prefixed aliases."""
     
     def parse_args(self, ctx, args):
-        """Override parse_args to handle dash-prefixed commands."""
-        # Check if first argument is a dash-prefixed command
-        if args and args[0] in ['-D', '-r']:
-            # Replace the dash-prefixed command with the actual command
+        """Override parse_args to handle worktree-name-first pattern and dash-prefixed commands."""
+        if not args:
+            return super().parse_args(ctx, args)
+        
+        # Handle dash-prefixed commands
+        if args[0] in ['-D', '-r']:
             if args[0] == '-D':
                 args[0] = 'delete'
             elif args[0] == '-r':
                 args[0] = 'remove'
         
-        # Call parent parse_args with modified arguments
+        # Handle worktree-name-first pattern for up/down commands
+        elif len(args) >= 2 and args[1] in ['up', 'down']:
+            # Check if first argument is not a reserved command name
+            reserved_commands = {
+                'start-proxy', 'stop-proxy', 'start', 'stop', 'create', 
+                'delete', 'remove', 'remove-all', 'delete-all', 'list', 'prune', 
+                'volumes', 'setup', 'help', 'completion', '-D', '-r'
+            }
+            
+            if args[0] not in reserved_commands:
+                # This is a worktree name, restructure args
+                worktree_name = args[0]
+                command = args[1]
+                remaining_args = args[2:] if len(args) > 2 else []
+                
+                # Restructure: worktree_name up -> up worktree_name
+                new_args = [command, worktree_name] + remaining_args
+                return super().parse_args(ctx, new_args)
+        
+        # Handle docker compose passthrough pattern: <worktree_name> <compose-args...>
+        elif len(args) >= 2:
+            # Check if first argument is not a reserved command name
+            reserved_commands = {
+                'start-proxy', 'stop-proxy', 'start', 'stop', 'create', 
+                'delete', 'remove', 'remove-all', 'delete-all', 'list', 'prune', 
+                'volumes', 'setup', 'help', 'completion', '-D', '-r'
+            }
+            
+            # Common docker compose subcommands that should trigger passthrough
+            compose_commands = {
+                'exec', 'logs', 'ps', 'run', 'build', 'pull', 'push', 'restart',
+                'start', 'stop', 'up', 'down', 'config', 'images', 'port',
+                'top', 'events', 'kill', 'pause', 'unpause', 'scale'
+            }
+            
+            if (args[0] not in reserved_commands and 
+                (args[1] in compose_commands or args[1].startswith('-'))):
+                # This is a passthrough pattern: worktree_name compose-args
+                worktree_name = args[0]
+                compose_args = args[1:]
+                
+                # Store passthrough info in context for later use
+                ctx.meta['passthrough'] = {
+                    'worktree_name': worktree_name,
+                    'compose_args': compose_args
+                }
+                
+                # Route to passthrough command
+                new_args = ['passthrough', worktree_name] + compose_args
+                return super().parse_args(ctx, new_args)
+        
+        # Reject old pattern: up/down as first argument
+        elif args[0] in ['up', 'down']:
+            from .utils.logging import error_exit
+            error_exit(f"Error: The command pattern has changed. Use 'dockertree <worktree_name> {args[0]}' instead of 'dockertree {args[0]} <worktree_name>'")
+        
         return super().parse_args(ctx, args)
     
     def list_commands(self, ctx):
         """Return list of available commands."""
         return sorted([
-            'create', 'delete', 'remove', 'start-proxy', 'stop-proxy', 'start', 'stop', 'up', 'down', 
+            'create', 'delete', 'remove', 'start-proxy', 'stop-proxy', 'start', 'stop', 
             'list', 'prune', 'volumes', 'help', 'delete-all', 'remove-all',
             'setup', 'clean-legacy', 'completion', '_completion', '-D', '-r'  # Add dash-prefixed aliases
         ])
@@ -89,10 +146,12 @@ class DockertreeCLI(click.MultiCommand):
             return completion
         elif name == '_completion':
             return _completion
+        elif name == 'passthrough':
+            return passthrough
         return None
 
 # Create the CLI instance
-cli = DockertreeCLI(help='Dockertree: Git Worktrees for Isolated Development Environments')
+cli = DockertreeCLI(help='Dockertree: Git Worktrees for Isolated Development Environments\n\nUsage: dockertree <worktree_name> up|down  or  dockertree <command>')
 cli = click.version_option(version="0.9.0", prog_name="dockertree")(cli)
 
 # Add global verbose option
@@ -194,9 +253,12 @@ def create(branch_name: str):
 @click.option('-d', '--detach', is_flag=True, default=True, help='Run in detached mode')
 @add_verbose_option
 def up(branch_name: str, detach: bool):
-    """Start worktree environment for specified branch."""
+    """Start worktree environment for specified branch.
+    
+    Usage: dockertree <worktree_name> up [-d]
+    """
     if not detach:
-        error_exit("Usage: dockertree up <branch-name> -d")
+        error_exit("Usage: dockertree <worktree_name> up -d")
     
     try:
         check_setup_or_prompt()
@@ -213,7 +275,10 @@ def up(branch_name: str, detach: bool):
 @click.argument('branch_name')
 @add_verbose_option
 def down(branch_name: str):
-    """Stop worktree environment for specified branch."""
+    """Stop worktree environment for specified branch.
+    
+    Usage: dockertree <worktree_name> down
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -526,6 +591,54 @@ def completion_status():
         completion_manager.show_completion_status()
     except Exception as e:
         error_exit(f"Error checking completion status: {e}")
+
+
+@cli.command(context_settings=dict(
+    ignore_unknown_options=True,
+    allow_extra_args=True
+))
+@click.argument('branch_name')
+@add_verbose_option
+def passthrough(branch_name: str):
+    """Run docker compose command with automatic override file resolution.
+    
+    Usage: dockertree <worktree_name> <compose-args...>
+    
+    Examples:
+        dockertree feature-123 exec web python manage.py migrate
+        dockertree feature-123 logs -f web
+        dockertree feature-123 ps
+    """
+    try:
+        check_setup_or_prompt()
+        check_prerequisites()
+        
+        # Get the remaining arguments from the context
+        import click
+        ctx = click.get_current_context()
+        compose_args_list = ctx.args
+        
+        # Validate worktree exists
+        from .core.git_manager import GitManager
+        git_manager = GitManager()
+        if not git_manager.validate_worktree_exists(branch_name):
+            error_exit(f"Worktree for branch '{branch_name}' does not exist. Please create it first with: dockertree create {branch_name}")
+        
+        # Validate compose override exists
+        from .utils.validation import validate_compose_override_exists
+        if not validate_compose_override_exists(branch_name):
+            error_exit(f"Compose override file not found for worktree '{branch_name}'. Please ensure the worktree is properly set up.")
+        
+        # Run the passthrough command
+        from .core.docker_manager import DockerManager
+        docker_manager = DockerManager()
+        success = docker_manager.run_compose_passthrough(branch_name, compose_args_list)
+        
+        if not success:
+            error_exit(f"Failed to run docker compose command for worktree '{branch_name}'")
+            
+    except Exception as e:
+        error_exit(f"Error running docker compose command: {e}")
 
 
 def main():

@@ -14,12 +14,26 @@ from typing import Optional
 from .logging import log_error, error_exit
 from ..config.settings import BRANCH_NAME_PATTERN, PROTECTED_BRANCHES
 
+# Reserved command names that cannot be used as worktree names
+RESERVED_COMMAND_NAMES = {
+    'start-proxy', 'stop-proxy', 'start', 'stop', 'create', 'up', 'down', 
+    'delete', 'remove', 'remove-all', 'delete-all', 'list', 'prune', 
+    'volumes', 'setup', 'help', 'completion', '-D', '-r'
+}
+
 
 def validate_branch_name(branch_name: str) -> bool:
     """Validate branch name format."""
     if not branch_name:
         return False
     return bool(re.match(BRANCH_NAME_PATTERN, branch_name))
+
+
+def validate_worktree_name_not_reserved(branch_name: str) -> bool:
+    """Validate that worktree name is not a reserved command name."""
+    if not branch_name:
+        return False
+    return branch_name not in RESERVED_COMMAND_NAMES
 
 
 def validate_git_repository() -> bool:
@@ -83,6 +97,22 @@ def validate_worktree_directory(worktree_path: Path) -> bool:
         return True
 
     return False
+
+
+def validate_compose_override_exists(branch_name: str) -> bool:
+    """Check if compose override file exists for a worktree."""
+    from ..core.git_manager import GitManager
+    from ..utils.path_utils import get_compose_override_path
+    
+    # Get worktree path
+    git_manager = GitManager()
+    worktree_path = git_manager.find_worktree_path(branch_name)
+    if not worktree_path:
+        return False
+    
+    # Check for compose override file
+    compose_override_path = get_compose_override_path(worktree_path)
+    return compose_override_path and compose_override_path.exists()
 
 
 def validate_branch_protection(branch_name: str) -> bool:

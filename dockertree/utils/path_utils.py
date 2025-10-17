@@ -177,3 +177,31 @@ def find_worktree_directories(base_path: Optional[Path] = None) -> list[Path]:
                 worktrees.append(item)
     
     return worktrees
+
+
+def detect_execution_context() -> tuple[Optional[Path], Optional[str], bool]:
+    """Detect if we're running from git root or worktree directory.
+    
+    Returns:
+        tuple: (worktree_path, branch_name, is_worktree_context)
+        - worktree_path: Path to worktree if in worktree, None if in git root
+        - branch_name: Branch name if in worktree, None if in git root  
+        - is_worktree_context: True if in worktree, False if in git root
+    """
+    current_path = Path.cwd()
+    project_root = get_project_root()
+    
+    # Check if we're in a worktree directory by looking for worktree-specific files
+    # and checking if current path is under worktrees directory
+    worktree_dir = get_worktree_dir()
+    worktrees_path = project_root / worktree_dir
+    
+    # Check if current directory is under worktrees
+    try:
+        current_path.relative_to(worktrees_path)
+        # We're in a worktree directory
+        branch_name = get_worktree_branch_name(current_path)
+        return current_path, branch_name, True
+    except ValueError:
+        # Not in worktrees directory, we're in git root
+        return None, None, False
