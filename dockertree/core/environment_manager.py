@@ -24,9 +24,18 @@ from ..utils.path_utils import (
 class EnvironmentManager:
     """Manages environment configuration for dockertree CLI."""
     
-    def __init__(self):
-        """Initialize environment manager."""
-        pass
+    def __init__(self, project_root: Optional[Path] = None):
+        """Initialize environment manager.
+        
+        Args:
+            project_root: Project root directory. If None, uses get_project_root().
+        """
+        # Use the provided project_root directly, don't fall back to get_project_root()
+        # This ensures MCP server uses the correct working directory
+        if project_root is None:
+            self.project_root = get_project_root()
+        else:
+            self.project_root = Path(project_root).resolve()
     
     def create_worktree_env(self, branch_name: str, worktree_path: Path, 
                            source_env_path: Optional[Path] = None) -> bool:
@@ -42,9 +51,7 @@ class EnvironmentManager:
             env_copied = copy_env_file(source_env_path, worktree_path)
         else:
             # Try to find .env in project root
-            from ..config.settings import get_project_root
-            project_root = get_project_root()
-            env_copied = copy_env_file(project_root, worktree_path)
+            env_copied = copy_env_file(self.project_root, worktree_path)
         
         if not env_copied:
             log_warning("No .env file found to copy, creating default .env file")

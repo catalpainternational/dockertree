@@ -17,6 +17,9 @@ console = Console()
 # Global verbose mode flag
 _verbose_mode = False
 
+# Global MCP mode flag - when True, don't print to stdout
+_mcp_mode = False
+
 # Color constants (matching bash script)
 class Colors:
     RED = "red"
@@ -31,6 +34,15 @@ def set_verbose(enabled: bool) -> None:
     global _verbose_mode
     _verbose_mode = enabled
 
+def set_mcp_mode(enabled: bool) -> None:
+    """Set MCP mode - when enabled, don't print to stdout."""
+    global _mcp_mode
+    _mcp_mode = enabled
+
+def is_mcp_mode() -> bool:
+    """Check if MCP mode is enabled."""
+    return _mcp_mode
+
 def is_verbose() -> bool:
     """Check if verbose mode is enabled."""
     return _verbose_mode
@@ -42,7 +54,8 @@ def log_info(message: str) -> None:
 
 def log_success(message: str) -> None:
     """Log a success message."""
-    console.print(f"[{Colors.GREEN}][SUCCESS][/{Colors.GREEN}] {message}")
+    if not _mcp_mode:
+        console.print(f"[{Colors.GREEN}][SUCCESS][/{Colors.GREEN}] {message}")
 
 def log_warning(message: str) -> None:
     """Log a warning message (only shown in verbose mode)."""
@@ -51,19 +64,23 @@ def log_warning(message: str) -> None:
 
 def log_error(message: str) -> None:
     """Log an error message."""
-    console.print(f"[{Colors.RED}][ERROR][/{Colors.RED}] {message}")
+    if not _mcp_mode:
+        console.print(f"[{Colors.RED}][ERROR][/{Colors.RED}] {message}")
 
 def log_phase(message: str) -> None:
     """Log a phase message."""
-    console.print(f"[{Colors.PURPLE}][PHASE][/{Colors.PURPLE}] {message}")
+    if not _mcp_mode:
+        console.print(f"[{Colors.PURPLE}][PHASE][/{Colors.PURPLE}] {message}")
 
 def log_test(message: str) -> None:
     """Log a test message."""
-    console.print(f"[{Colors.CYAN}][TEST][/{Colors.CYAN}] {message}")
+    if not _mcp_mode:
+        console.print(f"[{Colors.CYAN}][TEST][/{Colors.CYAN}] {message}")
 
 def print_plain(message: str) -> None:
     """Print plain text without any prefix."""
-    console.print(message)
+    if not _mcp_mode:
+        console.print(message)
 
 def show_version() -> None:
     """Show version information."""

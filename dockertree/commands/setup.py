@@ -25,9 +25,13 @@ from ..utils.file_utils import (
 class SetupManager:
     """Manages project setup for dockertree CLI."""
     
-    def __init__(self):
-        """Initialize setup manager."""
-        self.project_root = get_project_root()
+    def __init__(self, project_root: Optional[Path] = None):
+        """Initialize setup manager.
+        
+        Args:
+            project_root: Project root directory. If None, uses get_project_root().
+        """
+        self.project_root = project_root or get_project_root()
         self.dockertree_dir = self.project_root / DOCKERTREE_DIR
     
     def setup_project(self, project_name: Optional[str] = None) -> bool:

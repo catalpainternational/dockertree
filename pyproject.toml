@@ -1,6 +1,6 @@
 [project]
 name = "dockertree"
-version = "0.9.0"
+version = "0.9.1"
 description = "Git worktrees with isolated Docker Compose environments"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,10 +10,18 @@ dependencies = [
     "gitpython>=3.1.0",
     "pyyaml>=6.0",
     "rich>=13.0.0",
+    "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
 ]
 
 [project.scripts]
 dockertree = "dockertree.cli:main"
+dockertree-mcp = "dockertree_mcp.server:cli_main"
 
 [project.urls]
 Homepage = "https://github.com/catalpainternational/dockertree"
@@ -26,7 +34,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["dockertree"]
+packages = ["dockertree", "dockertree_mcp"]
 include = [
     "dockertree/completions/*",
     "dockertree/config/*",

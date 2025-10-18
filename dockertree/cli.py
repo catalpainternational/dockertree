@@ -18,6 +18,7 @@ from .commands.setup import SetupManager
 from .utils.logging import log_error, error_exit, set_verbose
 from .utils.validation import check_prerequisites, check_setup_or_prompt
 from .utils.pattern_matcher import has_wildcard
+from .utils.json_output import JSONOutput, add_json_option, handle_json_output
 
 
 class DockertreeCLI(click.MultiCommand):
@@ -152,7 +153,7 @@ class DockertreeCLI(click.MultiCommand):
 
 # Create the CLI instance
 cli = DockertreeCLI(help='Dockertree: Git Worktrees for Isolated Development Environments\n\nUsage: dockertree <worktree_name> up|down  or  dockertree <command>')
-cli = click.version_option(version="0.9.0", prog_name="dockertree")(cli)
+cli = click.version_option(version="0.9.1", prog_name="dockertree")(cli)
 
 # Add global verbose option
 def verbose_callback(ctx, param, value):
@@ -173,8 +174,9 @@ def add_verbose_option(f):
 
 
 @cli.command('start-proxy')
+@add_json_option
 @add_verbose_option
-def start_proxy():
+def start_proxy(json: bool):
     """Start global Caddy proxy container."""
     try:
         check_setup_or_prompt()
@@ -182,14 +184,24 @@ def start_proxy():
         caddy_manager = CaddyManager()
         success = caddy_manager.start_global_caddy()
         if not success:
-            error_exit("Failed to start global Caddy container")
+            if json:
+                JSONOutput.print_error("Failed to start global Caddy container")
+            else:
+                error_exit("Failed to start global Caddy container")
+        else:
+            if json:
+                JSONOutput.print_success("Global Caddy proxy started successfully")
     except Exception as e:
-        error_exit(f"Error starting global Caddy: {e}")
+        if json:
+            JSONOutput.print_error(f"Error starting global Caddy: {e}")
+        else:
+            error_exit(f"Error starting global Caddy: {e}")
 
 
 @cli.command('stop-proxy')
+@add_json_option
 @add_verbose_option
-def stop_proxy():
+def stop_proxy(json: bool):
     """Stop global Caddy proxy container."""
     try:
         check_setup_or_prompt()
@@ -197,9 +209,18 @@ def stop_proxy():
         caddy_manager = CaddyManager()
         success = caddy_manager.stop_global_caddy()
         if not success:
-            error_exit("Failed to stop global Caddy container")
+            if json:
+                JSONOutput.print_error("Failed to stop global Caddy container")
+            else:
+                error_exit("Failed to stop global Caddy container")
+        else:
+            if json:
+                JSONOutput.print_success("Global Caddy proxy stopped successfully")
     except Exception as e:
-        error_exit(f"Error stopping global Caddy: {e}")
+        if json:
+            JSONOutput.print_error(f"Error stopping global Caddy: {e}")
+        else:
+            error_exit(f"Error stopping global Caddy: {e}")
 
 
 @cli.command('start')
@@ -234,8 +255,9 @@ def stop():
 
 @cli.command()
 @click.argument('branch_name')
+@add_json_option
 @add_verbose_option
-def create(branch_name: str):
+def create(branch_name: str, json: bool):
     """Create worktree in worktrees directory."""
     try:
         check_setup_or_prompt()
@@ -243,22 +265,39 @@ def create(branch_name: str):
         worktree_manager = WorktreeManager()
         success = worktree_manager.create_worktree(branch_name)
         if not success:
-            error_exit(f"Failed to create worktree for {branch_name}")
+            if json:
+                JSONOutput.print_error(f"Failed to create worktree for {branch_name}")
+            else:
+                error_exit(f"Failed to create worktree for {branch_name}")
+        else:
+            if json:
+                worktree_path = worktree_manager.git_manager.find_worktree_path(branch_name)
+                JSONOutput.print_success(f"Worktree created for {branch_name}", {
+                    "branch_name": branch_name,
+                    "worktree_path": str(worktree_path) if worktree_path else None
+                })
     except Exception as e:
-        error_exit(f"Error creating worktree: {e}")
+        if json:
+            JSONOutput.print_error(f"Error creating worktree: {e}")
+        else:
+            error_exit(f"Error creating worktree: {e}")
 
 
 @cli.command()
 @click.argument('branch_name')
 @click.option('-d', '--detach', is_flag=True, default=True, help='Run in detached mode')
+@add_json_option
 @add_verbose_option
-def up(branch_name: str, detach: bool):
+def up(branch_name: str, detach: bool, json: bool):
     """Start worktree environment for specified branch.
     
     Usage: dockertree <worktree_name> up [-d]
     """
     if not detach:
-        error_exit("Usage: dockertree <worktree_name> up -d")
+        if json:
+            JSONOutput.print_error("Usage: dockertree <worktree_name> up -d")
+        else:
+            error_exit("Usage: dockertree <worktree_name> up -d")
     
     try:
         check_setup_or_prompt()
@@ -266,15 +305,30 @@ def up(branch_name: str, detach: bool):
         worktree_manager = WorktreeManager()
         success = worktree_manager.start_worktree(branch_name)
         if not success:
-            error_exit(f"Failed to start worktree environment for {branch_name}")
+            if json:
+                JSONOutput.print_error(f"Failed to start worktree environment for {branch_name}")
+            else:
+                error_exit(f"Failed to start worktree environment for {branch_name}")
+        else:
+            if json:
+                domain_name = worktree_manager.env_manager.get_domain_name(branch_name)
+                JSONOutput.print_success(f"Worktree environment started for {branch_name}", {
+                    "branch_name": branch_name,
+                    "domain_name": domain_name,
+                    "url": f"http://{domain_name}/"
+                })
     except Exception as e:
-        error_exit(f"Error starting worktree: {e}")
+        if json:
+            JSONOutput.print_error(f"Error starting worktree: {e}")
+        else:
+            error_exit(f"Error starting worktree: {e}")
 
 
 @cli.command()
 @click.argument('branch_name')
+@add_json_option
 @add_verbose_option
-def down(branch_name: str):
+def down(branch_name: str, json: bool):
     """Stop worktree environment for specified branch.
     
     Usage: dockertree <worktree_name> down
@@ -283,16 +337,27 @@ def down(branch_name: str):
         check_setup_or_prompt()
         check_prerequisites()
         worktree_manager = WorktreeManager()
-        worktree_manager.stop_worktree(branch_name)
+        success = worktree_manager.stop_worktree(branch_name)
+        if json:
+            if success:
+                JSONOutput.print_success(f"Worktree environment stopped for {branch_name}", {
+                    "branch_name": branch_name
+                })
+            else:
+                JSONOutput.print_error(f"Failed to stop worktree environment for {branch_name}")
     except Exception as e:
-        error_exit(f"Error stopping worktree: {e}")
+        if json:
+            JSONOutput.print_error(f"Error stopping worktree: {e}")
+        else:
+            error_exit(f"Error stopping worktree: {e}")
 
 
 @cli.command()
 @click.argument('branch_name')
 @click.option('--force', is_flag=True, help='Force removal even with unmerged changes')
+@add_json_option
 @add_verbose_option
-def delete(branch_name: str, force: bool):
+def delete(branch_name: str, force: bool, json: bool):
     """Delete worktree and branch completely.
     
     Supports wildcard patterns: test-*, feature-?, bugfix-[abc]
@@ -308,14 +373,29 @@ def delete(branch_name: str, force: bool):
             # Use pattern-based removal
             success = worktree_manager.remove_worktrees_by_pattern(branch_name, force, delete_branch=True)
             if not success:
-                error_exit(f"Failed to remove worktrees matching pattern: {branch_name}")
+                if json:
+                    JSONOutput.print_error(f"Failed to remove worktrees matching pattern: {branch_name}")
+                else:
+                    error_exit(f"Failed to remove worktrees matching pattern: {branch_name}")
+            else:
+                if json:
+                    JSONOutput.print_success(f"Successfully removed worktrees matching pattern: {branch_name}")
         else:
             # Use single branch removal
             success = worktree_manager.remove_worktree(branch_name, force)
             if not success:
-                error_exit(f"Failed to remove worktree for {branch_name}")
+                if json:
+                    JSONOutput.print_error(f"Failed to remove worktree for {branch_name}")
+                else:
+                    error_exit(f"Failed to remove worktree for {branch_name}")
+            else:
+                if json:
+                    JSONOutput.print_success(f"Successfully removed worktree for {branch_name}")
     except Exception as e:
-        error_exit(f"Error removing worktree: {e}")
+        if json:
+            JSONOutput.print_error(f"Error removing worktree: {e}")
+        else:
+            error_exit(f"Error removing worktree: {e}")
 
 
 
@@ -339,8 +419,9 @@ def delete_all(force: bool):
 @cli.command()
 @click.argument('branch_name')
 @click.option('--force', is_flag=True, help='Force removal even with unmerged changes')
+@add_json_option
 @add_verbose_option
-def remove(branch_name: str, force: bool):
+def remove(branch_name: str, force: bool, json: bool):
     """Remove worktree and containers/volumes but keep git branch.
     
     Supports wildcard patterns: test-*, feature-?, bugfix-[abc]
@@ -356,14 +437,29 @@ def remove(branch_name: str, force: bool):
             # Use pattern-based removal
             success = worktree_manager.remove_worktrees_by_pattern(branch_name, force, delete_branch=False)
             if not success:
-                error_exit(f"Failed to remove worktrees matching pattern: {branch_name}")
+                if json:
+                    JSONOutput.print_error(f"Failed to remove worktrees matching pattern: {branch_name}")
+                else:
+                    error_exit(f"Failed to remove worktrees matching pattern: {branch_name}")
+            else:
+                if json:
+                    JSONOutput.print_success(f"Successfully removed worktrees matching pattern: {branch_name}")
         else:
             # Use single branch removal
             success = worktree_manager.remove_worktree(branch_name, force, delete_branch=False)
             if not success:
-                error_exit(f"Failed to remove worktree for {branch_name}")
+                if json:
+                    JSONOutput.print_error(f"Failed to remove worktree for {branch_name}")
+                else:
+                    error_exit(f"Failed to remove worktree for {branch_name}")
+            else:
+                if json:
+                    JSONOutput.print_success(f"Successfully removed worktree for {branch_name}")
     except Exception as e:
-        error_exit(f"Error removing worktree: {e}")
+        if json:
+            JSONOutput.print_error(f"Error removing worktree: {e}")
+        else:
+            error_exit(f"Error removing worktree: {e}")
 
 
 
@@ -385,29 +481,47 @@ def remove_all(force: bool):
 
 
 @cli.command()
+@add_json_option
 @add_verbose_option
-def list():
+def list(json: bool):
     """List active worktrees."""
     try:
         check_setup_or_prompt()
         check_prerequisites()
         utility_manager = UtilityManager()
-        utility_manager.list_worktrees()
+        if json:
+            worktrees = utility_manager.list_worktrees_json()
+            JSONOutput.print_json(worktrees)
+        else:
+            utility_manager.list_worktrees()
     except Exception as e:
-        error_exit(f"Error listing worktrees: {e}")
+        if json:
+            JSONOutput.print_error(f"Error listing worktrees: {e}")
+        else:
+            error_exit(f"Error listing worktrees: {e}")
 
 
 @cli.command()
+@add_json_option
 @add_verbose_option
-def prune():
+def prune(json: bool):
     """Remove prunable worktree references."""
     try:
         check_setup_or_prompt()
         check_prerequisites()
         utility_manager = UtilityManager()
-        utility_manager.prune_worktrees()
+        if json:
+            pruned_count = utility_manager.prune_worktrees_json()
+            JSONOutput.print_success(f"Pruned {pruned_count} worktree(s)", {
+                "pruned_count": pruned_count
+            })
+        else:
+            utility_manager.prune_worktrees()
     except Exception as e:
-        error_exit(f"Error pruning worktrees: {e}")
+        if json:
+            JSONOutput.print_error(f"Error pruning worktrees: {e}")
+        else:
+            error_exit(f"Error pruning worktrees: {e}")
 
 
 @cli.group()
@@ -418,36 +532,53 @@ def volumes():
 
 
 @volumes.command('list')
+@add_json_option
 @add_verbose_option
-def volumes_list():
+def volumes_list(json: bool):
     """List all worktree volumes."""
     try:
         check_setup_or_prompt()
         check_prerequisites()
         volume_manager = VolumeManager()
-        volume_manager.list_volumes()
+        if json:
+            volumes = volume_manager.list_volumes_json()
+            JSONOutput.print_json(volumes)
+        else:
+            volume_manager.list_volumes()
     except Exception as e:
-        error_exit(f"Error listing volumes: {e}")
+        if json:
+            JSONOutput.print_error(f"Error listing volumes: {e}")
+        else:
+            error_exit(f"Error listing volumes: {e}")
 
 
 @volumes.command('size')
+@add_json_option
 @add_verbose_option
-def volumes_size():
+def volumes_size(json: bool):
     """Show volume sizes."""
     try:
         check_setup_or_prompt()
         check_prerequisites()
         volume_manager = VolumeManager()
-        volume_manager.show_volume_sizes()
+        if json:
+            sizes = volume_manager.get_volume_sizes_json()
+            JSONOutput.print_json(sizes)
+        else:
+            volume_manager.show_volume_sizes()
     except Exception as e:
-        error_exit(f"Error showing volume sizes: {e}")
+        if json:
+            JSONOutput.print_error(f"Error showing volume sizes: {e}")
+        else:
+            error_exit(f"Error showing volume sizes: {e}")
 
 
 @volumes.command('backup')
 @click.argument('branch_name')
 @click.option('--backup-dir', type=click.Path(), help='Backup directory path')
+@add_json_option
 @add_verbose_option
-def volumes_backup(branch_name: str, backup_dir: Optional[str]):
+def volumes_backup(branch_name: str, backup_dir: Optional[str], json: bool):
     """Backup worktree volumes."""
     try:
         check_setup_or_prompt()
@@ -456,16 +587,26 @@ def volumes_backup(branch_name: str, backup_dir: Optional[str]):
         backup_path = Path(backup_dir) if backup_dir else None
         success = volume_manager.backup_volumes(branch_name, backup_path)
         if not success:
-            error_exit(f"Failed to backup volumes for {branch_name}")
+            if json:
+                JSONOutput.print_error(f"Failed to backup volumes for {branch_name}")
+            else:
+                error_exit(f"Failed to backup volumes for {branch_name}")
+        else:
+            if json:
+                JSONOutput.print_success(f"Successfully backed up volumes for {branch_name}")
     except Exception as e:
-        error_exit(f"Error backing up volumes: {e}")
+        if json:
+            JSONOutput.print_error(f"Error backing up volumes: {e}")
+        else:
+            error_exit(f"Error backing up volumes: {e}")
 
 
 @volumes.command('restore')
 @click.argument('branch_name')
 @click.argument('backup_file', type=click.Path(exists=True))
+@add_json_option
 @add_verbose_option
-def volumes_restore(branch_name: str, backup_file: str):
+def volumes_restore(branch_name: str, backup_file: str, json: bool):
     """Restore worktree volumes from backup."""
     try:
         check_setup_or_prompt()
@@ -473,15 +614,25 @@ def volumes_restore(branch_name: str, backup_file: str):
         volume_manager = VolumeManager()
         success = volume_manager.restore_volumes(branch_name, Path(backup_file))
         if not success:
-            error_exit(f"Failed to restore volumes for {branch_name}")
+            if json:
+                JSONOutput.print_error(f"Failed to restore volumes for {branch_name}")
+            else:
+                error_exit(f"Failed to restore volumes for {branch_name}")
+        else:
+            if json:
+                JSONOutput.print_success(f"Successfully restored volumes for {branch_name}")
     except Exception as e:
-        error_exit(f"Error restoring volumes: {e}")
+        if json:
+            JSONOutput.print_error(f"Error restoring volumes: {e}")
+        else:
+            error_exit(f"Error restoring volumes: {e}")
 
 
 @volumes.command('clean')
 @click.argument('branch_name')
+@add_json_option
 @add_verbose_option
-def volumes_clean(branch_name: str):
+def volumes_clean(branch_name: str, json: bool):
     """Clean up worktree volumes."""
     try:
         check_setup_or_prompt()
@@ -489,9 +640,18 @@ def volumes_clean(branch_name: str):
         volume_manager = VolumeManager()
         success = volume_manager.clean_volumes(branch_name)
         if not success:
-            error_exit(f"Failed to clean volumes for {branch_name}")
+            if json:
+                JSONOutput.print_error(f"Failed to clean volumes for {branch_name}")
+            else:
+                error_exit(f"Failed to clean volumes for {branch_name}")
+        else:
+            if json:
+                JSONOutput.print_success(f"Successfully cleaned volumes for {branch_name}")
     except Exception as e:
-        error_exit(f"Error cleaning volumes: {e}")
+        if json:
+            JSONOutput.print_error(f"Error cleaning volumes: {e}")
+        else:
+            error_exit(f"Error cleaning volumes: {e}")
 
 
 @cli.command()

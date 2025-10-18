@@ -36,11 +36,14 @@ def validate_worktree_name_not_reserved(branch_name: str) -> bool:
     return branch_name not in RESERVED_COMMAND_NAMES
 
 
-def validate_git_repository() -> bool:
+def validate_git_repository(project_root: Optional[Path] = None) -> bool:
     """Check if we're in a git repository."""
     try:
+        if project_root is None:
+            from ..config.settings import get_project_root
+            project_root = get_project_root()
         subprocess.run(["git", "rev-parse", "--git-dir"], 
-                      capture_output=True, check=True)
+                      capture_output=True, check=True, cwd=project_root)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError, Exception):
         return False
@@ -71,7 +74,7 @@ def validate_docker_compose() -> bool:
             return False
 
 
-def validate_worktree_directory(worktree_path: Path) -> bool:
+def validate_worktree_directory(worktree_path: Path, project_root: Optional[Path] = None) -> bool:
     """Validate that we're in a valid worktree directory."""
     from .file_utils import find_compose_files
     
@@ -86,7 +89,9 @@ def validate_worktree_directory(worktree_path: Path) -> bool:
         return True
 
     # Check for compose worktree file in dockertree directory (correct parent)
-    project_root = get_project_root()
+    if project_root is None:
+        from ..config.settings import get_project_root
+        project_root = get_project_root()
     dockertree_path = project_root / "dockertree" / "config" / "docker-compose.worktree.yml"
     if dockertree_path.exists():
         return True
@@ -99,13 +104,13 @@ def validate_worktree_directory(worktree_path: Path) -> bool:
     return False
 
 
-def validate_compose_override_exists(branch_name: str) -> bool:
+def validate_compose_override_exists(branch_name: str, project_root: Optional[Path] = None) -> bool:
     """Check if compose override file exists for a worktree."""
     from ..core.git_manager import GitManager
     from ..utils.path_utils import get_compose_override_path
     
     # Get worktree path
-    git_manager = GitManager()
+    git_manager = GitManager(project_root=project_root)
     worktree_path = git_manager.find_worktree_path(branch_name)
     if not worktree_path:
         return False
@@ -120,11 +125,12 @@ def validate_branch_protection(branch_name: str) -> bool:
     return branch_name in PROTECTED_BRANCHES
 
 
-def validate_branch_exists(branch_name: str) -> bool:
+def validate_branch_exists(branch_name: str, project_root: Optional[Path] = None) -> bool:
     """Check if a git branch exists."""
     try:
-        from ..config.settings import get_project_root
-        project_root = get_project_root()
+        if project_root is None:
+            from ..config.settings import get_project_root
+            project_root = get_project_root()
         subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"], 
                       capture_output=True, check=True, cwd=project_root)
         return True
@@ -132,11 +138,12 @@ def validate_branch_exists(branch_name: str) -> bool:
         return False
 
 
-def validate_worktree_exists(branch_name: str) -> bool:
+def validate_worktree_exists(branch_name: str, project_root: Optional[Path] = None) -> bool:
     """Check if a worktree exists for the given branch."""
     try:
-        from ..config.settings import get_project_root
-        project_root = get_project_root()
+        if project_root is None:
+            from ..config.settings import get_project_root
+            project_root = get_project_root()
         result = subprocess.run(["git", "worktree", "list"], 
                               capture_output=True, text=True, check=True, cwd=project_root)
         return f"[{branch_name}]" in result.stdout
@@ -144,11 +151,12 @@ def validate_worktree_exists(branch_name: str) -> bool:
         return False
 
 
-def validate_current_branch() -> Optional[str]:
+def validate_current_branch(project_root: Optional[Path] = None) -> Optional[str]:
     """Get the current git branch name."""
     try:
-        from ..config.settings import get_project_root
-        project_root = get_project_root()
+        if project_root is None:
+            from ..config.settings import get_project_root
+            project_root = get_project_root()
         result = subprocess.run(["git", "branch", "--show-current"], 
                               capture_output=True, text=True, check=True, cwd=project_root)
         return result.stdout.strip()
@@ -156,11 +164,12 @@ def validate_current_branch() -> Optional[str]:
         return None
 
 
-def validate_branch_merged(branch_name: str) -> bool:
+def validate_branch_merged(branch_name: str, project_root: Optional[Path] = None) -> bool:
     """Check if a branch has been merged."""
     try:
-        from ..config.settings import get_project_root
-        project_root = get_project_root()
+        if project_root is None:
+            from ..config.settings import get_project_root
+            project_root = get_project_root()
         subprocess.run(["git", "branch", "-d", branch_name], 
                       capture_output=True, check=True, cwd=project_root)
         return True
@@ -168,9 +177,9 @@ def validate_branch_merged(branch_name: str) -> bool:
         return False
 
 
-def check_prerequisites() -> None:
+def check_prerequisites(project_root: Optional[Path] = None) -> None:
     """Check all prerequisites and exit if any fail."""
-    if not validate_git_repository():
+    if not validate_git_repository(project_root):
         error_exit("Not in a git repository. Please run this command from the project root.")
     
     if not validate_docker_running():
@@ -244,13 +253,13 @@ def validate_environment_file_content(env_file_path: Path) -> bool:
         return False
 
 
-def ensure_environment_files_exist(worktree_path: Path, branch_name: str) -> bool:
+def ensure_environment_files_exist(worktree_path: Path, branch_name: str, project_root: Optional[Path] = None) -> bool:
     """Ensure both environment files exist, creating them if necessary."""
     from ..core.environment_manager import EnvironmentManager
     from ..utils.logging import log_info, log_warning
     from ..utils.path_utils import get_env_file_path, get_env_compose_file_path
     
-    env_manager = EnvironmentManager()
+    env_manager = EnvironmentManager(project_root=project_root)
     
     # Check if both files exist and have content
     env_file = get_env_file_path(worktree_path)
@@ -275,12 +284,12 @@ def ensure_environment_files_exist(worktree_path: Path, branch_name: str) -> boo
         return False
 
 
-def check_setup_or_prompt() -> None:
+def check_setup_or_prompt(project_root: Optional[Path] = None) -> None:
     """Check if dockertree is set up, prompt user if not."""
     from ..commands.setup import SetupManager
     from ..utils.logging import log_info
     
-    setup_manager = SetupManager()
+    setup_manager = SetupManager(project_root=project_root)
     if not setup_manager.is_setup_complete():
         log_error("Dockertree is not set up for this project.")
         log_info("Please run: dockertree setup")

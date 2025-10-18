@@ -33,6 +33,21 @@ class VolumeManager:
         for volume in volumes:
             print_plain(f"  {volume}")
     
+    def list_volumes_json(self) -> list:
+        """List all worktree volumes as JSON."""
+        volumes = self.docker_manager.list_volumes()
+        sizes = self.docker_manager.get_volume_sizes()
+        
+        result = []
+        for volume in volumes:
+            result.append({
+                "name": volume,
+                "size": sizes.get(volume, "unknown"),
+                "type": "worktree_volume"
+            })
+        
+        return result
+    
     def show_volume_sizes(self) -> None:
         """Show volume sizes."""
         print_plain("Volume sizes:")
@@ -44,6 +59,11 @@ class VolumeManager:
         
         for volume, size in sizes.items():
             print_plain(f"  {volume}: {size}")
+    
+    def get_volume_sizes_json(self) -> dict:
+        """Get volume sizes as JSON."""
+        sizes = self.docker_manager.get_volume_sizes()
+        return {"volumes": sizes}
     
     def backup_volumes(self, branch_name: str, backup_dir: Optional[Path] = None) -> bool:
         """Backup worktree volumes."""

@@ -8,13 +8,14 @@ container lifecycle, and compose file execution.
 import subprocess
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.settings import (
     CADDY_NETWORK, 
     get_compose_command, 
     get_volume_names,
-    DEFAULT_ENV_VARS
+    DEFAULT_ENV_VARS,
+    get_project_root
 )
 from ..utils.logging import log_info, log_success, log_warning, log_error, show_progress
 from ..utils.validation import validate_docker_running, validate_network_exists, validate_volume_exists
@@ -23,10 +24,26 @@ from ..utils.validation import validate_docker_running, validate_network_exists,
 class DockerManager:
     """Manages Docker operations for dockertree CLI."""
     
-    def __init__(self):
-        """Initialize Docker manager."""
+    def __init__(self, project_root: Optional[Path] = None, validate: bool = True):
+        """Initialize Docker manager.
+        
+        Args:
+            project_root: Project root directory. If None, uses get_project_root().
+            validate: If True, raise exception if Docker not running. If False, just log warning.
+        """
+        # Use the provided project_root directly, don't fall back to get_project_root()
+        # This ensures MCP server uses the correct working directory
+        if project_root is None:
+            self.project_root = get_project_root()
+        else:
+            self.project_root = Path(project_root).resolve()
         self.compose_cmd = get_compose_command()
-        self._validate_docker()
+        if validate:
+            self._validate_docker()
+        else:
+            # Just check without raising
+            if not validate_docker_running():
+                log_warning("Docker is not running. Some operations may fail.")
     
     def _validate_docker(self) -> None:
         """Validate Docker is running."""
@@ -299,8 +316,7 @@ class DockerManager:
         
         # Use working_dir if provided, otherwise fall back to project root
         if working_dir is None:
-            from ..config.settings import get_project_root
-            working_dir = get_project_root()
+            working_dir = self.project_root
         
         # Convert to absolute path to ensure Docker resolves it correctly
         working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
@@ -355,10 +371,9 @@ class DockerManager:
 
         # Set working directory - use worktree_path if provided, otherwise project root
         if working_dir is None:
-            from ..config.settings import get_project_root
             # For worktree operations, use the worktree directory as working directory
             # This ensures environment files and relative paths work correctly
-            working_dir = get_project_root()
+            working_dir = self.project_root
 
         # Convert to absolute path to ensure Docker resolves it correctly
         working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
@@ -532,3 +547,145 @@ class DockerManager:
         except Exception as e:
             log_error(f"Failed to run docker compose command: {e}")
             return False
+
+    async def start_worktree_containers(self, branch_name: str, worktree_path: Path, 
+                                       project_root: Path) -> Dict[str, Any]:
+        """Start containers for a worktree asynchronously."""
+        try:
+            from ..utils.path_utils import get_compose_override_path, get_env_compose_file_path
+            from ..config.settings import get_project_name, sanitize_project_name
+            
+            # Get compose files
+            compose_override = get_compose_override_path(worktree_path)
+            env_file = get_env_compose_file_path(worktree_path)
+            
+            if not compose_override or not compose_override.exists():
+                return {"success": False, "error": f"Compose file not found for worktree '{branch_name}'"}
+            
+            # Get project name
+            project_name = sanitize_project_name(get_project_name())
+            compose_project_name = f"{project_name}-{branch_name}"
+            
+            # Start services
+            success = self.run_compose_command(
+                compose_override, 
+                ["up", "-d"], 
+                env_file=env_file,
+                project_name=compose_project_name,
+                working_dir=worktree_path
+            )
+            
+            return {
+                "success": success,
+                "message": f"Started containers for worktree '{branch_name}'" if success else "Failed to start containers"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def stop_worktree_containers(self, branch_name: str) -> Dict[str, Any]:
+        """Stop containers for a worktree asynchronously."""
+        try:
+            from ..core.git_manager import GitManager
+            from ..utils.path_utils import get_compose_override_path, get_env_compose_file_path
+            from ..config.settings import get_project_name, sanitize_project_name
+            
+            # Find worktree path
+            git_manager = GitManager(validate=False)
+            worktree_path = git_manager.find_worktree_path(branch_name)
+            
+            if not worktree_path:
+                return {"success": False, "error": f"Worktree for branch '{branch_name}' not found"}
+            
+            # Get compose files
+            compose_override = get_compose_override_path(worktree_path)
+            env_file = get_env_compose_file_path(worktree_path)
+            
+            # Get project name
+            project_name = sanitize_project_name(get_project_name())
+            compose_project_name = f"{project_name}-{branch_name}"
+            
+            # Stop services
+            success = self.stop_services(
+                compose_override,
+                env_file=env_file,
+                project_name=compose_project_name,
+                working_dir=worktree_path
+            )
+            
+            return {
+                "success": success,
+                "message": f"Stopped containers for worktree '{branch_name}'" if success else "Failed to stop containers"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_worktree_containers(self, branch_name: str) -> List[Dict[str, Any]]:
+        """Get container status for a worktree asynchronously."""
+        try:
+            from ..config.settings import get_project_name, sanitize_project_name
+            
+            project_name = sanitize_project_name(get_project_name())
+            compose_project_name = f"{project_name}-{branch_name}"
+            
+            # Get containers for this project
+            result = subprocess.run([
+                "docker", "ps", "-a", 
+                "--filter", f"label=com.docker.compose.project={compose_project_name}",
+                "--format", "{{.Names}}|{{.Status}}|{{.Ports}}|{{.Image}}"
+            ], capture_output=True, text=True, check=False)
+            
+            # If Docker is not running, return empty list
+            if result.returncode != 0:
+                return []
+            
+            containers = []
+            for line in result.stdout.strip().split('\n'):
+                if line:
+                    parts = line.split('|')
+                    if len(parts) >= 4:
+                        containers.append({
+                            "name": parts[0],
+                            "status": parts[1],
+                            "state": "running" if "Up" in parts[1] else "stopped",
+                            "ports": parts[2],
+                            "image": parts[3]
+                        })
+            
+            return containers
+        except Exception as e:
+            log_warning(f"Failed to get containers: {e}")
+            return []
+
+    async def get_worktree_volumes(self, branch_name: str) -> List[Dict[str, Any]]:
+        """Get volumes for a worktree asynchronously."""
+        try:
+            from ..config.settings import get_volume_names
+            from ..utils.validation import validate_volume_exists
+            
+            volume_names = get_volume_names(branch_name)
+            volumes = []
+            
+            for volume_type, volume_name in volume_names.items():
+                if validate_volume_exists(volume_name):
+                    volumes.append({
+                        "name": volume_name,
+                        "type": volume_type,
+                        "branch": branch_name,
+                        "exists": True
+                    })
+            
+            return volumes
+        except Exception as e:
+            log_warning(f"Failed to get volumes: {e}")
+            return []
+
+    async def clean_worktree_volumes(self, branch_name: str) -> Dict[str, Any]:
+        """Clean up volumes for a worktree asynchronously."""
+        try:
+            success = self.remove_volumes(branch_name)
+            return {
+                "success": success,
+                "message": f"Cleaned volumes for worktree '{branch_name}'" if success else "Failed to clean volumes"
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

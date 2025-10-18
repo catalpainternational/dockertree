@@ -24,10 +24,28 @@ from ..utils.validation import (
 class GitManager:
     """Manages Git operations for dockertree CLI."""
     
-    def __init__(self):
-        """Initialize Git manager."""
-        self.project_root = get_project_root()
-        self._validate_git_repo()
+    def __init__(self, project_root: Optional[Path] = None, validate: bool = True):
+        """Initialize Git manager.
+        
+        Args:
+            project_root: Project root directory. If None, uses get_project_root().
+            validate: If True, raise exception if not in git repo. If False, just log warning.
+        """
+        # Use the provided project_root directly, don't fall back to get_project_root()
+        # This ensures MCP server uses the correct working directory
+        if project_root is None:
+            self.project_root = get_project_root()
+        else:
+            self.project_root = Path(project_root).resolve()
+        if validate:
+            self._validate_git_repo()
+        else:
+            # Just check without raising
+            try:
+                subprocess.run(["git", "rev-parse", "--git-dir"], 
+                              capture_output=True, check=True, cwd=self.project_root)
+            except subprocess.CalledProcessError:
+                log_warning("Not in a git repository. Some operations may fail.")
     
     def _validate_git_repo(self) -> None:
         """Validate we're in a git repository."""
@@ -39,11 +57,11 @@ class GitManager:
     
     def get_current_branch(self) -> Optional[str]:
         """Get the current git branch name."""
-        return validate_current_branch()
+        return validate_current_branch(self.project_root)
     
     def create_branch(self, branch_name: str) -> bool:
         """Create a new git branch."""
-        if validate_branch_exists(branch_name):
+        if validate_branch_exists(branch_name, self.project_root):
             log_info(f"Branch {branch_name} already exists")
             return True
         
@@ -64,7 +82,7 @@ class GitManager:
             worktree_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Create branch if it doesn't exist
-            if not validate_branch_exists(branch_name):
+            if not validate_branch_exists(branch_name, self.project_root):
                 subprocess.run([
                     "git", "branch", branch_name
                 ], capture_output=True, check=True, cwd=self.project_root)
@@ -196,7 +214,7 @@ class GitManager:
     def delete_branch_safely(self, branch_name: str, force: bool = False) -> bool:
         """Safely delete a git branch."""
         # Check if branch exists
-        if not validate_branch_exists(branch_name):
+        if not validate_branch_exists(branch_name, self.project_root):
             log_info(f"Branch {branch_name} does not exist, skipping branch deletion")
             return True
         
@@ -215,7 +233,7 @@ class GitManager:
         
         # Check if branch is merged (only for non-force deletions)
         if not force:
-            is_merged = validate_branch_merged(branch_name)
+            is_merged = validate_branch_merged(branch_name, self.project_root)
             if not is_merged:
                 log_warning(f"Branch {branch_name} has unmerged changes. Use --force to delete it anyway")
                 return True
@@ -245,7 +263,11 @@ class GitManager:
     
     def get_worktree_paths(self, branch_name: str) -> Tuple[Path, Path]:
         """Get worktree paths for a branch (new and legacy)."""
-        return get_worktree_paths(branch_name)
+        from ..config.settings import get_worktree_dir
+        worktree_dir = get_worktree_dir()
+        new_path = self.project_root / worktree_dir / branch_name
+        legacy_path = self.project_root.parent / branch_name
+        return new_path, legacy_path
     
     def find_worktree_path(self, branch_name: str) -> Optional[Path]:
         """Find the actual worktree path for a branch."""
@@ -269,11 +291,11 @@ class GitManager:
     def validate_worktree_creation(self, branch_name: str) -> Tuple[bool, str]:
         """Validate that a worktree can be created for the given branch."""
         # Check if branch exists
-        if not validate_branch_exists(branch_name):
+        if not validate_branch_exists(branch_name, self.project_root):
             return False, f"Branch {branch_name} does not exist"
         
         # Check if we're already on the target branch
-        current_branch = validate_current_branch()
+        current_branch = validate_current_branch(self.project_root)
         if current_branch == branch_name:
             return False, f"Cannot create worktree for current branch. Please switch to a different branch first."
         
@@ -282,14 +304,14 @@ class GitManager:
             return False, f"Cannot create worktree for protected branch: {branch_name}"
         
         # Check if worktree already exists
-        if validate_worktree_exists(branch_name):
+        if validate_worktree_exists(branch_name, self.project_root):
             return False, f"Worktree for branch {branch_name} already exists"
         
         return True, ""
     
     def validate_worktree_exists(self, branch_name: str) -> bool:
         """Check if a worktree exists for the given branch."""
-        return validate_worktree_exists(branch_name)
+        return validate_worktree_exists(branch_name, self.project_root)
     
     def get_branch_info(self, branch_name: str) -> dict:
         """Get information about a branch."""
@@ -305,8 +327,8 @@ class GitManager:
                 "commit": commit,
                 "message": message,
                 "is_protected": validate_branch_protection(branch_name),
-                "is_merged": validate_branch_merged(branch_name),
-                "worktree_exists": validate_worktree_exists(branch_name),
+                "is_merged": validate_branch_merged(branch_name, self.project_root),
+                "worktree_exists": validate_worktree_exists(branch_name, self.project_root),
                 "worktree_path": self.find_worktree_path(branch_name)
             }
             

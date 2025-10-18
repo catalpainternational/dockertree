@@ -14,10 +14,16 @@ A comprehensive Python CLI tool that creates isolated development environments u
 # Install via pip
 pip install dockertree
 
+# Install with MCP server support
+pip install dockertree[mcp]
+
 # Or install from source
-git clone https://github.com/yourusername/dockertree.git
+git clone https://github.com/catalpainternational/dockertree.git
 cd dockertree
 pip install -e .
+
+# Or install from source with MCP support
+pip install -e .[mcp]
 ```
 
 ### Basic Usage
@@ -395,6 +401,78 @@ dockertree completion uninstall
 dockertree completion install
 ```
 
+## 🤖 MCP Server Integration
+
+Dockertree includes a Model Context Protocol (MCP) server that enables AI assistants like Claude and Cursor to manage isolated development environments programmatically.
+
+### Installation with MCP Support
+
+```bash
+# Install with MCP dependencies
+pip install dockertree[mcp]
+
+# Or install from source with MCP support
+git clone https://github.com/catalpainternational/dockertree.git
+cd dockertree
+pip install -e .[mcp]
+```
+
+### Basic Usage
+
+```bash
+# Run the MCP server
+dockertree-mcp
+
+# Or run directly
+python -m dockertree_mcp.server
+```
+
+### AI Assistant Integration
+
+The MCP server enables AI assistants to:
+
+- **Create and manage worktrees**: `create_worktree`, `start_worktree`, `stop_worktree`
+- **Manage volumes**: `backup_volumes`, `restore_volumes`, `clean_volumes`
+- **Control proxy**: `start_proxy`, `stop_proxy`, `get_proxy_status`
+- **Get information**: `list_worktrees`, `get_worktree_info`, `list_volumes`
+
+### Example with Claude Desktop
+
+Add to your Claude Desktop configuration:
+
+```json
+{
+  "mcpServers": {
+    "dockertree": {
+      "command": "dockertree-mcp",
+      "args": [],
+      "env": {
+        "DOCKERTREE_WORKING_DIR": "/path/to/your/project"
+      }
+    }
+  }
+}
+```
+
+### Working Directory Configuration
+
+**Critical**: Always provide the `working_directory` parameter when using MCP tools. This tells dockertree which project to operate on.
+
+```python
+# ✅ CORRECT: Always specify working_directory
+create_worktree({
+    "branch_name": "feature-auth",
+    "working_directory": "/Users/ders/kenali/blank"  # Target project directory
+})
+
+# ❌ INCORRECT: Missing working_directory
+create_worktree({"branch_name": "feature-auth"})  # Will use MCP server's directory
+```
+
+### Documentation
+
+For detailed MCP server documentation, see [mcp/README.md](mcp/README.md).
+
 ## 🚀 Advanced Usage
 
 ### Custom Configuration
@@ -504,6 +582,8 @@ The dockertree CLI follows a modular architecture designed for easy extension:
 - ✅ Type safety throughout
 - ✅ Project-agnostic setup
 - ✅ User guide in each .dockertree directory
+- ✅ MCP server for AI assistant integration
+- ✅ JSON output mode for programmatic access
 
 ---
 

@@ -46,12 +46,53 @@ Dockertree is designed to work with any Docker Compose project through:
 
 ### Data Flow Architecture
 
+#### CLI Interface Flow
 ```
 User Command → CLI Interface → Command Manager → Core Infrastructure → External Systems
      ↓              ↓              ↓                    ↓                    ↓
   Input         Validation      Business Logic      Docker/Git Ops      Containers/Volumes
      ↓              ↓              ↓                    ↓                    ↓
   Output ←    Error Handling ←   Result Processing ←   Status Check ←    System Response
+```
+
+#### MCP Server Flow
+```
+AI Assistant → MCP Server → CLI Wrapper → WorktreeOrchestrator → Core Infrastructure → External Systems
+     ↓              ↓              ↓              ↓                    ↓                    ↓
+  Tool Call    JSON Parsing    CLI Command    Business Logic      Docker/Git Ops      Containers/Volumes
+     ↓              ↓              ↓              ↓                    ↓                    ↓
+  Response ←   JSON Output ←   CLI Output ←   Result Processing ←   Status Check ←    System Response
+```
+
+#### Unified Architecture
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   CLI Interface │    │   MCP Server    │    │  AI Assistants  │
+│                 │    │                 │    │                 │
+│  • Click CLI    │    │  • MCP Tools    │    │  • Claude       │
+│  • Commands     │    │  • Resources    │    │  • Cursor       │
+│  • Validation   │    │  • JSON Output  │    │  • Automation   │
+└─────────┬───────┘    └─────────┬───────┘    └─────────┬───────┘
+          │                      │                      │
+          └──────────────────────┼──────────────────────┘
+                                 │
+                    ┌─────────────▼─────────────┐
+                    │   WorktreeOrchestrator    │
+                    │                           │
+                    │  • create_worktree()     │
+                    │  • start_worktree()      │
+                    │  • stop_worktree()       │
+                    │  • remove_worktree()     │
+                    │  • list_worktrees()      │
+                    └─────────────┬─────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │    Core Infrastructure    │
+                    │                           │
+                    │  • DockerManager         │
+                    │  • GitManager            │
+                    │  • EnvironmentManager    │
+                    └───────────────────────────┘
 ```
 
 ## 🔧 Setup and Configuration System
@@ -123,6 +164,10 @@ The system uses a fallback hierarchy:
 - `run_compose_command()` - Execute Docker Compose commands
 - `backup_volumes()` / `restore_volumes()` - Volume management
 
+**Key Features**:
+- **Multi-project Support**: Accepts `project_root` parameter for operation on different projects
+- **MCP Compatibility**: Supports structured output for programmatic access
+
 **Dependencies**: Docker daemon, Docker Compose
 **External Interactions**: Docker API, volume operations, network management
 
@@ -136,6 +181,10 @@ The system uses a fallback hierarchy:
 - `delete_branch_safely()` - Safe branch deletion with protection
 - `validate_worktree_exists()` - Worktree validation
 
+**Key Features**:
+- **Multi-project Support**: Accepts `project_root` parameter for operation on different projects
+- **MCP Compatibility**: Supports structured output for programmatic access
+
 **Dependencies**: Git repository, worktree support
 **External Interactions**: Git commands, file system operations
 
@@ -148,8 +197,33 @@ The system uses a fallback hierarchy:
 - `get_environment_variables()` - Environment variable management
 - `get_domain_name()` - Domain name generation
 
+**Key Features**:
+- **Multi-project Support**: Accepts `project_root` parameter for operation on different projects
+- **MCP Compatibility**: Supports structured output for programmatic access
+
 **Dependencies**: Path utilities, configuration settings
 **External Interactions**: File system, environment variables
+
+#### WorktreeOrchestrator (`core/worktree_orchestrator.py`)
+**Responsibility**: Core worktree orchestration used by both CLI and MCP interfaces
+
+**Key Methods**:
+- `create_worktree()` - Create new worktree with complete orchestration
+- `start_worktree()` - Start worktree environment with orchestration
+- `stop_worktree()` - Stop worktree environment
+- `remove_worktree()` - Remove worktree completely
+- `delete_worktree()` - Delete worktree and branch completely
+- `list_worktrees()` - List all worktrees with status
+- `get_worktree_info()` - Get detailed worktree information
+
+**Key Features**:
+- **Multi-project Support**: Accepts `project_root` parameter for operation on different projects
+- **MCP Mode**: Supports `mcp_mode` parameter to suppress stdout logging for programmatic use
+- **Fractal Design**: Implements `_copy_dockertree_to_worktree()` for recursive configuration copying
+- **Unified Interface**: Provides business logic for both CLI and MCP server interfaces
+
+**Dependencies**: DockerManager, GitManager, EnvironmentManager
+**External Interactions**: Docker operations, Git operations, file system operations
 
 ### Command Layer
 
@@ -251,6 +325,31 @@ def start():
 - `get_worktree_branch_name()` - Branch name extraction
 - `ensure_main_repo()` - Repository validation
 
+#### JSON Output (`utils/json_output.py`)
+**Responsibility**: Standardized JSON output formatting for CLI commands and MCP integration
+
+**Key Classes**:
+- `JSONOutput` - Main formatter class for structured output
+
+**Key Methods**:
+- `success()` - Format successful operation results
+- `error()` - Format error results with error codes and details
+- `worktree_info()` - Format worktree information
+- `volume_info()` - Format volume information
+- `container_info()` - Format container information
+- `print_json()` - Print data as JSON to stdout
+- `print_success()`, `print_error()`, `print_info()`, `print_warning()` - Conditional JSON/human output
+
+**Key Features**:
+- **CLI Integration**: `--json` flag support for all CLI commands
+- **MCP Compatibility**: Structured output for programmatic access
+- **Error Handling**: Standardized error codes and details
+- **Timestamping**: Automatic timestamp inclusion
+- **Type Safety**: Structured data types for all output formats
+
+**Dependencies**: Standard library (json, sys, datetime)
+**External Interactions**: stdout, CLI framework integration
+
 ## ⚙️ Configuration Architecture
 
 ### Settings Hierarchy
@@ -297,6 +396,146 @@ Global Network (dockertree_caddy_proxy)
     ├── {branch}_web (Web application)
     └── dockertree_caddy_proxy (Routing)
 ```
+
+## 🧩 Fractal Design Pattern
+
+### Recursive Configuration Architecture
+
+Dockertree implements a fractal design pattern where each worktree receives its own complete `.dockertree` configuration directory. This creates a recursive, self-contained structure that mirrors the main project's configuration.
+
+#### Fractal Structure
+
+```
+Project Root/
+├── .dockertree/                    # Main configuration
+│   ├── config.yml
+│   ├── docker-compose.worktree.yml
+│   ├── Caddyfile.dockertree
+│   └── worktrees/                  # Worktree directories
+│       └── {branch_name}/
+│           └── .dockertree/        # Worktree configuration (fractal copy)
+│               ├── config.yml     # Identical to main
+│               ├── docker-compose.worktree.yml
+│               ├── Caddyfile.dockertree
+│               └── README.md       # User guide
+```
+
+#### Implementation Details
+
+**Method**: `WorktreeOrchestrator._copy_dockertree_to_worktree()`
+
+1. **Source Detection**: Finds the true project root containing `.dockertree/config.yml`
+2. **Selective Copying**: Copies entire `.dockertree` directory excluding `worktrees/` subdirectory
+3. **Recursive Structure**: Each worktree becomes a self-contained dockertree project
+4. **Configuration Preservation**: Maintains identical configuration across all levels
+
+#### Benefits
+
+- **Isolation**: Each worktree has complete configuration independence
+- **Consistency**: Identical configuration structure at all levels
+- **Self-Documentation**: Each worktree includes its own README.md
+- **Scalability**: Supports nested or complex project structures
+- **Maintenance**: Configuration changes propagate through fractal structure
+
+#### Use Cases
+
+- **Multi-tenant Development**: Each worktree can have project-specific configurations
+- **Environment Variations**: Different worktrees can have different settings
+- **Documentation**: Each worktree includes its own user guide
+- **Debugging**: Isolated configuration for troubleshooting
+
+## 🔌 MCP Server Architecture
+
+### Model Context Protocol Integration
+
+The dockertree MCP server provides programmatic access to dockertree functionality through the Model Context Protocol, enabling AI assistants to manage isolated development environments.
+
+#### MCP Server Structure
+
+```
+dockertree_mcp/
+├── server.py              # Main MCP server implementation
+├── config.py              # MCP configuration management
+├── tools/                 # MCP tool implementations
+│   ├── worktree_tools.py  # Worktree management tools
+│   ├── volume_tools.py    # Volume management tools
+│   └── caddy_tools.py     # Caddy proxy tools
+├── resources/             # MCP resource implementations
+│   ├── worktree_resources.py
+│   └── documentation.py
+└── utils/                 # MCP utilities
+    ├── cli_wrapper.py     # CLI command wrapper
+    └── response_enrichment.py
+```
+
+#### MCP Tools
+
+**Worktree Management Tools**:
+- `create_worktree` - Create isolated development environment
+- `start_worktree` - Start worktree containers
+- `stop_worktree` - Stop worktree containers
+- `remove_worktree` - Remove worktree (keep branch)
+- `delete_worktree` - Delete worktree and branch
+- `list_worktrees` - List active worktrees
+- `get_worktree_info` - Get detailed worktree information
+
+**Volume Management Tools**:
+- `list_volumes` - List worktree volumes
+- `get_volume_sizes` - Get volume size information
+- `backup_volumes` - Backup worktree volumes
+- `restore_volumes` - Restore from backup
+- `clean_volumes` - Clean up volumes
+
+**Caddy Proxy Tools**:
+- `start_proxy` - Start global Caddy proxy
+- `stop_proxy` - Stop global Caddy proxy
+- `get_proxy_status` - Get proxy status
+
+#### MCP Resources
+
+**Static Documentation Resources**:
+- `dockertree://concept` - Dockertree concept explanation
+- `dockertree://architecture` - Technical architecture
+- `dockertree://workflows` - Usage patterns
+- `dockertree://terminology` - Glossary of terms
+- `dockertree://url-patterns` - URL construction patterns
+- `dockertree://best-practices` - Best practices guide
+
+**Dynamic Project Resources**:
+- `dockertree://project` - Current project context
+- `dockertree://worktrees` - Active worktrees with status
+- `dockertree://volumes` - Worktree volumes
+- `dockertree://proxy` - Caddy proxy status
+- `dockertree://state` - Complete system state
+
+#### Working Directory Configuration
+
+**Critical Design**: The MCP server can run from any location but requires a `working_directory` parameter to specify which project to operate on.
+
+**Key Concepts**:
+- **MCP Server Location**: Where the server is installed (e.g., `/Users/ders/projects/dockertree`)
+- **Target Project Directory**: The project to manage (e.g., `/Users/ders/kenali/blank`)
+- **Working Directory Parameter**: Tells the server which project to operate on
+
+**Implementation**:
+- All MCP tools require `working_directory` parameter
+- Server validates project directory contains `.dockertree/config.yml`
+- Supports operation on multiple projects simultaneously
+- Environment variable fallback: `DOCKERTREE_WORKING_DIR`
+
+#### CLI Integration
+
+**CLI Wrapper Pattern**:
+- MCP tools invoke dockertree CLI commands with `--json` flag
+- Structured output enables programmatic access
+- Error handling and validation through CLI layer
+- Consistent behavior between CLI and MCP interfaces
+
+**Benefits**:
+- **AI Assistant Integration**: Enables Claude, Cursor, and other AI tools
+- **Programmatic Access**: Structured API for automation
+- **Multi-project Support**: Manage multiple projects from single MCP server
+- **Consistent Interface**: Same functionality as CLI with structured output
 
 ## 🔌 Extension Architecture
 

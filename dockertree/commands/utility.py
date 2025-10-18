@@ -26,6 +26,21 @@ class UtilityManager:
         for path, commit, branch in worktrees:
             print_plain(f"{branch}")
     
+    def list_worktrees_json(self) -> list:
+        """List active worktrees as JSON."""
+        worktrees = self.git_manager.list_worktrees()
+        
+        result = []
+        for path, commit, branch in worktrees:
+            result.append({
+                "branch": branch,
+                "path": str(path),
+                "commit": commit,
+                "status": "active"
+            })
+        
+        return result
+    
     def prune_worktrees(self) -> None:
         """Prune worktrees."""
         log_info("Pruning worktrees...")
@@ -35,6 +50,10 @@ class UtilityManager:
             log_info("No prunable worktrees found")
         else:
             log_success(f"Successfully pruned {pruned_count} worktree(s)")
+    
+    def prune_worktrees_json(self) -> int:
+        """Prune worktrees and return count."""
+        return self.git_manager.prune_worktrees()
     
     def show_version_info(self) -> None:
         """Show version information."""
