@@ -29,9 +29,9 @@ class SetupManager:
         """Initialize setup manager.
         
         Args:
-            project_root: Project root directory. If None, uses get_project_root().
+            project_root: Project root directory. If None, uses current working directory.
         """
-        self.project_root = project_root or get_project_root()
+        self.project_root = project_root or Path.cwd()
         self.dockertree_dir = self.project_root / DOCKERTREE_DIR
     
     def setup_project(self, project_name: Optional[str] = None) -> bool:
@@ -39,7 +39,7 @@ class SetupManager:
         log_info("Setting up dockertree for this project...")
         
         # 0. Check prerequisites first
-        check_prerequisites()
+        check_prerequisites(project_root=self.project_root)
         
         # 0.5. Validate PROJECT_ROOT environment variable
         if not self._validate_project_root():

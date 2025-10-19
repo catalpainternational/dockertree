@@ -660,8 +660,8 @@ def volumes_clean(branch_name: str, json: bool):
 def setup(project_name: Optional[str]):
     """Initialize dockertree for this project."""
     try:
-        check_prerequisites()
         setup_manager = SetupManager()
+        check_prerequisites(project_root=setup_manager.project_root)
         success = setup_manager.setup_project(project_name)
         if not success:
             error_exit("Failed to setup dockertree for this project")

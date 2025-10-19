@@ -29,6 +29,10 @@ class WorktreeManager:
         """Initialize worktree manager."""
         self.project_root = get_project_root()
         self.orchestrator = WorktreeOrchestrator(self.project_root)
+        # Expose managers for CLI convenience
+        self.git_manager = self.orchestrator.git_manager
+        self.docker_manager = self.orchestrator.docker_manager
+        self.env_manager = self.orchestrator.env_manager
 
     
     def create_worktree(self, branch_name: str) -> bool:
