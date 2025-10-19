@@ -263,7 +263,10 @@ def create(branch_name: str, json: bool):
         check_setup_or_prompt()
         check_prerequisites()
         worktree_manager = WorktreeManager()
-        success = worktree_manager.create_worktree(branch_name)
+        
+        # In JSON mode, skip interactive prompts
+        success, result_data = worktree_manager.create_worktree(branch_name, interactive=not json)
+        
         if not success:
             if json:
                 JSONOutput.print_error(f"Failed to create worktree for {branch_name}")
@@ -272,9 +275,12 @@ def create(branch_name: str, json: bool):
         else:
             if json:
                 worktree_path = worktree_manager.git_manager.find_worktree_path(branch_name)
-                JSONOutput.print_success(f"Worktree created for {branch_name}", {
+                status = result_data.get('data', {}).get('status', 'created')
+                
+                JSONOutput.print_success(f"Worktree ready for {branch_name}", {
                     "branch_name": branch_name,
-                    "worktree_path": str(worktree_path) if worktree_path else None
+                    "worktree_path": str(worktree_path) if worktree_path else None,
+                    "status": status
                 })
     except Exception as e:
         if json:

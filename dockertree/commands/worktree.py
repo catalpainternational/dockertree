@@ -6,7 +6,7 @@ This module provides commands for creating, starting, stopping, and removing wor
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 from ..config.settings import get_project_root, get_script_dir, COMPOSE_WORKTREE
 from ..core.worktree_orchestrator import WorktreeOrchestrator
@@ -19,7 +19,7 @@ from ..utils.path_utils import (
 from ..utils.validation import validate_branch_exists, validate_worktree_name_not_reserved
 from ..utils.validation import validate_worktree_directory
 from ..utils.pattern_matcher import has_wildcard, get_matching_branches
-from ..utils.confirmation import confirm_batch_operation
+from ..utils.confirmation import confirm_batch_operation, confirm_use_existing_worktree
 
 
 class WorktreeManager:
@@ -35,7 +35,7 @@ class WorktreeManager:
         self.env_manager = self.orchestrator.env_manager
 
     
-    def create_worktree(self, branch_name: str) -> bool:
+    def create_worktree(self, branch_name: str, interactive: bool = True) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """Create a new worktree - CLI interface."""
         log_info(f"Creating worktree for branch: {branch_name}")
         
@@ -47,7 +47,19 @@ class WorktreeManager:
             
             # CLI-specific: Pretty logging and output formatting
             if data.get('status') == 'already_exists':
-                log_success(f"Worktree for {branch_name} is ready at: {worktree_path}")
+                if interactive:
+                    # Ask user if they want to use the existing worktree
+                    if confirm_use_existing_worktree(branch_name):
+                        log_success(f"Worktree for {branch_name} is ready at: {worktree_path}")
+                        return True, result
+                    else:
+                        log_info("Please use a different name for your worktree.")
+                        log_info(f"Example: dockertree create {branch_name}-v2")
+                        return False, result
+                else:
+                    # Non-interactive mode (e.g., JSON mode)
+                    log_success(f"Worktree for {branch_name} is ready at: {worktree_path}")
+                    return True, result
             else:
                 # Calculate relative path for user-friendly display
                 try:
@@ -61,10 +73,10 @@ class WorktreeManager:
                     log_success(f"Worktree created for {branch_name}")
                     log_info(f"📁 Location: {worktree_path}")
             
-            return True
+            return True, result
         else:
             log_error(result['error'])
-            return False
+            return False, result
     
     def start_worktree(self, branch_name: str) -> bool:
         """Start worktree environment - CLI interface."""

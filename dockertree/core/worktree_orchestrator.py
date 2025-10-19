@@ -86,6 +86,44 @@ class WorktreeOrchestrator:
         # Return the provided project root as last resort
         return self.project_root
 
+    def _handle_worktree_creation_error(self, branch_name: str, error_type: str) -> Dict[str, Any]:
+        """Handle worktree creation errors with appropriate error messages.
+        
+        Args:
+            branch_name: Name of the branch that failed
+            error_type: Type of error from git_manager.create_worktree()
+            
+        Returns:
+            Error response dictionary
+        """
+        if error_type == "already_exists":
+            # This shouldn't happen due to our earlier checks, but handle gracefully
+            worktree_path = self.git_manager.find_worktree_path(branch_name)
+            if worktree_path:
+                return {
+                    "success": True,
+                    "data": {
+                        "branch": branch_name,
+                        "worktree_path": str(worktree_path),
+                        "status": "already_exists"
+                    }
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Worktree for branch '{branch_name}' already exists but path not found"
+                }
+        elif error_type == "permission_denied":
+            return {
+                "success": False,
+                "error": f"Permission denied creating worktree for '{branch_name}'. Check directory permissions."
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Failed to create worktree for '{branch_name}': {error_type or 'unknown error'}"
+            }
+
     def _copy_dockertree_to_worktree(self, worktree_path: Path) -> bool:
         """Copy .dockertree directory from project root to worktree.
         
@@ -166,10 +204,19 @@ class WorktreeOrchestrator:
                     "error": f"Branch name '{branch_name}' is reserved and cannot be used as a worktree name"
                 }
             
-            # Check if worktree already exists
-            if self.git_manager.validate_worktree_exists(branch_name):
-                worktree_path = self.git_manager.find_worktree_path(branch_name)
-                if worktree_path:
+            # Check if worktree already exists (enhanced detection)
+            worktree_exists = self.git_manager.validate_worktree_exists(branch_name)
+            worktree_path = self.git_manager.find_worktree_path(branch_name)
+            
+            # Check for edge cases: branch exists but worktree doesn't, or worktree directory exists but not tracked
+            branch_exists = validate_branch_exists(branch_name, self.project_root)
+            worktree_dir_exists = False
+            if worktree_path:
+                worktree_dir_exists = worktree_path.exists()
+            
+            # If worktree exists in git or directory exists, treat as existing
+            if worktree_exists or (worktree_path and worktree_dir_exists):
+                if worktree_path and worktree_path.exists():
                     return {
                         "success": True,
                         "data": {
@@ -203,11 +250,9 @@ class WorktreeOrchestrator:
             new_path, legacy_path = self.git_manager.get_worktree_paths(branch_name)
             
             # Create worktree
-            if not self.git_manager.create_worktree(branch_name, new_path):
-                return {
-                    "success": False,
-                    "error": "Failed to create worktree"
-                }
+            success, error_type = self.git_manager.create_worktree(branch_name, new_path)
+            if not success:
+                return self._handle_worktree_creation_error(branch_name, error_type)
             
             # Copy .dockertree configuration to worktree for fractal design
             dockertree_copied = self._copy_dockertree_to_worktree(new_path)

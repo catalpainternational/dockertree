@@ -75,8 +75,33 @@ class GitManager:
             log_error(f"Failed to create branch {branch_name}: {e}")
             return False
     
-    def create_worktree(self, branch_name: str, worktree_path: Path) -> bool:
-        """Create a git worktree."""
+    def _parse_git_error(self, stderr: str) -> str:
+        """Parse git error stderr to determine error type.
+        
+        Args:
+            stderr: Error output from git command
+            
+        Returns:
+            Error type: "already_exists", "permission_denied", or "other"
+        """
+        stderr_lower = stderr.lower()
+        if "already exists" in stderr_lower or "already checked out" in stderr_lower:
+            return "already_exists"
+        elif "permission denied" in stderr_lower or "not a directory" in stderr_lower:
+            return "permission_denied"
+        else:
+            return "other"
+
+    def create_worktree(self, branch_name: str, worktree_path: Path) -> Tuple[bool, Optional[str]]:
+        """Create a git worktree.
+        
+        Returns:
+            Tuple of (success, error_type) where error_type is:
+            - None if successful
+            - "already_exists" if worktree already exists
+            - "permission_denied" if permission issues
+            - "other" for other errors
+        """
         try:
             # Ensure parent directory exists
             worktree_path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,15 +113,22 @@ class GitManager:
                 ], capture_output=True, check=True, cwd=self.project_root)
                 log_info(f"Created branch {branch_name}")
             
-            subprocess.run([
+            result = subprocess.run([
                 "git", "worktree", "add", str(worktree_path), branch_name
-            ], capture_output=True, check=True, cwd=self.project_root)
+            ], capture_output=True, text=True, cwd=self.project_root)
             
-            log_success(f"Git worktree created for {branch_name}")
-            return True
+            if result.returncode == 0:
+                log_success(f"Git worktree created for {branch_name}")
+                return True, None
+            else:
+                error_type = self._parse_git_error(result.stderr)
+                return False, error_type
+                    
         except subprocess.CalledProcessError as e:
-            log_error(f"Failed to create git worktree for {branch_name}: {e}")
-            return False
+            # Parse stderr from the exception
+            stderr = getattr(e, 'stderr', '').decode('utf-8', errors='ignore') if hasattr(e, 'stderr') else str(e)
+            error_type = self._parse_git_error(stderr)
+            return False, error_type
     
     def remove_worktree(self, worktree_path: Path, force: bool = False) -> bool:
         """Remove a git worktree with improved error handling for permission issues."""

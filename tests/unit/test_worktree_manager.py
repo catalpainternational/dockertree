@@ -51,6 +51,69 @@ class TestWorktreeManager:
         worktree_manager.git_manager.validate_worktree_exists.assert_called_once_with(branch_name)
         worktree_manager.git_manager.find_worktree_path.assert_called_once_with(branch_name)
     
+    @patch('dockertree.commands.worktree.confirm_use_existing_worktree')
+    def test_create_worktree_existing_worktree_user_confirms(self, mock_confirm, worktree_manager):
+        """Test create_worktree when worktree exists and user confirms to use it."""
+        branch_name = "test-branch"
+        worktree_path = Path("/test/worktrees/test-branch")
+        
+        # Mock orchestrator to return already_exists status
+        worktree_manager.orchestrator.create_worktree.return_value = {
+            'success': True,
+            'data': {
+                'branch': branch_name,
+                'worktree_path': str(worktree_path),
+                'status': 'already_exists'
+            }
+        }
+        mock_confirm.return_value = True  # User confirms
+        
+        result = worktree_manager.create_worktree(branch_name, interactive=True)
+        
+        assert result == True
+        mock_confirm.assert_called_once_with(branch_name)
+    
+    @patch('dockertree.commands.worktree.confirm_use_existing_worktree')
+    def test_create_worktree_existing_worktree_user_declines(self, mock_confirm, worktree_manager):
+        """Test create_worktree when worktree exists and user declines to use it."""
+        branch_name = "test-branch"
+        worktree_path = Path("/test/worktrees/test-branch")
+        
+        # Mock orchestrator to return already_exists status
+        worktree_manager.orchestrator.create_worktree.return_value = {
+            'success': True,
+            'data': {
+                'branch': branch_name,
+                'worktree_path': str(worktree_path),
+                'status': 'already_exists'
+            }
+        }
+        mock_confirm.return_value = False  # User declines
+        
+        result = worktree_manager.create_worktree(branch_name, interactive=True)
+        
+        assert result == False
+        mock_confirm.assert_called_once_with(branch_name)
+    
+    def test_create_worktree_existing_worktree_non_interactive(self, worktree_manager):
+        """Test create_worktree when worktree exists in non-interactive mode (JSON)."""
+        branch_name = "test-branch"
+        worktree_path = Path("/test/worktrees/test-branch")
+        
+        # Mock orchestrator to return already_exists status
+        worktree_manager.orchestrator.create_worktree.return_value = {
+            'success': True,
+            'data': {
+                'branch': branch_name,
+                'worktree_path': str(worktree_path),
+                'status': 'already_exists'
+            }
+        }
+        
+        result = worktree_manager.create_worktree(branch_name, interactive=False)
+        
+        assert result == True  # Should succeed without prompting in non-interactive mode
+    
     def test_create_worktree_existing_worktree_not_found(self, worktree_manager):
         """Test create_worktree when worktree exists but path not found."""
         branch_name = "test-branch"
