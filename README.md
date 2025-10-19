@@ -37,14 +37,14 @@ dockertree start-proxy
 
 # Create and start a worktree
 dockertree create feature-auth
-dockertree up feature-auth -d
+dockertree feature-auth up -d
 
 # Access your isolated environment (note: domain includes project name)
 # If your project is named "myapp", the URL will be:
 open http://myapp-feature-auth.localhost
 
 # Stop and clean up
-dockertree down feature-auth
+dockertree feature-auth down
 dockertree remove feature-auth
 ```
 
@@ -72,6 +72,8 @@ Dockertree CLI provides complete environment isolation through:
 
 ## 📋 Command Reference
 
+**Important**: Dockertree uses a **worktree-name-first pattern**. For `up` and `down` commands, the syntax is `dockertree <worktree_name> up` and `dockertree <worktree_name> down`, not `dockertree up <worktree_name>`.
+
 ### Setup Commands
 
 | Command | Description | Example |
@@ -87,25 +89,41 @@ Dockertree CLI provides complete environment isolation through:
 | `start` | Alias for start-proxy | `dockertree start` |
 | `stop` | Alias for stop-proxy | `dockertree stop` |
 
+### Command Aliases
+
+| Alias | Full Command | Description |
+|-------|--------------|-------------|
+| `-D` | `delete` | Delete worktree and branch completely |
+| `-r` | `remove` | Remove worktree but keep git branch |
+
 ### Worktree Lifecycle
 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `create <branch>` | Create worktree | `dockertree create feature-auth` |
-| `up <branch> -d` | Start worktree environment | `dockertree up feature-auth -d` |
-| `down <branch>` | Stop worktree environment | `dockertree down feature-auth` |
+| `<branch> up -d` | Start worktree environment | `dockertree feature-auth up -d` |
+| `<branch> down` | Stop worktree environment | `dockertree feature-auth down` |
 | `remove <branch>` | Remove worktree (keep branch) | `dockertree remove feature-auth` |
 | `delete <branch>` | Delete worktree and branch | `dockertree delete feature-auth` |
 
 ### Docker Compose Passthrough
 
-| Command | Description | Example |
-|---------|-------------|---------|
+Dockertree supports direct passthrough to Docker Compose commands using the pattern: `dockertree <worktree_name> <compose-command>`
+
+| Command Pattern | Description | Example |
+|-----------------|-------------|---------|
 | `<branch> exec <service> <cmd>` | Execute command in container | `dockertree feature-auth exec web python manage.py migrate` |
 | `<branch> logs <service>` | View container logs | `dockertree feature-auth logs web` |
 | `<branch> ps` | List containers | `dockertree feature-auth ps` |
 | `<branch> run <service> <cmd>` | Run one-off command | `dockertree feature-auth run --rm web python manage.py test` |
-| `<branch> <compose-cmd>` | Any docker compose command | `dockertree feature-auth build`, `dockertree feature-auth restart web` |
+| `<branch> build` | Build services | `dockertree feature-auth build` |
+| `<branch> restart <service>` | Restart service | `dockertree feature-auth restart web` |
+| `<branch> <compose-cmd>` | Any docker compose command | `dockertree feature-auth pull`, `dockertree feature-auth config` |
+
+**Supported Docker Compose Commands:**
+- `exec`, `logs`, `ps`, `run`, `build`, `pull`, `push`, `restart`
+- `start`, `stop`, `up`, `down`, `config`, `images`, `port`
+- `top`, `events`, `kill`, `pause`, `unpause`, `scale`
 
 ### Wildcard Operations
 
@@ -131,6 +149,8 @@ Dockertree CLI provides complete environment isolation through:
 |---------|-------------|---------|
 | `list` | List active worktrees | `dockertree list` |
 | `prune` | Remove prunable worktrees | `dockertree prune` |
+| `help` | Show help information | `dockertree help` |
+| `clean-legacy` | Clean legacy dockertree elements | `dockertree clean-legacy` |
 
 ### Volume Management
 | Command | Description | Example |
@@ -140,6 +160,13 @@ Dockertree CLI provides complete environment isolation through:
 | `volumes backup <branch>` | Backup worktree volumes | `dockertree volumes backup feature-auth` |
 | `volumes restore <branch> <file>` | Restore from backup | `dockertree volumes restore feature-auth backup.tar` |
 | `volumes clean <branch>` | Clean up volumes | `dockertree volumes clean feature-auth` |
+
+### Shell Completion Management
+| Command | Description | Example |
+|---------|-------------|---------|
+| `completion install [shell]` | Install shell completion | `dockertree completion install` |
+| `completion uninstall` | Remove shell completion | `dockertree completion uninstall` |
+| `completion status` | Show completion status | `dockertree completion status` |
 
 ## 🔧 Configuration
 
@@ -200,14 +227,14 @@ dockertree start-proxy
 
 # 3. Create feature branch environment
 dockertree create feature-new-auth
-dockertree up feature-new-auth -d
+dockertree feature-new-auth up -d
 
 # 4. Develop and test
 open http://feature-new-auth.localhost
 # Make changes, test database migrations, etc.
 
 # 5. Clean up when done
-dockertree down feature-new-auth
+dockertree feature-new-auth down
 dockertree remove feature-new-auth
 ```
 
@@ -219,9 +246,9 @@ dockertree create feature-payments
 dockertree create feature-notifications
 
 # Start all environments
-dockertree up feature-auth -d
-dockertree up feature-payments -d
-dockertree up feature-notifications -d
+dockertree feature-auth up -d
+dockertree feature-payments up -d
+dockertree feature-notifications up -d
 
 # Access each independently
 open http://feature-auth.localhost
@@ -233,7 +260,7 @@ open http://feature-notifications.localhost
 ```bash
 # Test database migrations in isolation
 dockertree create test-migration
-dockertree up test-migration -d
+dockertree test-migration up -d
 
 # Run migrations, test data changes
 # Each worktree has its own database
@@ -369,8 +396,8 @@ dockertree <TAB>
 # Shows: create delete down help list prune remove remove-all setup start-proxy stop-proxy start stop up volumes
 
 # Tab complete worktree names
-dockertree up <TAB>
-# Shows: feature-auth feature-payments feature-notifications
+dockertree feature-auth <TAB>
+# Shows: up down exec logs ps run build restart
 
 # Tab complete volume operations
 dockertree volumes backup <TAB>
@@ -486,7 +513,7 @@ dockertree create feature-auth
 vim worktrees/feature-auth/.dockertree/env.dockertree
 
 # Start with custom configuration
-dockertree up feature-auth -d
+dockertree feature-auth up -d
 ```
 
 ### Volume Management
