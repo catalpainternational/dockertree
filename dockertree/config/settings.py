@@ -141,31 +141,28 @@ def get_compose_command() -> str:
 
 # Path resolution
 def get_project_root() -> Path:
-    """Get the true project root directory by searching for .dockertree/config.yml."""
-    # Start from current working directory
+    """Get the project root directory, supporting fractal worktree execution."""
     current = Path.cwd()
     
-    # Search upward through parent directories to find the true project root
-    # This ensures we find the project root even when running from a worktree
-    for parent in [current] + list(current.parents):
+    # First: Check if we're IN a worktree with its own .dockertree/config.yml (fractal mode)
+    if (current / ".dockertree" / "config.yml").exists():
+        return current
+    
+    # Second: Search upward to find parent project root
+    for parent in current.parents:
         if (parent / ".dockertree" / "config.yml").exists():
-            # If we're in a worktree directory, continue searching upward
-            # to find the true project root (not the worktree's copy)
-            if "worktrees" in str(parent):
-                continue
             return parent
     
-    # Fallback: check for just .dockertree directory (legacy/new projects)
-    for parent in [current] + list(current.parents):
+    # Fallback: check for .dockertree directory without config.yml (legacy)
+    if (current / ".dockertree").exists() and (current / ".dockertree").is_dir():
+        return current
+        
+    for parent in current.parents:
         if (parent / ".dockertree").exists() and (parent / ".dockertree").is_dir():
-            # If we're in a worktree directory, continue searching upward
-            if "worktrees" in str(parent):
-                continue
             return parent
     
-    # Final fallback to current working directory if .dockertree/ is not found
-    # This allows dockertree to work in any git repository
-    return Path.cwd()
+    # Final fallback
+    return current
 
 def get_script_dir() -> Path:
     """Get the dockertree-cli script directory."""

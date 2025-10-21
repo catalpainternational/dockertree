@@ -189,10 +189,31 @@ def detect_execution_context() -> tuple[Optional[Path], Optional[str], bool]:
         - is_worktree_context: True if in worktree, False if in git root
     """
     current_path = Path.cwd()
-    project_root = get_project_root()
     
-    # Check if we're in a worktree directory by looking for worktree-specific files
-    # and checking if current path is under worktrees directory
+    # Primary detection: check if we have a local .dockertree/config.yml
+    # This indicates we're in a fractal worktree or project root
+    if (current_path / ".dockertree" / "config.yml").exists():
+        # Check if this is a worktree by looking at git worktree list
+        # or by checking if we're under a "worktrees" directory
+        try:
+            import subprocess
+            result = subprocess.run(["git", "worktree", "list"], 
+                                 capture_output=True, text=True, check=True, cwd=current_path)
+            # If we can run git worktree list from here, we're in a git repo
+            # Check if current path is listed as a worktree
+            if f"[{current_path.name}]" in result.stdout:
+                branch_name = get_worktree_branch_name(current_path)
+                return current_path, branch_name, True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+        
+        # Check if we're under a worktrees directory by path
+        if "worktrees" in str(current_path):
+            branch_name = get_worktree_branch_name(current_path)
+            return current_path, branch_name, True
+    
+    # Fallback: use the old method with project_root detection
+    project_root = get_project_root()
     worktree_dir = get_worktree_dir()
     worktrees_path = project_root / worktree_dir
     

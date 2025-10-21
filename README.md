@@ -300,6 +300,13 @@ Error: Docker is not running. Please start Docker and try again.
 ```
 **Solution**: Start Docker Desktop or Docker daemon
 
+**PostgreSQL Database Corruption**
+```bash
+Error: invalid primary checkpoint record
+Error: could not locate a valid checkpoint record
+```
+**Solution**: This has been fixed! Dockertree now uses safe database snapshots with `pg_dump` when the source database is running, preventing corruption. The system automatically detects if your source database is running and uses the appropriate backup method.
+
 **Worktree already exists**
 ```bash
 Error: Worktree for branch 'feature-auth' already exists
@@ -559,6 +566,7 @@ dockertree delete temp-* --force
 
 ## 📚 Additional Documentation
 
+- **[📖 Full Documentation Site](https://catalpainternational.github.io/dockertree)** - Complete documentation with search and navigation
 - **[Architecture Guide](documentation/ARCHITECTURE.md)** - Detailed system architecture and component relationships
 - **[Design Documents](design_documents/)** - Original design and implementation plans
 - **[Test Documentation](tests/)** - Comprehensive test suite and coverage

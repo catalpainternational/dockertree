@@ -34,10 +34,17 @@ class WorktreeOrchestrator:
     
     def __init__(self, project_root: Optional[Path] = None, mcp_mode: bool = False):
         """Initialize worktree orchestrator."""
-        # Use the provided project_root directly, don't fall back to get_project_root()
-        # This ensures MCP server uses the correct working directory
         if project_root is None:
-            self.project_root = get_project_root()
+            # Detect if we're in a worktree context for fractal operation
+            from ..utils.path_utils import detect_execution_context
+            worktree_path, branch_name, is_worktree = detect_execution_context()
+            
+            if is_worktree and worktree_path:
+                # Use worktree as project root for fractal operation
+                self.project_root = worktree_path
+            else:
+                # Use standard project root detection
+                self.project_root = get_project_root()
         else:
             self.project_root = Path(project_root).resolve()
         
@@ -64,26 +71,18 @@ class WorktreeOrchestrator:
         return self.project_root.name
     
     def _find_true_project_root(self) -> Optional[Path]:
-        """Find the true project root containing .dockertree/config.yml.
-        
-        This searches upward from the provided project root to find the root .dockertree
-        that contains config.yml, not just any .dockertree directory.
-        """
-        # Start with the provided project root
+        """Find the true project root, respecting fractal worktree configs."""
         current = self.project_root
         
-        # Check provided project root first
-        dockertree_dir = current / ".dockertree"
-        if dockertree_dir.exists() and (dockertree_dir / "config.yml").exists():
+        # If current project_root has config.yml, it's the root (fractal or main)
+        if (current / ".dockertree" / "config.yml").exists():
             return current
         
-        # Search upward through parent directories as fallback
+        # Search upward for parent config
         for parent in current.parents:
-            dockertree_dir = parent / ".dockertree"
-            if dockertree_dir.exists() and (dockertree_dir / "config.yml").exists():
+            if (parent / ".dockertree" / "config.yml").exists():
                 return parent
         
-        # Return the provided project root as last resort
         return self.project_root
 
     def _handle_worktree_creation_error(self, branch_name: str, error_type: str) -> Dict[str, Any]:

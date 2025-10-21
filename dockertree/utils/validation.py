@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from .logging import log_error, error_exit
 from ..config.settings import BRANCH_NAME_PATTERN, PROTECTED_BRANCHES
@@ -282,6 +282,57 @@ def ensure_environment_files_exist(worktree_path: Path, branch_name: str, projec
     else:
         log_warning("Failed to create environment files")
         return False
+
+
+def get_containers_using_volume(volume_name: str) -> List[str]:
+    """Find all containers using a specific volume."""
+    try:
+        result = subprocess.run([
+            "docker", "ps", "-a", "--filter", f"volume={volume_name}",
+            "--format", "{{.Names}}"
+        ], capture_output=True, text=True, check=True)
+        
+        containers = result.stdout.strip().split('\n')
+        return [c for c in containers if c.strip()]
+    except (subprocess.CalledProcessError, Exception):
+        return []
+
+
+def are_containers_running(container_names: List[str]) -> bool:
+    """Check if any of the specified containers are running."""
+    if not container_names:
+        return False
+    
+    try:
+        # Check each container
+        for container_name in container_names:
+            if validate_container_running(container_name):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def get_postgres_container_for_volume(volume_name: str, project_name: str) -> Optional[str]:
+    """Find the PostgreSQL container using a volume for a specific project."""
+    try:
+        # Look for containers with postgres in the name and using the volume
+        result = subprocess.run([
+            "docker", "ps", "-a", "--filter", f"volume={volume_name}",
+            "--format", "{{.Names}}|{{.Image}}"
+        ], capture_output=True, text=True, check=True)
+        
+        for line in result.stdout.strip().split('\n'):
+            if line:
+                parts = line.split('|')
+                if len(parts) >= 2:
+                    container_name, image = parts[0], parts[1]
+                    # Check if it's a postgres container and matches project
+                    if ('postgres' in image.lower() or 'postgres' in container_name.lower()) and project_name in container_name:
+                        return container_name
+        return None
+    except (subprocess.CalledProcessError, Exception):
+        return None
 
 
 def check_setup_or_prompt(project_root: Optional[Path] = None) -> None:

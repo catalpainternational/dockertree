@@ -18,6 +18,11 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
 ]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.4.0",
+    "pymdown-extensions>=10.0",
+]
 
 [project.scripts]
 dockertree = "dockertree.cli:main"
@@ -25,7 +30,7 @@ dockertree-mcp = "dockertree_mcp.server:cli_main"
 
 [project.urls]
 Homepage = "https://github.com/catalpainternational/dockertree"
-Documentation = "https://github.com/catalpainternational/dockertree/docs"
+Documentation = "https://catalpainternational.github.io/dockertree"
 Repository = "https://github.com/catalpainternational/dockertree"
 Issues = "https://github.com/catalpainternational/dockertree/issues"
 

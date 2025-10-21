@@ -257,9 +257,23 @@ services:
                 
                 for volume_name, volume_config in compose_data['volumes'].items():
                     if isinstance(volume_config, dict):
-                        # Keep external volumes as-is but with branch prefix
-                        if 'external' in volume_config:
+                        # Transform volume names to use COMPOSE_PROJECT_NAME prefix
+                        if 'name' in volume_config:
+                            # Replace existing name with templated version
+                            original_name = volume_config['name']
+                            # Extract the base name after the project prefix if present
                             volume_config['name'] = f"${{COMPOSE_PROJECT_NAME}}_{volume_name}"
+                        elif 'external' in volume_config:
+                            # External volumes also need project prefix
+                            volume_config['name'] = f"${{COMPOSE_PROJECT_NAME}}_{volume_name}"
+                        else:
+                            # No explicit name, add one with project prefix
+                            volume_config['name'] = f"${{COMPOSE_PROJECT_NAME}}_{volume_name}"
+                    elif volume_config is None:
+                        # Simple volume definition, add explicit name
+                        compose_data['volumes'][volume_name] = {
+                            'name': f"${{COMPOSE_PROJECT_NAME}}_{volume_name}"
+                        }
             
             # Add networks
             compose_data.setdefault('networks', {})
@@ -297,6 +311,22 @@ services:
                 if len(labels) != len(set(labels)):
                     duplicates = [l for l in labels if labels.count(l) > 1]
                     log_warning(f"Service '{service_name}' has duplicate labels: {duplicates}")
+        
+        # Check for hardcoded volume names that should be templated
+        if 'volumes' in compose_data:
+            hardcoded_volumes = []
+            for volume_name, volume_config in compose_data['volumes'].items():
+                if isinstance(volume_config, dict) and 'name' in volume_config:
+                    volume_name_value = volume_config['name']
+                    # Check if the volume name is hardcoded (doesn't contain ${COMPOSE_PROJECT_NAME})
+                    if not isinstance(volume_name_value, str) or '${COMPOSE_PROJECT_NAME}' not in volume_name_value:
+                        hardcoded_volumes.append(f"{volume_name}: {volume_name_value}")
+            
+            if hardcoded_volumes:
+                log_warning("Found hardcoded volume names that may cause conflicts between worktrees:")
+                for hardcoded in hardcoded_volumes:
+                    log_warning(f"  - {hardcoded}")
+                log_warning("These volumes should use ${COMPOSE_PROJECT_NAME} prefix for proper isolation.")
         
         return True
     

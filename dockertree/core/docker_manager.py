@@ -18,7 +18,10 @@ from ..config.settings import (
     get_project_root
 )
 from ..utils.logging import log_info, log_success, log_warning, log_error, show_progress
-from ..utils.validation import validate_docker_running, validate_network_exists, validate_volume_exists
+from ..utils.validation import (
+    validate_docker_running, validate_network_exists, validate_volume_exists,
+    get_containers_using_volume, are_containers_running, get_postgres_container_for_volume
+)
 
 
 class DockerManager:
@@ -72,8 +75,8 @@ class DockerManager:
             log_error(f"Failed to create network {network_name}: {e}")
             return False
     
-    def copy_volume(self, source_volume: str, target_volume: str) -> bool:
-        """Copy volume data from source to target."""
+    def copy_volume(self, source_volume: str, target_volume: str, source_project_name: str = None) -> bool:
+        """Copy volume data from source to target with safe PostgreSQL handling."""
         log_info(f"Copying volume {source_volume} to {target_volume}...")
         
         # Check if source volume exists
@@ -85,7 +88,11 @@ class DockerManager:
         if not self._create_volume(target_volume):
             return False
         
-        # Copy volume data
+        # Detect if this is a PostgreSQL volume and handle safely
+        if self._is_postgres_volume(source_volume) and source_project_name:
+            return self.copy_postgres_volume_safely(source_volume, target_volume, source_project_name)
+        
+        # For non-PostgreSQL volumes (redis, media), use the existing fast copy method
         try:
             subprocess.run([
                 "docker", "run", "--rm",
@@ -98,6 +105,101 @@ class DockerManager:
         except subprocess.CalledProcessError:
             log_warning("Volume copy had issues, but continuing with empty volume")
             return True
+    
+    def _is_postgres_volume(self, volume_name: str) -> bool:
+        """Check if a volume is a PostgreSQL data volume."""
+        return 'postgres' in volume_name.lower() and 'data' in volume_name.lower()
+    
+    def copy_postgres_volume_safely(self, source_volume: str, target_volume: str, source_project_name: str) -> bool:
+        """Safely copy PostgreSQL volume using pg_dump when database is running."""
+        log_info("Detecting source database status...")
+        
+        # Find the PostgreSQL container using this volume
+        postgres_container = get_postgres_container_for_volume(source_volume, source_project_name)
+        
+        if postgres_container and validate_container_running(postgres_container):
+            log_info("Source database is running, creating consistent snapshot using pg_dump...")
+            return self._copy_postgres_with_dump(source_volume, target_volume, postgres_container)
+        else:
+            log_info("Source database is stopped, using fast file copy...")
+            return self._copy_postgres_files(source_volume, target_volume)
+    
+    def _copy_postgres_with_dump(self, source_volume: str, target_volume: str, postgres_container: str) -> bool:
+        """Copy PostgreSQL data using pg_dump for consistency."""
+        import tempfile
+        import os
+        
+        try:
+            # Create temporary backup file
+            with tempfile.NamedTemporaryFile(mode='w+', suffix='.sql', delete=False) as backup_file:
+                backup_path = backup_file.name
+            
+            # Export database using pg_dumpall from the running container
+            log_info("Creating database backup...")
+            export_cmd = [
+                "docker", "exec", postgres_container,
+                "pg_dumpall", "-U", "postgres", "-c"
+            ]
+            
+            with open(backup_path, 'w') as f:
+                result = subprocess.run(export_cmd, stdout=f, stderr=subprocess.PIPE, text=True)
+                if result.returncode != 0:
+                    log_error(f"pg_dumpall failed: {result.stderr}")
+                    return False
+            
+            # Create target volume and restore data
+            log_info("Restoring database to new volume...")
+            restore_cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{target_volume}:/var/lib/postgresql/data",
+                "-v", f"{backup_path}:/backup.sql",
+                "postgres:latest",
+                "sh", "-c", """
+                    # Initialize database
+                    initdb -D /var/lib/postgresql/data
+                    # Start postgres in background
+                    postgres -D /var/lib/postgresql/data &
+                    PG_PID=$!
+                    # Wait for postgres to start
+                    sleep 3
+                    # Restore data
+                    psql -U postgres -f /backup.sql
+                    # Stop postgres
+                    kill $PG_PID
+                    wait $PG_PID
+                """
+            ]
+            
+            result = subprocess.run(restore_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                log_error(f"Database restore failed: {result.stderr}")
+                return False
+            
+            log_success("Database snapshot complete, safe to start worktree")
+            return True
+            
+        except Exception as e:
+            log_error(f"Failed to copy PostgreSQL volume safely: {e}")
+            return False
+        finally:
+            # Clean up backup file
+            if 'backup_path' in locals() and os.path.exists(backup_path):
+                os.unlink(backup_path)
+    
+    def _copy_postgres_files(self, source_volume: str, target_volume: str) -> bool:
+        """Copy PostgreSQL files directly (safe when database is stopped)."""
+        try:
+            subprocess.run([
+                "docker", "run", "--rm",
+                "-v", f"{source_volume}:/source:ro",
+                "-v", f"{target_volume}:/dest",
+                "alpine", "sh", "-c", "cp -r /source/* /dest/ 2>/dev/null || true"
+            ], check=True, capture_output=True)
+            log_success("Database files copied successfully")
+            return True
+        except subprocess.CalledProcessError as e:
+            log_error(f"Failed to copy PostgreSQL files: {e}")
+            return False
     
     def _create_volume(self, volume_name: str) -> bool:
         """Create a Docker volume."""
@@ -144,10 +246,14 @@ class DockerManager:
         else:
             log_info(f"Creating worktree-specific volumes for {branch_name}")
         
+        # Add database-specific logging
+        if 'postgres' in project_volumes:
+            log_info("PostgreSQL volumes will be copied safely to prevent database corruption")
+        
         success = True
         for volume_type, source_volume in project_volumes.items():
             target_volume = volume_names[volume_type]
-            if not self.copy_volume(source_volume, target_volume):
+            if not self.copy_volume(source_volume, target_volume, project_name):
                 success = False
         
         if success:
