@@ -159,7 +159,8 @@ The system uses a fallback hierarchy:
 
 **Key Methods**:
 - `create_network()` - Create external `dockertree_caddy_proxy` network
-- `copy_volume()` - Copy data between volumes
+- `copy_volume()` - Copy data between volumes with safe PostgreSQL handling
+- `copy_postgres_volume_safely()` - Safe PostgreSQL backup using pg_dump
 - `create_worktree_volumes()` - Create branch-specific volumes
 - `run_compose_command()` - Execute Docker Compose commands
 - `backup_volumes()` / `restore_volumes()` - Volume management
@@ -167,9 +168,11 @@ The system uses a fallback hierarchy:
 **Key Features**:
 - **Multi-project Support**: Accepts `project_root` parameter for operation on different projects
 - **MCP Compatibility**: Supports structured output for programmatic access
+- **Safe Database Copying**: Prevents PostgreSQL corruption by using pg_dump when source database is running
+- **Automatic Detection**: Detects if source containers are running and chooses appropriate backup method
 
-**Dependencies**: Docker daemon, Docker Compose
-**External Interactions**: Docker API, volume operations, network management
+**Dependencies**: Docker daemon, Docker Compose, PostgreSQL tools
+**External Interactions**: Docker API, volume operations, network management, PostgreSQL backup/restore
 
 #### GitManager (`core/git_manager.py`)
 **Responsibility**: Git worktree operations and branch management
@@ -378,12 +381,86 @@ config/settings.py (Central Configuration)
 
 ### Volume Naming Convention
 
+Dockertree automatically transforms volume names to ensure isolation between worktrees:
+
 ```python
-# Pattern: {branch_name}_{volume_type}
+# Pattern: {COMPOSE_PROJECT_NAME}_{volume_type}
+# Where COMPOSE_PROJECT_NAME = {project_name}-{branch_name}
 feature-auth_postgres_data    # Database data
 feature-auth_redis_data       # Cache data
 feature-auth_media_files      # User uploads
 ```
+
+#### Automatic Volume Transformation
+
+During `dockertree setup`, the system automatically transforms volume definitions in the source `docker-compose.yml`:
+
+**Source compose file**:
+```yaml
+volumes:
+  postgres_data:
+    name: business_intelligence_postgres_data
+  redis_data:
+    name: business_intelligence_redis_data
+```
+
+**Transformed worktree compose**:
+```yaml
+volumes:
+  postgres_data:
+    name: ${COMPOSE_PROJECT_NAME}_postgres_data
+  redis_data:
+    name: ${COMPOSE_PROJECT_NAME}_redis_data
+```
+
+This ensures each worktree gets isolated volumes:
+- `myproject-feature-auth_postgres_data`
+- `myproject-feature-auth_redis_data`
+- `myproject-feature-branch_postgres_data`
+- `myproject-feature-branch_redis_data`
+
+### Safe Volume Copying Architecture
+
+Dockertree implements intelligent volume copying to prevent database corruption:
+
+#### PostgreSQL Volume Safety
+
+**Problem**: Copying PostgreSQL data files while the database is running causes corruption due to inconsistent WAL logs and checkpoint records.
+
+**Solution**: Automatic detection and safe backup methods:
+
+1. **Container Detection**: `get_containers_using_volume()` and `are_containers_running()` detect if source database is running
+2. **Safe Backup Strategy**:
+   - **Running Database**: Uses `pg_dumpall` to create consistent SQL backup, then restores to new volume
+   - **Stopped Database**: Uses fast file copy (safe when database is stopped)
+3. **Automatic Routing**: `copy_volume()` detects PostgreSQL volumes and routes to `copy_postgres_volume_safely()`
+
+#### Implementation Flow
+
+```
+Volume Copy Request
+    ↓
+Is PostgreSQL Volume?
+    ↓ YES                    ↓ NO
+Detect Source Status        Use Fast Copy
+    ↓                           ↓
+Running?                    Copy Files
+    ↓ YES        ↓ NO           ↓
+Use pg_dump    Copy Files   Complete
+    ↓
+Create SQL Backup
+    ↓
+Restore to New Volume
+    ↓
+Complete
+```
+
+#### Benefits
+
+- **Eliminates Corruption**: No more "invalid checkpoint record" errors
+- **Works While Running**: Create worktrees without stopping main database
+- **Transparent**: Automatic detection and appropriate method selection
+- **Backwards Compatible**: Existing worktrees unaffected
 
 ### Network Architecture
 
@@ -429,6 +506,13 @@ Project Root/
 3. **Recursive Structure**: Each worktree becomes a self-contained dockertree project
 4. **Configuration Preservation**: Maintains identical configuration across all levels
 
+**Fractal Execution**: `get_project_root()` and `detect_execution_context()`
+
+1. **Local-First Detection**: Checks current directory for `.dockertree/config.yml` before searching upward
+2. **Context Awareness**: Detects when running from within a worktree vs main project root
+3. **Self-Contained Operation**: Worktrees can run dockertree commands using their own configuration
+4. **Backwards Compatibility**: Still works from main project root with centralized configuration
+
 #### Benefits
 
 - **Isolation**: Each worktree has complete configuration independence
@@ -436,6 +520,8 @@ Project Root/
 - **Self-Documentation**: Each worktree includes its own README.md
 - **Scalability**: Supports nested or complex project structures
 - **Maintenance**: Configuration changes propagate through fractal structure
+- **Fractal Execution**: Worktrees can run dockertree commands from within their own directory
+- **No Path Dependencies**: Eliminates "getcwd: cannot access parent directories" errors
 
 #### Use Cases
 

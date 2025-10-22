@@ -71,6 +71,10 @@ class SetupManager:
         if not self._create_config_file(project_name, compose_file):
             return False
         
+        # 5. Create template env.dockertree for project root
+        if not self._create_template_env_dockertree():
+            log_warning("Failed to create template env.dockertree")
+            # Don't fail setup, this is optional
         
         # 7. Ask user about adding .dockertree to .gitignore
         if not self._handle_gitignore_setup():
@@ -230,6 +234,30 @@ services:
                         'COMPOSE_PROJECT_NAME': '${COMPOSE_PROJECT_NAME}',
                         'PROJECT_ROOT': '${PROJECT_ROOT}',
                     }
+                
+                # Add env_file directive to load both .env and dockertree env files
+                if 'env_file' not in service_config:
+                    service_config['env_file'] = []
+                elif isinstance(service_config['env_file'], str):
+                    # Convert string to list for consistency
+                    service_config['env_file'] = [service_config['env_file']]
+                
+                # Ensure we have a list to work with
+                if not isinstance(service_config['env_file'], list):
+                    service_config['env_file'] = []
+                
+                # Ensure we load both .env (project variables) and env.dockertree (worktree variables)
+                # Order matters: env.dockertree is listed second so it can override values from .env
+                env_files_to_add = [
+                    '${PROJECT_ROOT}/.env',
+                    '${PROJECT_ROOT}/.dockertree/env.dockertree'
+                ]
+                
+                for env_file in env_files_to_add:
+                    if env_file not in service_config['env_file']:
+                        service_config['env_file'].append(env_file)
+                
+                log_info(f"Added env_file directives to service '{service_name}'")
                 
                 # Transform volume mounts for worktree compatibility
                 self._transform_volume_mounts(service_config)
@@ -683,6 +711,47 @@ services:
             
         except Exception as e:
             log_error(f"Failed to copy README.md: {e}")
+            return False
+    
+    def _create_template_env_dockertree(self) -> bool:
+        """Create template env.dockertree for project root (enables master branch usage)."""
+        try:
+            from ..config.settings import get_project_name, sanitize_project_name
+            
+            # Create env.dockertree in .dockertree directory
+            env_dockertree_path = self.dockertree_dir / "env.dockertree"
+            
+            # Don't overwrite if it already exists
+            if env_dockertree_path.exists():
+                log_info("env.dockertree already exists, skipping creation")
+                return True
+            
+            # Get project name for template
+            project_name = sanitize_project_name(get_project_name())
+            
+            # Use "master" as the default branch name for project root
+            template_content = f"""# Dockertree environment file for project root (master branch)
+# This file is automatically sourced by Docker Compose
+# Variables here can override those in .env
+
+# Project identification
+COMPOSE_PROJECT_NAME={project_name}-master
+PROJECT_ROOT=${{PWD}}
+
+# Domain configuration for Caddy proxy
+SITE_DOMAIN={project_name}-master.localhost
+ALLOWED_HOSTS=localhost,127.0.0.1,{project_name}-master.localhost,*.localhost,web
+
+# Add any worktree-specific overrides below
+"""
+            
+            env_dockertree_path.write_text(template_content)
+            log_success(f"Created template env.dockertree: {env_dockertree_path}")
+            log_info("This enables using dockertree commands with the master branch")
+            return True
+            
+        except Exception as e:
+            log_error(f"Failed to create template env.dockertree: {e}")
             return False
     
     def _validate_project_root(self) -> bool:
