@@ -628,3 +628,93 @@ class TestConfigurationGeneration:
         # Check added environment variables
         assert 'COMPOSE_PROJECT_NAME' in env
         assert 'PROJECT_ROOT' in env
+    
+    def test_env_file_directive_addition(self, setup_manager):
+        """Test that env_file directives are added to all services."""
+        compose_data = {
+            'version': '3.8',
+            'services': {
+                'web': {
+                    'image': 'nginx:alpine',
+                    'environment': {
+                        'DEBUG': 'True'
+                    }
+                },
+                'db': {
+                    'image': 'postgres:15'
+                }
+            }
+        }
+        
+        compose_file = setup_manager.project_root / "docker-compose.yml"
+        with open(compose_file, 'w') as f:
+            yaml.dump(compose_data, f)
+        
+        result = setup_manager.setup_project()
+        assert result is True
+        
+        # Verify transformed compose file has env_file directives
+        worktree_compose = setup_manager.dockertree_dir / "docker-compose.worktree.yml"
+        with open(worktree_compose) as f:
+            transformed_data = yaml.safe_load(f)
+        
+        # Check both services have env_file directives
+        for service_name in ['web', 'db']:
+            service = transformed_data['services'][service_name]
+            assert 'env_file' in service
+            assert '${PROJECT_ROOT}/.env' in service['env_file']
+            assert '${PROJECT_ROOT}/.dockertree/env.dockertree' in service['env_file']
+
+    def test_env_file_preserves_existing(self, setup_manager):
+        """Test that existing env_file directives are preserved."""
+        compose_data = {
+            'version': '3.8',
+            'services': {
+                'web': {
+                    'image': 'nginx:alpine',
+                    'env_file': '.env.custom'
+                }
+            }
+        }
+        
+        compose_file = setup_manager.project_root / "docker-compose.yml"
+        with open(compose_file, 'w') as f:
+            yaml.dump(compose_data, f)
+        
+        result = setup_manager.setup_project()
+        assert result is True
+        
+        worktree_compose = setup_manager.dockertree_dir / "docker-compose.worktree.yml"
+        with open(worktree_compose) as f:
+            transformed_data = yaml.safe_load(f)
+        
+        web_service = transformed_data['services']['web']
+        assert '.env.custom' in web_service['env_file']
+        assert '${PROJECT_ROOT}/.env' in web_service['env_file']
+        assert '${PROJECT_ROOT}/.dockertree/env.dockertree' in web_service['env_file']
+
+    def test_template_env_dockertree_creation(self, setup_manager):
+        """Test that template env.dockertree is created during setup."""
+        compose_data = {
+            'version': '3.8',
+            'services': {
+                'web': {'image': 'nginx:alpine'}
+            }
+        }
+        
+        compose_file = setup_manager.project_root / "docker-compose.yml"
+        with open(compose_file, 'w') as f:
+            yaml.dump(compose_data, f)
+        
+        result = setup_manager.setup_project()
+        assert result is True
+        
+        # Verify template env.dockertree was created
+        env_dockertree = setup_manager.dockertree_dir / "env.dockertree"
+        assert env_dockertree.exists()
+        
+        # Verify content
+        content = env_dockertree.read_text()
+        assert 'COMPOSE_PROJECT_NAME' in content
+        assert 'PROJECT_ROOT' in content
+        assert 'SITE_DOMAIN' in content

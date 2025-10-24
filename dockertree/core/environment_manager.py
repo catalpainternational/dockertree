@@ -101,7 +101,7 @@ POSTGRES_DB=database
 # Django configuration
 DEBUG=True
 DJANGO_SECRET_KEY=django-insecure-secret-key
-ALLOWED_HOSTS=localhost,127.0.0.1,{site_domain},*.localhost,web,{compose_project_name}-web
+ALLOWED_HOSTS=localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web
 SITE_DOMAIN={site_domain}
 
 # Redis configuration
@@ -137,7 +137,7 @@ CADDY_EMAIL=admin@catalpa.build
         env_vars.update({
             "COMPOSE_PROJECT_NAME": compose_project_name,
             "SITE_DOMAIN": site_domain,
-            "ALLOWED_HOSTS": f"localhost,127.0.0.1,{site_domain},*.localhost,web,{compose_project_name}-web",
+            "ALLOWED_HOSTS": f"localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web",
         })
         return env_vars
     
@@ -164,7 +164,7 @@ CADDY_EMAIL=admin@catalpa.build
         project_name = sanitize_project_name(get_project_name())
         compose_project_name = f"{project_name}-{branch_name}"
         site_domain = f"{project_name}-{branch_name}.localhost"
-        return f"localhost,127.0.0.1,{site_domain},*.localhost,web,{compose_project_name}-web"
+        return f"localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web"
     
     def get_database_url(self, branch_name: str, 
                         postgres_user: str = "biuser",

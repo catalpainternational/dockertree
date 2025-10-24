@@ -196,7 +196,7 @@ def generate_env_compose_content(branch_name: str) -> str:
 COMPOSE_PROJECT_NAME={compose_project_name}
 PROJECT_ROOT={project_root}
 SITE_DOMAIN={site_domain}
-ALLOWED_HOSTS=localhost,127.0.0.1,{site_domain},*.localhost,web,{compose_project_name}-web
+ALLOWED_HOSTS=localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web
 DEBUG=True
 """
 

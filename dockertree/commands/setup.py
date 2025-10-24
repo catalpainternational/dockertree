@@ -740,7 +740,7 @@ PROJECT_ROOT=${{PWD}}
 
 # Domain configuration for Caddy proxy
 SITE_DOMAIN={project_name}-master.localhost
-ALLOWED_HOSTS=localhost,127.0.0.1,{project_name}-master.localhost,*.localhost,web
+ALLOWED_HOSTS=localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web
 
 # Add any worktree-specific overrides below
 """
