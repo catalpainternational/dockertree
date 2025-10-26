@@ -184,6 +184,29 @@ def get_worktree_paths(branch_name: str) -> tuple[Path, Path]:
     legacy_path = repo_root.parent / branch_name
     return new_path, legacy_path
 
+def get_allowed_hosts_for_worktree(branch_name: str) -> str:
+    """Generate ALLOWED_HOSTS string for a worktree with explicit subdomain.
+    
+    Returns a comma-separated string with:
+    - localhost, 127.0.0.1 for local access
+    - {project-name}-{branch}.localhost for the specific worktree subdomain
+    - *.localhost as a wildcard fallback
+    - web for inter-container communication
+    
+    Args:
+        branch_name: Branch name for the worktree
+        
+    Returns:
+        Comma-separated ALLOWED_HOSTS string
+        
+    Example:
+        For project 'business_intelligence' and branch 'beta':
+        Returns: 'localhost,127.0.0.1,business-intelligence-beta.localhost,*.localhost,web'
+    """
+    project_name = sanitize_project_name(get_project_name())
+    subdomain = f"{project_name}-{branch_name}.localhost"
+    return f"localhost,127.0.0.1,{subdomain},*.localhost,web"
+
 # Environment file generation
 def generate_env_compose_content(branch_name: str) -> str:
     """Generate env.dockertree content for a worktree."""
@@ -191,12 +214,13 @@ def generate_env_compose_content(branch_name: str) -> str:
     project_name = sanitize_project_name(get_project_name())  # Converts underscores to hyphens
     compose_project_name = f"{project_name}-{branch_name}"
     site_domain = f"{compose_project_name}.localhost"  # RFC-compliant hostname
+    allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
     
     return f"""# Dockertree environment configuration for {branch_name}
 COMPOSE_PROJECT_NAME={compose_project_name}
 PROJECT_ROOT={project_root}
 SITE_DOMAIN={site_domain}
-ALLOWED_HOSTS=localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web
+ALLOWED_HOSTS={allowed_hosts}
 DEBUG=True
 """
 

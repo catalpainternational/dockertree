@@ -11,7 +11,8 @@ from typing import Dict, Optional
 from ..config.settings import (
     generate_env_compose_content, 
     get_volume_names,
-    DEFAULT_ENV_VARS
+    DEFAULT_ENV_VARS,
+    get_project_root
 )
 from ..utils.logging import log_info, log_success, log_warning
 from ..utils.path_utils import (
@@ -77,7 +78,7 @@ class EnvironmentManager:
     
     def _create_default_env_file(self, worktree_path: Path, branch_name: str) -> bool:
         """Create a default .env file if none exists."""
-        from ..config.settings import get_project_name, sanitize_project_name
+        from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree
         
         env_file = worktree_path / ".env"
         
@@ -89,6 +90,7 @@ class EnvironmentManager:
         project_name = sanitize_project_name(get_project_name())
         compose_project_name = f"{project_name}-{branch_name}"
         site_domain = f"{project_name}-{branch_name}.localhost"
+        allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
         
         default_env_content = f"""# Default environment configuration for {branch_name}
 # This file was automatically created by dockertree
@@ -101,7 +103,7 @@ POSTGRES_DB=database
 # Django configuration
 DEBUG=True
 DJANGO_SECRET_KEY=django-insecure-secret-key
-ALLOWED_HOSTS=localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web
+ALLOWED_HOSTS={allowed_hosts}
 SITE_DOMAIN={site_domain}
 
 # Redis configuration
@@ -127,7 +129,7 @@ CADDY_EMAIL=admin@catalpa.build
     
     def get_environment_variables(self, branch_name: str) -> Dict[str, str]:
         """Get environment variables for a worktree."""
-        from ..config.settings import get_project_name, sanitize_project_name
+        from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree
         
         project_name = sanitize_project_name(get_project_name())
         compose_project_name = f"{project_name}-{branch_name}"
@@ -137,7 +139,7 @@ CADDY_EMAIL=admin@catalpa.build
         env_vars.update({
             "COMPOSE_PROJECT_NAME": compose_project_name,
             "SITE_DOMAIN": site_domain,
-            "ALLOWED_HOSTS": f"localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web",
+            "ALLOWED_HOSTS": get_allowed_hosts_for_worktree(branch_name),
         })
         return env_vars
     
@@ -160,11 +162,8 @@ CADDY_EMAIL=admin@catalpa.build
     
     def get_allowed_hosts(self, branch_name: str) -> str:
         """Get the allowed hosts for a worktree."""
-        from ..config.settings import get_project_name, sanitize_project_name
-        project_name = sanitize_project_name(get_project_name())
-        compose_project_name = f"{project_name}-{branch_name}"
-        site_domain = f"{project_name}-{branch_name}.localhost"
-        return f"localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web,${{COMPOSE_PROJECT_NAME}}-web"
+        from ..config.settings import get_allowed_hosts_for_worktree
+        return get_allowed_hosts_for_worktree(branch_name)
     
     def get_database_url(self, branch_name: str, 
                         postgres_user: str = "biuser",

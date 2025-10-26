@@ -38,12 +38,18 @@ class DockertreeAPI:
                 import yaml
                 with open(config_path, 'r') as f:
                     config_data = yaml.safe_load(f)
-                    return config_data.get('project_name', 'unknown')
+                    raw_name = config_data.get('project_name', 'unknown')
+            else:
+                # Fallback to directory name
+                raw_name = Path(self.config.working_directory).name
+            
+            # Sanitize the project name for URL compatibility
+            from dockertree.config.settings import sanitize_project_name
+            return sanitize_project_name(raw_name)
         except Exception:
-            pass
-        
-        # Fallback to directory name
-        return Path(self.config.working_directory).name
+            # Fallback to directory name with sanitization
+            from dockertree.config.settings import sanitize_project_name
+            return sanitize_project_name(Path(self.config.working_directory).name)
     
     def _is_dockertree_initialized(self) -> bool:
         """Check if dockertree is initialized in this project."""

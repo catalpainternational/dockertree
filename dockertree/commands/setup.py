@@ -716,7 +716,7 @@ services:
     def _create_template_env_dockertree(self) -> bool:
         """Create template env.dockertree for project root (enables master branch usage)."""
         try:
-            from ..config.settings import get_project_name, sanitize_project_name
+            from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree
             
             # Create env.dockertree in .dockertree directory
             env_dockertree_path = self.dockertree_dir / "env.dockertree"
@@ -730,6 +730,8 @@ services:
             project_name = sanitize_project_name(get_project_name())
             
             # Use "master" as the default branch name for project root
+            allowed_hosts = get_allowed_hosts_for_worktree("master")
+            
             template_content = f"""# Dockertree environment file for project root (master branch)
 # This file is automatically sourced by Docker Compose
 # Variables here can override those in .env
@@ -740,7 +742,7 @@ PROJECT_ROOT=${{PWD}}
 
 # Domain configuration for Caddy proxy
 SITE_DOMAIN={project_name}-master.localhost
-ALLOWED_HOSTS=localhost,127.0.0.1,${{COMPOSE_PROJECT_NAME}}.localhost,*.localhost,web
+ALLOWED_HOSTS={allowed_hosts}
 
 # Add any worktree-specific overrides below
 """

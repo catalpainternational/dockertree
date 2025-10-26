@@ -53,6 +53,7 @@ class WorktreeResources:
             if result.get("success"):
                 worktrees = result.get("data", [])
                 for worktree in worktrees:
+                    # Project name is already sanitized by MCPConfig, so we can use it directly
                     worktree["access_url"] = f"http://{self.config.project_name}-{worktree['branch']}.localhost"
                     worktree["dockertree_context"] = {
                         "concept": "Isolated development environment with branch-specific containers and data",

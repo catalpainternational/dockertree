@@ -61,7 +61,7 @@ class TestEnvironmentManager:
         mock_project_name.return_value = "test_project"
         env_manager = EnvironmentManager()
         hosts = env_manager.get_allowed_hosts("test-branch")
-        expected = "localhost,127.0.0.1,test-project-test-branch.localhost,*.localhost,web,test-project-test-branch-web"
+        expected = "localhost,127.0.0.1,test-project-test-branch.localhost,*.localhost,web"
         assert hosts == expected
     
     @patch('dockertree.config.settings.get_project_name')
@@ -171,7 +171,7 @@ class TestEnvironmentManager:
         
         assert config["branch_name"] == "test-branch"
         assert config["domain_name"] == "test-project-test-branch.localhost"
-        assert config["allowed_hosts"] == "localhost,127.0.0.1,test-project-test-branch.localhost,*.localhost,web,test-project-test-branch-web"
+        assert config["allowed_hosts"] == "localhost,127.0.0.1,test-project-test-branch.localhost,*.localhost,web"
         assert "postgres://biuser:bipassword@test-project-test-branch-db:5432/database" in config["database_url"]
         assert "redis://test-project-test-branch-redis:6379/0" in config["redis_url"]
         assert "postgres" in config["volume_names"]
