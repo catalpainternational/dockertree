@@ -15,6 +15,7 @@ from .commands.worktree import WorktreeManager
 from .commands.utility import UtilityManager
 from .commands.volumes import VolumeManager
 from .commands.setup import SetupManager
+from .commands.packages import PackageCommands
 from .utils.logging import log_error, error_exit, set_verbose
 from .utils.validation import check_prerequisites, check_setup_or_prompt
 from .utils.pattern_matcher import has_wildcard
@@ -98,7 +99,7 @@ class DockertreeCLI(click.MultiCommand):
         """Return list of available commands."""
         return sorted([
             'create', 'delete', 'remove', 'start-proxy', 'stop-proxy', 'start', 'stop', 
-            'list', 'prune', 'volumes', 'help', 'delete-all', 'remove-all',
+            'list', 'prune', 'volumes', 'packages', 'help', 'delete-all', 'remove-all',
             'setup', 'clean-legacy', 'completion', '_completion', '-D', '-r'  # Add dash-prefixed aliases
         ])
     
@@ -135,6 +136,8 @@ class DockertreeCLI(click.MultiCommand):
             return prune
         elif name == 'volumes':
             return volumes
+        elif name == 'packages':
+            return packages
         elif name == 'help':
             return help
         elif name == 'delete-all':
@@ -658,6 +661,116 @@ def volumes_clean(branch_name: str, json: bool):
             JSONOutput.print_error(f"Error cleaning volumes: {e}")
         else:
             error_exit(f"Error cleaning volumes: {e}")
+
+
+@cli.group()
+@add_verbose_option
+def packages():
+    """Manage environment packages."""
+    pass
+
+
+@packages.command('export')
+@click.argument('branch_name')
+@click.option('--output-dir', type=click.Path(), default='./packages', help='Output directory for packages')
+@click.option('--include-code/--no-code', default=True, help='Include git archive of code (default: True)')
+@click.option('--compressed/--no-compress', default=True, help='Compress package to .tar.gz')
+@add_json_option
+@add_verbose_option
+def export_package(branch_name: str, output_dir: str, include_code: bool, compressed: bool, json: bool):
+    """Export worktree environment to shareable package."""
+    try:
+        check_setup_or_prompt()
+        check_prerequisites()
+        package_commands = PackageCommands()
+        success = package_commands.export(branch_name, Path(output_dir), include_code, compressed)
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to export package for {branch_name}")
+            else:
+                error_exit(f"Failed to export package for {branch_name}")
+        else:
+            if json:
+                JSONOutput.print_success(f"Package exported successfully for {branch_name}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error exporting package: {e}")
+        else:
+            error_exit(f"Error exporting package: {e}")
+
+
+@packages.command('import')
+@click.argument('package_file', type=click.Path(exists=True))
+@click.option('--target-branch', help='Target branch name (defaults to package branch name)')
+@click.option('--restore-data/--no-data', default=True, help='Restore volume data')
+@add_json_option
+@add_verbose_option
+def import_package(package_file: str, target_branch: str, restore_data: bool, json: bool):
+    """Import environment from package."""
+    try:
+        check_setup_or_prompt()
+        check_prerequisites()
+        package_commands = PackageCommands()
+        success = package_commands.import_package(Path(package_file), target_branch, restore_data)
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to import package {package_file}")
+            else:
+                error_exit(f"Failed to import package {package_file}")
+        else:
+            if json:
+                JSONOutput.print_success(f"Package imported successfully from {package_file}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error importing package: {e}")
+        else:
+            error_exit(f"Error importing package: {e}")
+
+
+@packages.command('list')
+@click.option('--package-dir', type=click.Path(), default='./packages', help='Package directory to search')
+@add_json_option
+@add_verbose_option
+def list_packages(package_dir: str, json: bool):
+    """List available packages."""
+    try:
+        check_setup_or_prompt()
+        check_prerequisites()
+        package_commands = PackageCommands()
+        if json:
+            packages = package_commands.list_packages_json(Path(package_dir))
+            JSONOutput.print_json(packages)
+        else:
+            package_commands.list_packages(Path(package_dir))
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error listing packages: {e}")
+        else:
+            error_exit(f"Error listing packages: {e}")
+
+
+@packages.command('validate')
+@click.argument('package_file', type=click.Path(exists=True))
+@add_json_option
+@add_verbose_option
+def validate_package(package_file: str, json: bool):
+    """Validate package integrity."""
+    try:
+        check_setup_or_prompt()
+        check_prerequisites()
+        package_commands = PackageCommands()
+        if json:
+            result = package_commands.validate_package_json(Path(package_file))
+            JSONOutput.print_json(result)
+        else:
+            success = package_commands.validate_package(Path(package_file))
+            if not success:
+                error_exit(f"Package validation failed for {package_file}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error validating package: {e}")
+        else:
+            error_exit(f"Error validating package: {e}")
 
 
 @cli.command()

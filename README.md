@@ -43,6 +43,12 @@ dockertree feature-auth up -d
 # If your project is named "myapp", the URL will be:
 open http://myapp-feature-auth.localhost
 
+# Export environment as shareable package (includes code by default)
+dockertree packages export feature-auth
+
+# Import environment from package
+dockertree packages import myapp-feature-auth-2024-01-15.dockertree-package.tar.gz
+
 # Stop and clean up
 dockertree feature-auth down
 dockertree remove feature-auth
@@ -56,6 +62,7 @@ Dockertree CLI provides complete environment isolation through:
 - **Docker Compose**: Isolated containers with branch-specific volumes
 - **Caddy Proxy**: Dynamic routing based on branch names
 - **Volume Isolation**: Branch-specific databases, Redis, and media storage
+- **Package Management**: Export/import complete environments as shareable packages
 
 ### System Architecture
 
@@ -160,6 +167,14 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 | `volumes backup <branch>` | Backup worktree volumes | `dockertree volumes backup feature-auth` |
 | `volumes restore <branch> <file>` | Restore from backup | `dockertree volumes restore feature-auth backup.tar` |
 | `volumes clean <branch>` | Clean up volumes | `dockertree volumes clean feature-auth` |
+
+### Package Management
+| Command | Description | Example |
+|---------|-------------|---------|
+| `packages export <branch>` | Export worktree as shareable package (includes code by default) | `dockertree packages export feature-auth` |
+| `packages import <file>` | Import environment from package | `dockertree packages import my-package.tar.gz` |
+| `packages list` | List available packages | `dockertree packages list` |
+| `packages validate <file>` | Validate package integrity | `dockertree packages validate my-package.tar.gz` |
 
 ### Shell Completion Management
 | Command | Description | Example |
@@ -533,6 +548,30 @@ dockertree volumes size
 
 # Clean up old volumes
 dockertree volumes clean feature-auth
+```
+
+### Package Management
+```bash
+# Export complete environment as shareable package (includes code by default)
+dockertree packages export feature-auth
+
+# Export environment without code (smaller package)
+dockertree packages export feature-auth --no-code
+
+# Export to specific directory
+dockertree packages export feature-auth --output-dir ./exports
+
+# List available packages
+dockertree packages list
+
+# Validate package integrity
+dockertree packages validate myapp-feature-auth-2024-01-15.dockertree-package.tar.gz
+
+# Import environment from package
+dockertree packages import myapp-feature-auth-2024-01-15.dockertree-package.tar.gz
+
+# Import without restoring data
+dockertree packages import myapp-feature-auth-2024-01-15.dockertree-package.tar.gz --no-data
 ```
 
 ### Bulk Operations

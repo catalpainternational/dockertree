@@ -9,6 +9,7 @@ The dockertree MCP server exposes dockertree functionality through the Model Con
 - Create and manage isolated development environments
 - Start and stop worktree containers
 - Manage volumes and backups
+- Export and import environment packages
 - Control the global Caddy proxy
 - Access worktree information and status
 
@@ -149,6 +150,33 @@ create_worktree({
 })
 ```
 
+**Scenario 3: Package Management**
+```python
+# Export environment as shareable package (includes code by default)
+export_package({
+    "branch_name": "feature-auth",
+    "working_directory": "/Users/ders/kenali/blank"
+})
+
+# Export environment without code (smaller package)
+export_package({
+    "branch_name": "feature-auth",
+    "working_directory": "/Users/ders/kenali/blank",
+    "include_code": False
+})
+
+# List available packages
+list_packages({
+    "working_directory": "/Users/ders/kenali/blank"
+})
+
+# Import environment from package
+import_package({
+    "package_path": "/Users/ders/kenali/blank/packages/myapp-feature-auth-2024-01-15.dockertree-package.tar.gz",
+    "working_directory": "/Users/ders/kenali/blank"
+})
+```
+
 ### Troubleshooting Working Directory Issues
 
 #### Common Problems
@@ -223,6 +251,13 @@ dockertree-mcp
 - **backup_volumes**: Backup volumes for a specific worktree
 - **restore_volumes**: Restore volumes for a specific worktree from backup
 - **clean_volumes**: Clean up volumes for a specific worktree
+
+### Package Management
+
+- **export_package**: Export worktree as shareable package
+- **import_package**: Import environment from package
+- **list_packages**: List available packages
+- **validate_package**: Validate package integrity
 
 ### Caddy Proxy Management
 

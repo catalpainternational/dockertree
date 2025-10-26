@@ -31,6 +31,7 @@ from mcp.types import (
 from .tools.worktree_tools import WorktreeTools
 from .tools.volume_tools import VolumeTools
 from .tools.caddy_tools import CaddyTools
+from .tools.package_tools import PackageTools
 from .resources.worktree_resources import WorktreeResources
 from .resources.documentation import DockertreeDocumentation
 from .config import MCPConfig
@@ -400,6 +401,102 @@ async def list_tools() -> List[Tool]:
                     }
                 }
             }
+        ),
+        # Package management
+        Tool(
+            name="export_package",
+            description="Export a worktree environment to shareable package (includes code by default)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Name of the branch to export"
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Output directory for packages (optional, defaults to ./packages)"
+                    },
+                    "include_code": {
+                        "type": "boolean",
+                        "description": "Whether to include git archive of code (optional, defaults to true)"
+                    },
+                    "compressed": {
+                        "type": "boolean",
+                        "description": "Whether to compress package to .tar.gz (optional, defaults to true)"
+                    },
+                    "working_directory": {
+                        "type": "string",
+                        "description": "REQUIRED in practice: Absolute path to the project directory where dockertree should operate. Use the Cursor workspace path or your current project directory. Example: '/Users/ders/kenali/blank'",
+                        "default": None
+                    }
+                },
+                "required": ["branch_name"]
+            }
+        ),
+        Tool(
+            name="import_package",
+            description="Import environment from package",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "package_file": {
+                        "type": "string",
+                        "description": "Path to the package file"
+                    },
+                    "target_branch": {
+                        "type": "string",
+                        "description": "Target branch name (optional, defaults to package branch name)"
+                    },
+                    "restore_data": {
+                        "type": "boolean",
+                        "description": "Whether to restore volume data (optional, defaults to true)"
+                    },
+                    "working_directory": {
+                        "type": "string",
+                        "description": "REQUIRED in practice: Absolute path to the project directory where dockertree should operate. Use the Cursor workspace path or your current project directory. Example: '/Users/ders/kenali/blank'",
+                        "default": None
+                    }
+                },
+                "required": ["package_file"]
+            }
+        ),
+        Tool(
+            name="list_packages",
+            description="List available packages",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "package_dir": {
+                        "type": "string",
+                        "description": "Package directory to search (optional, defaults to ./packages)"
+                    },
+                    "working_directory": {
+                        "type": "string",
+                        "description": "REQUIRED in practice: Absolute path to the project directory where dockertree should operate. Use the Cursor workspace path or your current project directory. Example: '/Users/ders/kenali/blank'",
+                        "default": None
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="validate_package",
+            description="Validate package integrity",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "package_file": {
+                        "type": "string",
+                        "description": "Path to the package file"
+                    },
+                    "working_directory": {
+                        "type": "string",
+                        "description": "REQUIRED in practice: Absolute path to the project directory where dockertree should operate. Use the Cursor workspace path or your current project directory. Example: '/Users/ders/kenali/blank'",
+                        "default": None
+                    }
+                },
+                "required": ["package_file"]
+            }
         )
     ]
 
@@ -422,6 +519,7 @@ async def call_tool(name: str, arguments: dict) -> List[dict]:
         worktree_tools = WorktreeTools(config)
         volume_tools = VolumeTools(config)
         caddy_tools = CaddyTools(config)
+        package_tools = PackageTools()
         
         # Route to appropriate tool handler
         if name == "create_worktree":
@@ -454,6 +552,14 @@ async def call_tool(name: str, arguments: dict) -> List[dict]:
             result = await caddy_tools.stop_proxy(arguments)
         elif name == "get_proxy_status":
             result = await caddy_tools.get_proxy_status(arguments)
+        elif name == "export_package":
+            result = await package_tools.export_package(arguments)
+        elif name == "import_package":
+            result = await package_tools.import_package(arguments)
+        elif name == "list_packages":
+            result = await package_tools.list_packages(arguments)
+        elif name == "validate_package":
+            result = await package_tools.validate_package(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
         

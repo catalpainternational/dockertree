@@ -388,3 +388,45 @@ class GitManager:
         except subprocess.CalledProcessError as e:
             log_error(f"Failed to list branches: {e}")
             return []
+    
+    def create_worktree_archive(self, branch_name: str, output_path: Path) -> bool:
+        """Create git archive of worktree code (full archive by default).
+        
+        Args:
+            branch_name: Name of the branch/worktree to archive
+            output_path: Path where the archive should be created
+            
+        Returns:
+            True if archive was created successfully, False otherwise
+        """
+        worktree_path = self.find_worktree_path(branch_name)
+        if not worktree_path:
+            log_error(f"Worktree for branch '{branch_name}' not found")
+            return False
+        
+        if not worktree_path.exists():
+            log_error(f"Worktree directory not found: {worktree_path}")
+            return False
+        
+        try:
+            # Ensure output directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Create git archive from the worktree
+            result = subprocess.run([
+                "git", "archive", "--format=tar.gz",
+                f"--output={output_path}",
+                "HEAD"
+            ], cwd=worktree_path, check=True, capture_output=True, text=True)
+            
+            log_success(f"Created git archive: {output_path}")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            log_error(f"Failed to create git archive for {branch_name}: {e}")
+            if e.stderr:
+                log_error(f"Git error: {e.stderr}")
+            return False
+        except Exception as e:
+            log_error(f"Unexpected error creating archive: {e}")
+            return False
