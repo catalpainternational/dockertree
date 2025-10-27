@@ -407,6 +407,19 @@ class DockerManager:
         else:
             cmd = [self.compose_cmd]
         
+        # Use working_dir if provided, otherwise fall back to project root
+        if working_dir is None:
+            working_dir = self.project_root
+        
+        # Convert to absolute path to ensure Docker resolves it correctly
+        working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
+
+        # Explicitly load .env from the working directory first, if it exists
+        main_env_file = working_dir / ".env"
+        if main_env_file.exists():
+            cmd.extend(["--env-file", str(main_env_file)])
+        
+        # Then, load the worktree-specific env.dockertree, which will override .env
         if env_file and env_file.exists():
             cmd.extend(["--env-file", str(env_file)])
         
@@ -419,13 +432,6 @@ class DockerManager:
         # Add any extra flags at the end
         if extra_flags:
             cmd.extend(extra_flags)
-        
-        # Use working_dir if provided, otherwise fall back to project root
-        if working_dir is None:
-            working_dir = self.project_root
-        
-        # Convert to absolute path to ensure Docker resolves it correctly
-        working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
         
         # Set environment variables for build context
         import os
