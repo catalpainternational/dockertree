@@ -394,7 +394,7 @@ class PackageManager:
             # Determine target directory
             if not target_directory:
                 project_name = metadata.get("project_name", "dockertree-project")
-                target_directory = Path.cwd() / f"{project_name}-standalone"
+                target_directory = Path.cwd() / project_name
             
             target_directory = Path(target_directory).resolve()
             
@@ -427,9 +427,10 @@ class PackageManager:
             
             # Initialize dockertree setup
             log_info("Initializing dockertree configuration...")
+            original_project_name = metadata.get("project_name")
             from ..commands.setup import SetupManager
             setup_manager = SetupManager(project_root=target_directory)
-            if not setup_manager.setup_project():
+            if not setup_manager.setup_project(project_name=original_project_name):
                 return {
                     "success": False,
                     "error": "Failed to initialize dockertree setup"
