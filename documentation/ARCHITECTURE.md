@@ -626,6 +626,150 @@ dockertree_mcp/
 - **Multi-project Support**: Manage multiple projects from single MCP server
 - **Consistent Interface**: Same functionality as CLI with structured output
 
+## 📦 Package Management Architecture
+
+### Import Modes and Auto-Detection
+
+Dockertree package import supports two modes with automatic detection:
+
+#### Mode Detection Logic
+
+```python
+def _is_in_existing_project(self) -> bool:
+    """Check if we're in an existing dockertree project."""
+    # Requires both .dockertree/config.yml AND git repository
+    dockertree_config = self.project_root / ".dockertree" / "config.yml"
+    if not dockertree_config.exists():
+        return False
+    if not validate_git_repository(self.project_root):
+        return False
+    return True
+```
+
+#### Normal Mode (Existing Project)
+
+**When**: Directory contains `.dockertree/config.yml` and is a git repository
+
+**Process**:
+1. Validate package integrity
+2. Extract metadata and determine branch name
+3. Create new worktree using WorktreeOrchestrator
+4. Restore environment files to worktree
+5. Restore volumes to branch-specific volumes
+6. Extract code archive (if included in package)
+
+**Result**: New worktree added to existing project
+
+#### Standalone Mode (New Project)
+
+**When**: Directory does NOT contain `.dockertree/config.yml` OR not a git repository
+
+**Process**:
+1. Validate package integrity
+2. Check package includes code (required for standalone)
+3. Determine target directory (from flag or auto-generate)
+4. Initialize new git repository
+5. Extract code archive from package
+6. Commit initial code
+7. Run `dockertree setup` to initialize configuration
+8. Restore environment files
+9. Restore volumes (if requested)
+
+**Result**: Complete new dockertree project ready to use
+
+### Import Flow Diagram
+
+```
+Package Import Request
+    ↓
+Standalone explicitly set?
+    ↓ NO                          ↓ YES
+Auto-detect mode                Use explicit value
+    ↓                               ↓
+_is_in_existing_project()?      Standalone = True/False
+    ↓ YES            ↓ NO            ↓
+Normal Mode     Standalone Mode   As specified
+    ↓                ↓                ↓
+Import to        Create new       Execute
+existing         project          accordingly
+worktree
+```
+
+### DRY Architecture
+
+All logic centralized in `PackageManager` class:
+
+```
+                    PackageManager (core)
+                         ├── _is_in_existing_project()
+                         ├── import_package()
+                         │   ├── _normal_import()
+                         │   ├── _standalone_import()
+                         │   └── _extract_and_validate_package()
+                         ↑
+                    Used by both:
+                         │
+        ┌────────────────┴────────────────┐
+        │                                  │
+    CLI Layer                          MCP Layer
+    PackageCommands                    PackageTools
+    (thin wrapper)                     (thin wrapper)
+```
+
+### CLI and MCP Integration
+
+Both interfaces use identical parameters and logic:
+
+**CLI**:
+```bash
+dockertree packages import package.tar.gz --standalone --target-dir ./project
+```
+
+**MCP**:
+```json
+{
+  "package_file": "package.tar.gz",
+  "standalone": true,
+  "target_directory": "./project"
+}
+```
+
+### Standalone Requirements
+
+For standalone import to succeed:
+
+1. **Package must include code**: Export with `--include-code` (default)
+2. **Target directory must not exist**: Prevents accidental overwrites
+3. **Git must be available**: For repository initialization
+4. **Docker must be running**: For volume restoration
+
+### Use Cases
+
+**Team Onboarding**:
+```bash
+# New developer, no repo cloned
+dockertree packages import team-dev-env.tar.gz
+# → Complete project ready instantly
+```
+
+**Environment Migration**:
+```bash
+# Move project to new machine
+dockertree packages import myproject.tar.gz --standalone --target-dir ~/projects/myapp
+```
+
+**Testing/Demo**:
+```bash
+# Spin up temporary environment
+dockertree packages import demo-package.tar.gz --standalone
+```
+
+**Backup/Restore**:
+```bash
+# Restore from backup
+dockertree packages import backup-20240115.tar.gz --standalone
+```
+
 ## 🔌 Extension Architecture
 
 ### Adding New Commands

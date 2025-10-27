@@ -436,7 +436,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="import_package",
-            description="Import environment from package",
+            description="Import environment from package with automatic standalone detection. If not in an existing dockertree project, automatically creates a new project from the package. Can force standalone mode with explicit flag.\n\nIMPORTANT: For standalone imports, the package must include code (exported with --include-code).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -446,15 +446,23 @@ async def list_tools() -> List[Tool]:
                     },
                     "target_branch": {
                         "type": "string",
-                        "description": "Target branch name (optional, defaults to package branch name)"
+                        "description": "Target branch name (for normal mode, optional, defaults to package branch name)"
                     },
                     "restore_data": {
                         "type": "boolean",
                         "description": "Whether to restore volume data (optional, defaults to true)"
                     },
+                    "standalone": {
+                        "type": "boolean",
+                        "description": "Force standalone mode to create new project (optional, None = auto-detect based on current directory)"
+                    },
+                    "target_directory": {
+                        "type": "string",
+                        "description": "Target directory for standalone import (optional, defaults to {project_name}-standalone)"
+                    },
                     "working_directory": {
                         "type": "string",
-                        "description": "REQUIRED in practice: Absolute path to the project directory where dockertree should operate. Use the Cursor workspace path or your current project directory. Example: '/Users/ders/kenali/blank'",
+                        "description": "Working directory for normal mode import. Not used in standalone mode. Example: '/Users/ders/kenali/blank'",
                         "default": None
                     }
                 },

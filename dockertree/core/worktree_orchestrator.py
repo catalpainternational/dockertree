@@ -55,7 +55,7 @@ class WorktreeOrchestrator:
         # Store mcp_mode as instance attribute for use in methods
         self.mcp_mode = mcp_mode
         
-        self.git_manager = GitManager(project_root=self.project_root)
+        self.git_manager = GitManager(project_root=self.project_root, validate=False)
         self.docker_manager = DockerManager(project_root=self.project_root)
         self.env_manager = EnvironmentManager(project_root=self.project_root)
     

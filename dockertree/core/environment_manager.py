@@ -78,7 +78,7 @@ class EnvironmentManager:
     
     def _create_default_env_file(self, worktree_path: Path, branch_name: str) -> bool:
         """Create a default .env file if none exists."""
-        from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree
+        from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree, DEFAULT_ENV_VARS
         
         env_file = worktree_path / ".env"
         
@@ -112,7 +112,7 @@ REDIS_PORT=6379
 REDIS_DB=0
 
 # Caddy configuration
-CADDY_EMAIL=admin@catalpa.build
+CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
 """
         
         try:

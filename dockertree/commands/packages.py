@@ -66,37 +66,57 @@ class PackageCommands:
             return False
     
     def import_package(self, package_file: Path, target_branch: str = None,
-                      restore_data: bool = True) -> bool:
-        """Import package - CLI interface with confirmation prompts.
+                      restore_data: bool = True, standalone: bool = None,
+                      target_directory: Path = None) -> bool:
+        """Import package - CLI interface with auto-detection.
         
         Args:
             package_file: Path to the package file
-            target_branch: Target branch name (defaults to package branch name)
+            target_branch: Target branch name (for normal mode)
             restore_data: Whether to restore volume data
+            standalone: Force standalone mode (None = auto-detect)
+            target_directory: Target directory for standalone import
             
         Returns:
             True if import succeeded, False otherwise
         """
         log_info(f"Importing package: {package_file}")
         
+        # Pass through to PackageManager (core logic)
         result = self.package_manager.import_package(
-            package_file, target_branch, restore_data
+            package_file, target_branch, restore_data, standalone, target_directory
         )
         
         if result.get("success"):
-            worktree_info = result.get("worktree_info", {})
-            metadata = result.get("metadata", {})
+            mode = result.get("mode", "normal")
             
-            log_success(f"Package imported successfully to branch: {worktree_info.get('branch', 'unknown')}")
-            
-            # Show worktree details
-            print_plain(f"🌿 Branch: {worktree_info.get('branch', 'unknown')}")
-            print_plain(f"📁 Path: {worktree_info.get('worktree_path', 'unknown')}")
-            print_plain(f"🌐 Domain: {worktree_info.get('domain_name', 'unknown')}")
-            print_plain(f"📊 Status: {worktree_info.get('status', 'unknown')}")
-            
-            if worktree_info.get('status') == 'running':
-                print_plain(f"🔗 URL: http://{worktree_info.get('domain_name', 'unknown')}/")
+            if mode == "standalone":
+                # Standalone import success
+                project_dir = result.get("project_directory")
+                branch_name = result.get("branch_name")
+                
+                log_success(f"Standalone import completed")
+                print_plain(f"📁 Project Directory: {project_dir}")
+                print_plain(f"🌿 Branch: {branch_name}")
+                print_plain(f"💡 Next Steps:")
+                print_plain(f"   cd {project_dir}")
+                print_plain(f"   dockertree start-proxy")
+                print_plain(f"   dockertree {branch_name} up -d")
+            else:
+                # Normal import success
+                worktree_info = result.get("worktree_info", {})
+                metadata = result.get("metadata", {})
+                
+                log_success(f"Package imported successfully to branch: {worktree_info.get('branch', 'unknown')}")
+                
+                # Show worktree details
+                print_plain(f"🌿 Branch: {worktree_info.get('branch', 'unknown')}")
+                print_plain(f"📁 Path: {worktree_info.get('worktree_path', 'unknown')}")
+                print_plain(f"🌐 Domain: {worktree_info.get('domain_name', 'unknown')}")
+                print_plain(f"📊 Status: {worktree_info.get('status', 'unknown')}")
+                
+                if worktree_info.get('status') == 'running':
+                    print_plain(f"🔗 URL: http://{worktree_info.get('domain_name', 'unknown')}/")
             
             return True
         else:

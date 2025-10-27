@@ -17,7 +17,7 @@ from .commands.volumes import VolumeManager
 from .commands.setup import SetupManager
 from .commands.packages import PackageCommands
 from .utils.logging import log_error, error_exit, set_verbose
-from .utils.validation import check_prerequisites, check_setup_or_prompt
+from .utils.validation import check_prerequisites, check_setup_or_prompt, check_prerequisites_no_git
 from .utils.pattern_matcher import has_wildcard
 from .utils.json_output import JSONOutput, add_json_option, handle_json_output
 
@@ -706,17 +706,39 @@ def export_package(branch_name: str, output_dir: str, include_code: bool, compre
 
 @packages.command('import')
 @click.argument('package_file', type=click.Path(exists=True))
-@click.option('--target-branch', help='Target branch name (defaults to package branch name)')
+@click.option('--target-branch', help='Target branch name (for normal mode)')
 @click.option('--restore-data/--no-data', default=True, help='Restore volume data')
+@click.option('--standalone', is_flag=True, default=None,
+              help='Force standalone mode (create new project)')
+@click.option('--target-dir', type=click.Path(),
+              help='Target directory for standalone import')
 @add_json_option
 @add_verbose_option
-def import_package(package_file: str, target_branch: str, restore_data: bool, json: bool):
-    """Import environment from package."""
+def import_package(package_file: str, target_branch: str, restore_data: bool,
+                  standalone: bool, target_dir: str, json: bool):
+    """Import environment from package.
+    
+    Automatically detects if you're in an existing project or need standalone mode.
+    Use --standalone to force creating a new project from the package.
+    """
     try:
-        check_setup_or_prompt()
-        check_prerequisites()
+        # Only check setup if explicitly not standalone
+        # (auto-detection happens in PackageManager)
+        if standalone is False:
+            check_setup_or_prompt()
+        
+        check_prerequisites_no_git()  # Skip git validation - handled by PackageManager
         package_commands = PackageCommands()
-        success = package_commands.import_package(Path(package_file), target_branch, restore_data)
+        
+        # Pass all parameters to PackageCommands
+        success = package_commands.import_package(
+            Path(package_file),
+            target_branch,
+            restore_data,
+            standalone=standalone,
+            target_directory=Path(target_dir) if target_dir else None
+        )
+        
         if not success:
             if json:
                 JSONOutput.print_error(f"Failed to import package {package_file}")

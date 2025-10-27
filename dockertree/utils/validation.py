@@ -189,6 +189,15 @@ def check_prerequisites(project_root: Optional[Path] = None) -> None:
         error_exit("Docker Compose is not available. Please install Docker Compose.")
 
 
+def check_prerequisites_no_git() -> None:
+    """Check Docker prerequisites only (skip git validation)."""
+    if not validate_docker_running():
+        error_exit("Docker is not running. Please start Docker and try again.")
+    
+    if not validate_docker_compose():
+        error_exit("Docker Compose is not available. Please install Docker Compose.")
+
+
 def validate_volume_exists(volume_name: str) -> bool:
     """Check if a Docker volume exists."""
     try:

@@ -174,9 +174,50 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 | Command | Description | Example |
 |---------|-------------|---------|
 | `packages export <branch>` | Export worktree as shareable package (includes code by default) | `dockertree packages export feature-auth` |
-| `packages import <file>` | Import environment from package | `dockertree packages import my-package.tar.gz` |
+| `packages import <file>` | Import environment from package (auto-detects standalone mode) | `dockertree packages import my-package.tar.gz` |
+| `packages import <file> --standalone` | Force standalone import (create new project) | `dockertree packages import my-package.tar.gz --standalone --target-dir ./myproject` |
 | `packages list` | List available packages | `dockertree packages list` |
 | `packages validate <file>` | Validate package integrity | `dockertree packages validate my-package.tar.gz` |
+
+#### Standalone Package Import
+
+Dockertree intelligently detects whether you're in an existing project and automatically switches between normal and standalone import modes.
+
+**Automatic Detection (Default)**:
+```bash
+# In an empty directory - automatically creates new project
+cd /path/to/new-location
+dockertree packages import my-package.tar.gz
+# Auto-detects: No git repo → standalone mode
+# Creates: ./myproject-standalone/
+
+# In existing dockertree project - automatically imports as worktree
+cd /path/to/existing-project
+dockertree packages import my-package.tar.gz
+# Auto-detects: Existing .dockertree → normal mode
+# Creates: new worktree in project
+```
+
+**Explicit Standalone Mode**:
+```bash
+# Force standalone import with custom directory
+dockertree packages import my-package.tar.gz --standalone --target-dir ./my-new-project
+
+# Force standalone even if in existing project
+dockertree packages import my-package.tar.gz --standalone
+```
+
+**Requirements**:
+- Standalone imports require packages exported with code (`--include-code`, which is the default)
+- Normal imports work with or without code
+
+**What Gets Created in Standalone Mode**:
+1. New git repository initialized
+2. Complete codebase from package
+3. Dockertree configuration (`.dockertree/`)
+4. Environment files
+5. Docker volumes (if `--restore-data`)
+6. Ready-to-use isolated environment
 
 ### Shell Completion Management
 | Command | Description | Example |
@@ -559,6 +600,40 @@ dockertree volumes clean feature-auth
 ```
 
 ### Package Management
+
+**Auto-Detection** (recommended):
+```bash
+# Automatically chooses correct mode based on current directory
+dockertree packages import myapp-feature-auth.tar.gz
+```
+
+**Standalone Import** (create new project):
+```bash
+# Create new project from package
+mkdir ~/new-project && cd ~/new-project
+dockertree packages import myapp-feature-auth.tar.gz --standalone
+
+# Or specify target directory
+dockertree packages import myapp-feature-auth.tar.gz --standalone --target-dir ./myproject
+```
+
+**Normal Import** (add to existing project):
+```bash
+# Import to existing project as new worktree
+cd /path/to/existing-project
+dockertree packages import myapp-feature-auth.tar.gz
+```
+
+**Import Options**:
+```bash
+# Import without data (configuration and code only)
+dockertree packages import myapp-feature-auth.tar.gz --no-data
+
+# Import to specific branch name
+dockertree packages import myapp-feature-auth.tar.gz --target-branch new-branch-name
+```
+
+**Export Options**:
 ```bash
 # Export complete environment as shareable package (includes code by default)
 dockertree packages export feature-auth
@@ -568,18 +643,15 @@ dockertree packages export feature-auth --no-code
 
 # Export to specific directory
 dockertree packages export feature-auth --output-dir ./exports
+```
 
+**Package Management**:
+```bash
 # List available packages
 dockertree packages list
 
 # Validate package integrity
-dockertree packages validate myapp-feature-auth-2024-01-15.dockertree-package.tar.gz
-
-# Import environment from package
-dockertree packages import myapp-feature-auth-2024-01-15.dockertree-package.tar.gz
-
-# Import without restoring data
-dockertree packages import myapp-feature-auth-2024-01-15.dockertree-package.tar.gz --no-data
+dockertree packages validate myapp-feature-auth.tar.gz
 ```
 
 ### Bulk Operations

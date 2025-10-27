@@ -102,16 +102,19 @@ class PackageTools:
             }
     
     async def import_package(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Import environment from package.
+        """Import environment from package with auto-detection.
         
         Args:
             arguments: Dictionary containing:
                 - package_file: Path to the package file
-                - target_branch: Target branch name (optional, defaults to package branch name)
+                - target_branch: Target branch name (optional, for normal mode)
                 - restore_data: Whether to restore volume data (optional, defaults to true)
+                - standalone: Force standalone mode (optional, None = auto-detect)
+                - target_directory: Target directory for standalone import (optional)
+                - working_directory: Working directory (optional)
         
         Returns:
-            Dictionary with success status and worktree information
+            Dictionary with success status and import information
         """
         try:
             package_file = arguments.get("package_file")
@@ -123,6 +126,8 @@ class PackageTools:
             
             target_branch = arguments.get("target_branch")
             restore_data = arguments.get("restore_data", True)
+            standalone = arguments.get("standalone")
+            target_directory = arguments.get("target_directory")
             
             # Build command arguments
             cmd_args = [
@@ -137,6 +142,12 @@ class PackageTools:
             else:
                 cmd_args.append("--no-data")
             
+            if standalone is True:
+                cmd_args.append("--standalone")
+            
+            if target_directory:
+                cmd_args.extend(["--target-dir", target_directory])
+            
             cmd_args.append("--json")
             
             # Run the command
@@ -149,15 +160,31 @@ class PackageTools:
                 }
             
             if result.get("success"):
+                mode = result.get("mode", "normal")
                 enriched_result = result.copy()
-                enriched_result.update({
-                    "message": f"Package imported successfully from {package_file}",
-                    "import_info": {
-                        "package_file": package_file,
-                        "target_branch": target_branch,
-                        "restore_data": restore_data
-                    }
-                })
+                
+                if mode == "standalone":
+                    enriched_result.update({
+                        "message": f"Standalone import completed from {package_file}",
+                        "import_mode": "standalone",
+                        "import_info": {
+                            "package_file": package_file,
+                            "project_directory": result.get("project_directory"),
+                            "branch_name": result.get("branch_name"),
+                            "restore_data": restore_data
+                        }
+                    })
+                else:
+                    enriched_result.update({
+                        "message": f"Package imported successfully from {package_file}",
+                        "import_mode": "normal",
+                        "import_info": {
+                            "package_file": package_file,
+                            "target_branch": target_branch,
+                            "restore_data": restore_data
+                        }
+                    })
+                
                 if self.response_enrichment:
                     enriched_result = self.response_enrichment.add_dockertree_context(
                         enriched_result, "import_package", target_branch, True

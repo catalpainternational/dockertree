@@ -11,7 +11,7 @@ services:
       - "443:443"
       - "2019:2019"  # Caddy admin API
     environment:
-      CADDY_EMAIL: ${CADDY_EMAIL:-admin@catalpa.build}
+      CADDY_EMAIL: ${CADDY_EMAIL:-admin@example.com}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - caddy_data:/data

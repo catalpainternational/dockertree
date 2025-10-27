@@ -7,11 +7,12 @@ to enable sharing complete isolated development environments between team member
 
 import json
 import shutil
+import subprocess
 import tarfile
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config.settings import get_project_root, get_project_name
 from ..core.docker_manager import DockerManager
@@ -34,9 +35,28 @@ class PackageManager:
         """
         self.project_root = project_root or get_project_root()
         self.docker_manager = DockerManager(project_root=self.project_root)
-        self.git_manager = GitManager(project_root=self.project_root)
+        self.git_manager = GitManager(project_root=self.project_root, validate=False)
         self.env_manager = EnvironmentManager(project_root=self.project_root)
         self.orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+    
+    def _is_in_existing_project(self) -> bool:
+        """Check if we're in an existing dockertree project.
+        
+        Returns:
+            True if in existing dockertree project with git repo, False otherwise
+        """
+        from ..utils.validation import validate_git_repository
+        
+        # Check for .dockertree directory with config
+        dockertree_config = self.project_root / ".dockertree" / "config.yml"
+        if not dockertree_config.exists():
+            return False
+        
+        # Check for git repository
+        if not validate_git_repository(self.project_root):
+            return False
+        
+        return True
     
     def export_package(self, branch_name: str, output_dir: Path, 
                       include_code: bool = False, compressed: bool = True, skip_volumes: bool = False) -> Dict[str, Any]:
@@ -144,8 +164,95 @@ class PackageManager:
             }
     
     def import_package(self, package_path: Path, target_branch: str = None,
+                      restore_data: bool = True, standalone: bool = None,
+                      target_directory: Path = None) -> Dict[str, Any]:
+        """Import package with automatic standalone detection.
+        
+        Args:
+            package_path: Path to the package file
+            target_branch: Target branch name (for normal mode, defaults to package branch)
+            restore_data: Whether to restore volume data
+            standalone: Force standalone mode (None = auto-detect)
+            target_directory: Target directory for standalone import
+            
+        Returns:
+            Dictionary with success status and import info
+        """
+        try:
+            # Auto-detect standalone mode if not explicitly set
+            if standalone is None:
+                standalone = not self._is_in_existing_project()
+                if standalone:
+                    log_info("No existing dockertree project detected - using standalone mode")
+            
+            # Route to appropriate import method
+            if standalone:
+                return self._standalone_import(package_path, target_directory, restore_data)
+            else:
+                return self._normal_import(package_path, target_branch, restore_data)
+                
+        except Exception as e:
+            log_error(f"Error importing package: {e}")
+            return {
+                "success": False,
+                "error": f"Unexpected error: {str(e)}"
+            }
+    
+    def _extract_and_validate_package(self, package_path: Path) -> Tuple[Path, Path, Dict[str, Any]]:
+        """Extract package and validate integrity.
+        
+        Args:
+            package_path: Path to the package file
+            
+        Returns:
+            Tuple of (temp_extract_dir, package_dir, metadata)
+            
+        Raises:
+            Exception: If validation fails
+        """
+        # Validate package file
+        if not package_path.exists():
+            raise FileNotFoundError(f"Package file not found: {package_path}")
+        
+        # Create temporary extraction directory
+        temp_extract_dir = Path(tempfile.mkdtemp())
+        
+        # Check if it's a compressed tar.gz file
+        is_compressed = package_path.name.endswith('.tar.gz')
+        
+        if is_compressed:
+            # Extract compressed package
+            log_info("Extracting compressed package...")
+            with tarfile.open(package_path, 'r:gz') as tar:
+                tar.extractall(temp_extract_dir)
+        else:
+            # Copy uncompressed package
+            log_info("Copying uncompressed package...")
+            shutil.copytree(package_path, temp_extract_dir / package_path.name)
+            temp_extract_dir = temp_extract_dir / package_path.name
+        
+        # Verify package integrity - look for the package directory
+        package_dirs = [d for d in temp_extract_dir.iterdir() if d.is_dir() and d.name.endswith('.dockertree-package')]
+        if not package_dirs:
+            raise ValueError("Invalid package: package directory not found")
+        
+        package_dir = package_dirs[0]
+        metadata_path = package_dir / "metadata.json"
+        if not metadata_path.exists():
+            raise ValueError("Invalid package: metadata.json not found")
+        
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+        
+        # Verify checksums
+        if not self._verify_package_checksums(package_dir, metadata):
+            raise ValueError("Package integrity check failed")
+        
+        return (temp_extract_dir, package_dir, metadata)
+    
+    def _normal_import(self, package_path: Path, target_branch: str = None,
                       restore_data: bool = True) -> Dict[str, Any]:
-        """Import package to new worktree - uses WorktreeOrchestrator.
+        """Import package to existing project as new worktree.
         
         Args:
             package_path: Path to the package file
@@ -155,141 +262,221 @@ class PackageManager:
         Returns:
             Dictionary with success status and worktree info
         """
-        try:
-            # 1. Validate package file
-            if not package_path.exists():
-                return {
-                    "success": False,
-                    "error": f"Package file not found: {package_path}"
-                }
-            
-            # 2. Extract package to temporary directory
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_extract_dir = Path(temp_dir)
-                
-                # Check if it's a compressed tar.gz file (suffix only returns .gz, not .tar.gz)
-                is_compressed = package_path.name.endswith('.tar.gz')
-                
-                if is_compressed:
-                    # Extract compressed package
-                    log_info("Extracting compressed package...")
-                    with tarfile.open(package_path, 'r:gz') as tar:
-                        tar.extractall(temp_extract_dir)
-                else:
-                    # Copy uncompressed package
-                    log_info("Copying uncompressed package...")
-                    shutil.copytree(package_path, temp_extract_dir / package_path.name)
-                    temp_extract_dir = temp_extract_dir / package_path.name
-                
-                # 3. Verify package integrity - look for the package directory
-                package_dirs = [d for d in temp_extract_dir.iterdir() if d.is_dir() and d.name.endswith('.dockertree-package')]
-                if not package_dirs:
-                    return {
-                        "success": False,
-                        "error": "Invalid package: package directory not found"
-                    }
-                
-                package_dir = package_dirs[0]
-                metadata_path = package_dir / "metadata.json"
-                if not metadata_path.exists():
-                    return {
-                        "success": False,
-                        "error": "Invalid package: metadata.json not found"
-                    }
-                
-                with open(metadata_path) as f:
-                    metadata = json.load(f)
-                
-                # Verify checksums
-                if not self._verify_package_checksums(package_dir, metadata):
-                    return {
-                        "success": False,
-                        "error": "Package integrity check failed"
-                    }
-                
-                # 4. Determine target branch
-                if not target_branch:
-                    target_branch = metadata.get("branch_name")
-                    if not target_branch:
-                        return {
-                            "success": False,
-                            "error": "Could not determine target branch from package"
-                        }
-                
-                # 5. Check if target branch already exists
-                if self.git_manager.validate_worktree_exists(target_branch):
-                    # Check if volumes exist for this branch
-                    from ..config.settings import get_volume_names
-                    from ..utils.validation import validate_volume_exists
-                    
-                    volume_names = get_volume_names(target_branch)
-                    existing_volumes = [name for name in volume_names.values() 
-                                      if validate_volume_exists(name)]
-                    
-                    if existing_volumes and restore_data:
-                        if not confirm_use_existing_worktree(target_branch):
-                            return {
-                                "success": False,
-                                "error": "Import cancelled by user"
-                            }
-                
-                # 6. Create worktree using orchestrator
-                log_info(f"Creating worktree for branch '{target_branch}'...")
-                create_result = self.orchestrator.create_worktree(target_branch)
-                if not create_result.get("success"):
-                    return {
-                        "success": False,
-                        "error": f"Failed to create worktree: {create_result.get('error')}"
-                    }
-                
-                worktree_path = self.git_manager.find_worktree_path(target_branch)
-                if not worktree_path:
-                    return {
-                        "success": False,
-                        "error": "Worktree created but path not found"
-                    }
-                
-                # 7. Restore environment files
-                env_success = self._restore_environment_files(package_dir, worktree_path)
-                if not env_success:
-                    log_warning("Failed to restore some environment files")
-                
-                # 8. Restore volumes if requested
-                if restore_data:
-                    volumes_backup = package_dir / "volumes" / f"backup_{metadata['branch_name']}.tar"
-                    if volumes_backup.exists():
-                        log_info(f"Restoring volumes for {target_branch}...")
-                        if not self.docker_manager.restore_volumes(target_branch, volumes_backup):
-                            log_warning("Failed to restore volumes")
-                    else:
-                        log_warning("Volume backup not found in package")
-                
-                # 9. Extract code archive if present
-                code_archive = package_dir / "code" / f"{metadata['branch_name']}.tar.gz"
-                if code_archive.exists():
-                    log_info(f"Extracting code archive to {worktree_path}...")
-                    try:
-                        with tarfile.open(code_archive, 'r:gz') as tar:
-                            tar.extractall(worktree_path)
-                    except Exception as e:
-                        log_warning(f"Failed to extract code archive: {e}")
-                
-                # 10. Get worktree info
-                worktree_info = self.orchestrator.get_worktree_info(target_branch)
-                
-                log_success(f"Package imported successfully to branch '{target_branch}'")
-                return {
-                    "success": True,
-                    "worktree_info": worktree_info.get("data", {}),
-                    "metadata": metadata
-                }
-                
-        except Exception as e:
-            log_error(f"Error importing package: {e}")
+        # Validate git repository for normal import
+        from ..utils.validation import validate_git_repository
+        if not validate_git_repository(self.project_root):
             return {
                 "success": False,
-                "error": f"Unexpected error: {str(e)}"
+                "error": "Normal import requires a git repository. Use --standalone for new projects."
             }
+        
+        temp_extract_dir = None
+        try:
+            # Extract and validate package
+            temp_extract_dir, package_dir, metadata = self._extract_and_validate_package(package_path)
+            
+            # Determine target branch
+            if not target_branch:
+                target_branch = metadata.get("branch_name")
+                if not target_branch:
+                    return {
+                        "success": False,
+                        "error": "Could not determine target branch from package"
+                    }
+            
+            # Check if target branch already exists
+            if self.git_manager.validate_worktree_exists(target_branch):
+                # Check if volumes exist for this branch
+                from ..config.settings import get_volume_names
+                from ..utils.validation import validate_volume_exists
+                
+                volume_names = get_volume_names(target_branch)
+                existing_volumes = [name for name in volume_names.values() 
+                                  if validate_volume_exists(name)]
+                
+                if existing_volumes and restore_data:
+                    if not confirm_use_existing_worktree(target_branch):
+                        return {
+                            "success": False,
+                            "error": "Import cancelled by user"
+                        }
+            
+            # Create worktree using orchestrator
+            log_info(f"Creating worktree for branch '{target_branch}'...")
+            create_result = self.orchestrator.create_worktree(target_branch)
+            if not create_result.get("success"):
+                return {
+                    "success": False,
+                    "error": f"Failed to create worktree: {create_result.get('error')}"
+                }
+            
+            worktree_path = self.git_manager.find_worktree_path(target_branch)
+            if not worktree_path:
+                return {
+                    "success": False,
+                    "error": "Worktree created but path not found"
+                }
+            
+            # Restore environment files
+            env_success = self._restore_environment_files(package_dir, worktree_path)
+            if not env_success:
+                log_warning("Failed to restore some environment files")
+            
+            # Restore volumes if requested
+            if restore_data:
+                volumes_backup = package_dir / "volumes" / f"backup_{metadata['branch_name']}.tar"
+                if volumes_backup.exists():
+                    log_info(f"Restoring volumes for {target_branch}...")
+                    if not self.docker_manager.restore_volumes(target_branch, volumes_backup):
+                        log_warning("Failed to restore volumes")
+                else:
+                    log_warning("Volume backup not found in package")
+            
+            # Extract code archive if present
+            code_archive = package_dir / "code" / f"{metadata['branch_name']}.tar.gz"
+            if code_archive.exists():
+                log_info(f"Extracting code archive to {worktree_path}...")
+                try:
+                    with tarfile.open(code_archive, 'r:gz') as tar:
+                        tar.extractall(worktree_path)
+                except Exception as e:
+                    log_warning(f"Failed to extract code archive: {e}")
+            
+            # Get worktree info
+            worktree_info = self.orchestrator.get_worktree_info(target_branch)
+            
+            log_success(f"Package imported successfully to branch '{target_branch}'")
+            return {
+                "success": True,
+                "mode": "normal",
+                "worktree_info": worktree_info.get("data", {}),
+                "metadata": metadata
+            }
+            
+        except Exception as e:
+            log_error(f"Error in normal import: {e}")
+            return {
+                "success": False,
+                "error": f"Normal import failed: {str(e)}"
+            }
+        finally:
+            # Clean up temporary directory
+            if temp_extract_dir and temp_extract_dir.exists():
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+    
+    def _standalone_import(self, package_path: Path, target_directory: Path = None,
+                          restore_data: bool = True) -> Dict[str, Any]:
+        """Import package in standalone mode - creates complete project.
+        
+        Creates new git repository, extracts code archive, initializes dockertree,
+        and restores environment and volumes.
+        
+        Args:
+            package_path: Path to the package file
+            target_directory: Target directory for new project
+            restore_data: Whether to restore volume data
+            
+        Returns:
+            Dictionary with success status and project info
+        """
+        temp_extract_dir = None
+        try:
+            # Extract and validate package
+            temp_extract_dir, package_dir, metadata = self._extract_and_validate_package(package_path)
+            
+            # Check if package includes code (required for standalone)
+            if not metadata.get("include_code"):
+                return {
+                    "success": False,
+                    "error": "Standalone import requires package with code (export with --include-code)"
+                }
+            
+            # Determine target directory
+            if not target_directory:
+                project_name = metadata.get("project_name", "dockertree-project")
+                target_directory = Path.cwd() / f"{project_name}-standalone"
+            
+            target_directory = Path(target_directory).resolve()
+            
+            # Create target directory
+            if target_directory.exists():
+                return {
+                    "success": False,
+                    "error": f"Target directory already exists: {target_directory}"
+                }
+            
+            target_directory.mkdir(parents=True, exist_ok=True)
+            
+            # Initialize git repository
+            log_info(f"Initializing git repository in {target_directory}")
+            subprocess.run(["git", "init"], cwd=target_directory, check=True, capture_output=True)
+            
+            # Extract code archive
+            code_archive = package_dir / "code" / f"{metadata['branch_name']}.tar.gz"
+            if code_archive.exists():
+                log_info("Extracting code archive...")
+                with tarfile.open(code_archive, 'r:gz') as tar:
+                    tar.extractall(target_directory)
+            
+            # Commit initial code
+            subprocess.run(["git", "add", "."], cwd=target_directory, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", f"Initial import from package: {metadata['branch_name']}"],
+                cwd=target_directory, check=True, capture_output=True
+            )
+            
+            # Initialize dockertree setup
+            log_info("Initializing dockertree configuration...")
+            from ..commands.setup import SetupManager
+            setup_manager = SetupManager(project_root=target_directory)
+            if not setup_manager.setup_project():
+                return {
+                    "success": False,
+                    "error": "Failed to initialize dockertree setup"
+                }
+            
+            # Restore environment files
+            self._restore_environment_files(package_dir, target_directory)
+            
+            # Create worktree for the imported branch
+            branch_name = metadata.get("branch_name")
+            if branch_name:
+                log_info(f"Creating worktree for branch '{branch_name}'...")
+                orchestrator = WorktreeOrchestrator(project_root=target_directory)
+                create_result = orchestrator.create_worktree(branch_name)
+                if not create_result.get("success"):
+                    log_warning(f"Failed to create worktree for branch '{branch_name}': {create_result.get('error')}")
+                else:
+                    log_success(f"Created worktree for branch '{branch_name}'")
+            
+            # Restore volumes if requested
+            if restore_data:
+                if branch_name:
+                    volumes_backup = package_dir / "volumes" / f"backup_{branch_name}.tar"
+                    if volumes_backup.exists():
+                        log_info(f"Restoring volumes...")
+                        docker_manager = DockerManager(project_root=target_directory)
+                        docker_manager.restore_volumes(branch_name, volumes_backup)
+            
+            log_success(f"Standalone import completed: {target_directory}")
+            return {
+                "success": True,
+                "mode": "standalone",
+                "project_directory": str(target_directory),
+                "branch_name": metadata.get("branch_name"),
+                "metadata": metadata
+            }
+            
+        except Exception as e:
+            log_error(f"Error in standalone import: {e}")
+            return {
+                "success": False,
+                "error": f"Standalone import failed: {str(e)}"
+            }
+        finally:
+            # Clean up temporary directory
+            if temp_extract_dir and temp_extract_dir.exists():
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
     
     def validate_package(self, package_path: Path) -> Dict[str, Any]:
         """Validate package integrity.
