@@ -488,21 +488,24 @@ Project Root/
 │   ├── config.yml
 │   ├── docker-compose.worktree.yml
 │   ├── Caddyfile.dockertree
-│   └── worktrees/                  # Worktree directories
-│       └── {branch_name}/
-│           └── .dockertree/        # Worktree configuration (fractal copy)
-│               ├── config.yml     # Identical to main
-│               ├── docker-compose.worktree.yml
-│               ├── Caddyfile.dockertree
-│               └── README.md       # User guide
+│   └── README.md
+└── worktrees/                      # Worktree directories (configurable in config.yml)
+    └── {branch_name}/
+        └── .dockertree/            # Worktree configuration (fractal copy)
+            ├── config.yml          # Identical to main
+            ├── docker-compose.worktree.yml
+            ├── Caddyfile.dockertree
+            └── README.md           # User guide
 ```
 
 #### Implementation Details
 
+**Worktree Directory Location**: Worktree directories are stored in `{project_root}/worktrees/` as configured in `.dockertree/config.yml` (the `worktree_dir` setting, which defaults to `"worktrees"`).
+
 **Method**: `WorktreeOrchestrator._copy_dockertree_to_worktree()`
 
 1. **Source Detection**: Finds the true project root containing `.dockertree/config.yml`
-2. **Selective Copying**: Copies entire `.dockertree` directory excluding `worktrees/` subdirectory
+2. **Selective Copying**: Copies entire `.dockertree` directory excluding the `worktrees/` subdirectory
 3. **Recursive Structure**: Each worktree becomes a self-contained dockertree project
 4. **Configuration Preservation**: Maintains identical configuration across all levels
 

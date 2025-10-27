@@ -39,7 +39,7 @@ class PackageManager:
         self.orchestrator = WorktreeOrchestrator(project_root=self.project_root)
     
     def export_package(self, branch_name: str, output_dir: Path, 
-                      include_code: bool = False, compressed: bool = True) -> Dict[str, Any]:
+                      include_code: bool = False, compressed: bool = True, skip_volumes: bool = False) -> Dict[str, Any]:
         """Export worktree to package - orchestrates existing managers.
         
         Args:
@@ -47,6 +47,7 @@ class PackageManager:
             output_dir: Directory to save the package
             include_code: Whether to include git archive of code
             compressed: Whether to compress the final package
+            skip_volumes: Whether to skip volume backup (fallback option)
             
         Returns:
             Dictionary with success status, package path, and metadata
@@ -83,17 +84,21 @@ class PackageManager:
                     "error": "Failed to copy environment files"
                 }
             
-            # 5. Backup volumes using existing DockerManager
-            volumes_backup_path = temp_package_dir / "volumes" / f"backup_{branch_name}.tar"
-            volumes_backup_path.parent.mkdir(exist_ok=True)
-            
-            log_info(f"Backing up volumes for {branch_name}...")
-            backup_file = self.docker_manager.backup_volumes(branch_name, temp_package_dir / "volumes")
-            if not backup_file:
-                return {
-                    "success": False,
-                    "error": "Failed to backup volumes"
-                }
+            # 5. Backup volumes using existing DockerManager (unless skipped)
+            backup_file = None
+            if not skip_volumes:
+                volumes_backup_path = temp_package_dir / "volumes" / f"backup_{branch_name}.tar"
+                volumes_backup_path.parent.mkdir(exist_ok=True)
+                
+                log_info(f"Backing up volumes for {branch_name}...")
+                backup_file = self.docker_manager.backup_volumes(branch_name, temp_package_dir / "volumes")
+                if not backup_file:
+                    return {
+                        "success": False,
+                        "error": "Failed to backup volumes"
+                    }
+            else:
+                log_warning("Skipping volume backup as requested")
             
             # 6. Create git archive if requested
             code_archive_path = None
@@ -109,7 +114,7 @@ class PackageManager:
                     }
             
             # 7. Generate metadata with checksums
-            metadata = self._generate_metadata(branch_name, temp_package_dir, include_code)
+            metadata = self._generate_metadata(branch_name, temp_package_dir, include_code, skip_volumes)
             
             # 8. Compress package if requested
             final_package_path = temp_package_dir
@@ -162,12 +167,17 @@ class PackageManager:
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_extract_dir = Path(temp_dir)
                 
-                if package_path.suffix == '.tar.gz':
+                # Check if it's a compressed tar.gz file (suffix only returns .gz, not .tar.gz)
+                is_compressed = package_path.name.endswith('.tar.gz')
+                
+                if is_compressed:
                     # Extract compressed package
+                    log_info("Extracting compressed package...")
                     with tarfile.open(package_path, 'r:gz') as tar:
                         tar.extractall(temp_extract_dir)
                 else:
                     # Copy uncompressed package
+                    log_info("Copying uncompressed package...")
                     shutil.copytree(package_path, temp_extract_dir / package_path.name)
                     temp_extract_dir = temp_extract_dir / package_path.name
                 
@@ -430,7 +440,7 @@ class PackageManager:
             log_error(f"Failed to restore environment files: {e}")
             return False
     
-    def _generate_metadata(self, branch_name: str, package_dir: Path, include_code: bool) -> Dict[str, Any]:
+    def _generate_metadata(self, branch_name: str, package_dir: Path, include_code: bool, skip_volumes: bool = False) -> Dict[str, Any]:
         """Generate package metadata with checksums."""
         metadata = {
             "package_version": "1.0",
@@ -439,6 +449,7 @@ class PackageManager:
             "branch_name": branch_name,
             "project_name": get_project_name(),
             "include_code": include_code,
+            "skip_volumes": skip_volumes,
             "checksums": {}
         }
         

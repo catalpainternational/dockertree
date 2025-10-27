@@ -26,7 +26,7 @@ from ..utils.path_utils import (
 from ..utils.validation import validate_branch_exists, validate_worktree_name_not_reserved
 from ..utils.pattern_matcher import get_matching_branches
 from ..utils.confirmation import confirm_batch_operation
-from ..utils.logging import set_mcp_mode
+from ..utils.logging import set_mcp_mode, log_info, log_success, log_warning, log_error
 
 
 class WorktreeOrchestrator:
@@ -51,6 +51,9 @@ class WorktreeOrchestrator:
         # Enable MCP mode to suppress stdout logging
         if mcp_mode:
             set_mcp_mode(True)
+        
+        # Store mcp_mode as instance attribute for use in methods
+        self.mcp_mode = mcp_mode
         
         self.git_manager = GitManager(project_root=self.project_root)
         self.docker_manager = DockerManager(project_root=self.project_root)
@@ -148,7 +151,7 @@ class WorktreeOrchestrator:
         try:
             # Define ignore function to skip worktrees subdirectory
             def ignore_worktrees(dir_path, names):
-                """Ignore .dockertree/worktrees/ subdirectory during copy."""
+                """Ignore worktrees/ subdirectory during copy."""
                 if dir_path == str(source_dockertree):
                     # Skip the worktrees subdirectory at the root level
                     return ['worktrees'] if 'worktrees' in names else []
@@ -489,8 +492,20 @@ class WorktreeOrchestrator:
             }
         }
     
+    def _check_volumes_exist(self, branch_name: str) -> List[str]:
+        """Check which volumes exist for this exact branch name."""
+        from ..config.settings import get_volume_names
+        from ..utils.validation import validate_volume_exists
+        
+        volume_names = get_volume_names(branch_name)
+        existing = []
+        for volume_type, volume_name in volume_names.items():
+            if validate_volume_exists(volume_name):
+                existing.append(volume_name)
+        return existing
+    
     def remove_worktree(self, branch_name: str, force: bool = False, delete_branch: bool = True) -> Dict[str, Any]:
-        """Remove worktree completely."""
+        """Remove worktree completely with exact match validation."""
         if not branch_name:
             return {
                 "success": False,
@@ -500,12 +515,35 @@ class WorktreeOrchestrator:
         # Ensure we're in the main repository directory
         ensure_main_repo()
         
-        # Check if worktree exists
+        # STEP 1: Verify exact matches exist
         worktree_exists = self.git_manager.validate_worktree_exists(branch_name)
+        branch_exists = validate_branch_exists(branch_name, self.project_root)
+        volumes_exist = self._check_volumes_exist(branch_name)
         
+        # STEP 2: If nothing exists for exact branch name, report and exit
+        if not worktree_exists and not branch_exists and not volumes_exist:
+            return {
+                "success": False,
+                "error": f"No exact match found for '{branch_name}'. "
+                         f"Checked: worktrees, branches, and docker volumes. "
+                         f"Please verify the exact branch name."
+            }
+        
+        # STEP 3: Report what was found for this exact branch name
+        if not self.mcp_mode:
+            log_info(f"Found for branch '{branch_name}':")
+            if worktree_exists:
+                worktree_path = self.git_manager.find_worktree_path(branch_name)
+                log_info(f"  - Worktree at: {worktree_path}")
+            if branch_exists:
+                log_info(f"  - Git branch: {branch_name}")
+            if volumes_exist:
+                log_info(f"  - Docker volumes: {', '.join(volumes_exist)}")
+        
+        # STEP 4: Handle case where only branch exists (no worktree)
         if not worktree_exists:
             # Check if branch exists to determine appropriate action
-            if validate_branch_exists(branch_name, self.project_root):
+            if branch_exists:
                 if delete_branch:
                     branch_deleted = self.git_manager.delete_branch_safely(branch_name, force)
                     if branch_deleted:
@@ -531,11 +569,6 @@ class WorktreeOrchestrator:
                             "message": f"Branch '{branch_name}' exists but worktree removal was skipped"
                         }
                     }
-            else:
-                return {
-                    "success": False,
-                    "error": f"Neither worktree nor branch '{branch_name}' exists. Please check the branch name and try again."
-                }
         
         # Stop worktree environment if running
         worktree_path = self.git_manager.find_worktree_path(branch_name)
@@ -569,8 +602,10 @@ class WorktreeOrchestrator:
             "data": {
                 "branch": branch_name,
                 "action": "removed",
+                "worktree_removed": worktree_path is not None,
                 "volumes_removed": volume_removal_success,
-                "branch_deleted": branch_deleted
+                "branch_deleted": branch_deleted,
+                "message": f"Successfully removed worktree '{branch_name}'"
             }
         }
     
@@ -613,8 +648,8 @@ class WorktreeOrchestrator:
         
         try:
             # Get container information
-            containers = self.docker_manager.get_worktree_containers(branch_name)
-            volumes = self.docker_manager.get_worktree_volumes(branch_name)
+            containers = self.docker_manager.get_worktree_containers_sync(branch_name)
+            volumes = self.docker_manager.get_worktree_volumes_sync(branch_name)
         except Exception:
             pass
         

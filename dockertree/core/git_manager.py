@@ -302,7 +302,7 @@ class GitManager:
         return new_path, legacy_path
     
     def find_worktree_path(self, branch_name: str) -> Optional[Path]:
-        """Find the actual worktree path for a branch."""
+        """Find the actual worktree path for a branch with exact matching."""
         try:
             result = subprocess.run(["git", "worktree", "list"], 
                                   capture_output=True, text=True, check=True, cwd=self.project_root)
@@ -313,9 +313,12 @@ class GitManager:
                     if len(parts) >= 3:
                         path = parts[0]
                         branch = parts[2].strip('[]') if parts[2].startswith('[') else parts[2]
+                        # Explicit exact match check
                         if branch == branch_name:
+                            log_info(f"Exact match found: worktree for '{branch_name}' at {path}")
                             return Path(path)
             
+            log_warning(f"No exact worktree match found for '{branch_name}'")
             return None
         except subprocess.CalledProcessError:
             return None
@@ -415,7 +418,7 @@ class GitManager:
             # Create git archive from the worktree
             result = subprocess.run([
                 "git", "archive", "--format=tar.gz",
-                f"--output={output_path}",
+                f"--output={output_path.absolute()}",
                 "HEAD"
             ], cwd=worktree_path, check=True, capture_output=True, text=True)
             

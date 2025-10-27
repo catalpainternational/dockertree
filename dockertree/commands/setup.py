@@ -794,7 +794,7 @@ ALLOWED_HOSTS={allowed_hosts}
             # Get worktree directory from config (defaults to 'worktrees')
             worktree_dir = get_worktree_dir()
             worktrees_entry = f"{worktree_dir}/"
-            old_entry = ".dockertree/worktrees/"
+            old_entry = f"{worktree_dir}/"  # For migration from old path references
             
             success = True
             

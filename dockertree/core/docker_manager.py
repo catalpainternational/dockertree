@@ -311,7 +311,7 @@ class DockerManager:
                     subprocess.run([
                         "docker", "run", "--rm",
                         "-v", f"{volume_name}:/data",
-                        "-v", f"{temp_backup_dir}:/backup",
+                        "-v", f"{temp_backup_dir.absolute()}:/backup",
                         "alpine", "tar", "czf", f"/backup/{volume_name}.tar.gz", "-C", "/data", "."
                     ], check=True, capture_output=True)
                 else:
@@ -366,7 +366,7 @@ class DockerManager:
                     subprocess.run([
                         "docker", "run", "--rm",
                         "-v", f"{volume_name}:/data",
-                        "-v", f"{restore_temp_dir}:/backup",
+                        "-v", f"{restore_temp_dir.absolute()}:/backup",
                         "alpine", "tar", "xzf", f"/backup/{volume_name}.tar.gz", "-C", "/data"
                     ], check=True, capture_output=True)
                 else:

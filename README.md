@@ -113,6 +113,8 @@ Dockertree CLI provides complete environment isolation through:
 | `remove <branch>` | Remove worktree (keep branch) | `dockertree remove feature-auth` |
 | `delete <branch>` | Delete worktree and branch | `dockertree delete feature-auth` |
 
+**Important**: Branch names must match exactly. The `delete` and `remove` commands check worktrees, branches, and docker volumes for exact matches only. If no exact match is found, an error message will show what was checked.
+
 ### Docker Compose Passthrough
 
 Dockertree supports direct passthrough to Docker Compose commands using the pattern: `dockertree <worktree_name> <compose-command>`
@@ -339,6 +341,12 @@ Error: Port 80 is already in use
 Error: Failed to create volume
 ```
 **Solution**: Check Docker disk space, ensure Docker has sufficient permissions
+
+**Branch not found during deletion**
+```bash
+Error: No exact match found for 'feature-auth'. Checked: worktrees, branches, and docker volumes.
+```
+**Solution**: Use `dockertree list` to see exact branch names. Branch names are case-sensitive and must match exactly.
 
 ### Debug Commands
 

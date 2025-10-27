@@ -49,12 +49,13 @@ dockertree feature-auth run --rm web bash
 ## 📁 Directory Structure
 
 ```
-.dockertree/
-├── README.md                    # This file
-├── config.yml                   # Project configuration
-├── docker-compose.worktree.yml  # Docker Compose override file
-├── env.dockertree             # Environment variables for worktree
-└── worktrees/                  # Worktree directories
+Project Root/
+├── .dockertree/
+│   ├── README.md                    # This file
+│   ├── config.yml                   # Project configuration
+│   ├── docker-compose.worktree.yml  # Docker Compose override file
+│   └── env.dockertree               # Environment variables for worktree
+└── worktrees/                       # Worktree directories (configurable)
     ├── feature-auth/
     ├── feature-payments/
     └── test-branch/

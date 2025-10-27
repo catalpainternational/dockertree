@@ -404,7 +404,9 @@ def delete(branch_name: str, force: bool, json: bool):
         if json:
             JSONOutput.print_error(f"Error removing worktree: {e}")
         else:
-            error_exit(f"Error removing worktree: {e}")
+            log_error(f"Error removing worktree '{branch_name}': {e}")
+            log_info("Safety check: Only the specified worktree should be affected.")
+            error_exit(f"Operation failed for '{branch_name}'")
 
 
 
@@ -468,7 +470,9 @@ def remove(branch_name: str, force: bool, json: bool):
         if json:
             JSONOutput.print_error(f"Error removing worktree: {e}")
         else:
-            error_exit(f"Error removing worktree: {e}")
+            log_error(f"Error removing worktree '{branch_name}': {e}")
+            log_info("Safety check: Only the specified worktree should be affected.")
+            error_exit(f"Operation failed for '{branch_name}'")
 
 
 
@@ -675,15 +679,16 @@ def packages():
 @click.option('--output-dir', type=click.Path(), default='./packages', help='Output directory for packages')
 @click.option('--include-code/--no-code', default=True, help='Include git archive of code (default: True)')
 @click.option('--compressed/--no-compress', default=True, help='Compress package to .tar.gz')
+@click.option('--skip-volumes', is_flag=True, default=False, help='Skip volume backup (fallback when volume backup fails)')
 @add_json_option
 @add_verbose_option
-def export_package(branch_name: str, output_dir: str, include_code: bool, compressed: bool, json: bool):
+def export_package(branch_name: str, output_dir: str, include_code: bool, compressed: bool, skip_volumes: bool, json: bool):
     """Export worktree environment to shareable package."""
     try:
         check_setup_or_prompt()
         check_prerequisites()
         package_commands = PackageCommands()
-        success = package_commands.export(branch_name, Path(output_dir), include_code, compressed)
+        success = package_commands.export(branch_name, Path(output_dir), include_code, compressed, skip_volumes)
         if not success:
             if json:
                 JSONOutput.print_error(f"Failed to export package for {branch_name}")

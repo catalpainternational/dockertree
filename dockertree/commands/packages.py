@@ -20,7 +20,7 @@ class PackageCommands:
         self.package_manager = PackageManager()
     
     def export(self, branch_name: str, output_dir: Path, 
-              include_code: bool, compressed: bool) -> bool:
+              include_code: bool, compressed: bool, skip_volumes: bool = False) -> bool:
         """Export package - CLI interface with logging.
         
         Args:
@@ -28,14 +28,18 @@ class PackageCommands:
             output_dir: Directory to save the package
             include_code: Whether to include git archive of code
             compressed: Whether to compress the final package
+            skip_volumes: Whether to skip volume backup (fallback option)
             
         Returns:
             True if export succeeded, False otherwise
         """
         log_info(f"Exporting package for branch: {branch_name}")
         
+        if skip_volumes:
+            log_warning("Skipping volume backup (--skip-volumes flag enabled)")
+        
         result = self.package_manager.export_package(
-            branch_name, output_dir, include_code, compressed
+            branch_name, output_dir, include_code, compressed, skip_volumes
         )
         
         if result.get("success"):
