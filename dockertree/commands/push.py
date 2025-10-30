@@ -323,29 +323,28 @@ class PushManager:
         try:
             remote_script = r'''
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 echo "[PREP] Detecting distribution..."
 if [ -f /etc/os-release ]; then . /etc/os-release; else ID=unknown; fi
 
-# Choose package manager
-PKG_UPDATE=""
-PKG_INSTALL=""
+# Choose package manager commands
 if command -v apt-get >/dev/null 2>&1; then
-  PKG_UPDATE="apt-get update -y"
-  PKG_INSTALL="apt-get install -y"
+  PKG_UPDATE='apt-get -y -qq update'
+  PKG_INSTALL='apt-get -y -qq install'
 elif command -v dnf >/dev/null 2>&1; then
-  PKG_UPDATE="dnf -y makecache"
-  PKG_INSTALL="dnf install -y"
+  PKG_UPDATE='dnf -y makecache'
+  PKG_INSTALL='dnf install -y -q'
 elif command -v yum >/dev/null 2>&1; then
-  PKG_UPDATE="yum -y makecache"
-  PKG_INSTALL="yum install -y"
+  PKG_UPDATE='yum -y makecache'
+  PKG_INSTALL='yum install -y -q'
 else
   echo "[PREP] Unsupported distro: cannot find apt/dnf/yum" >&2
   exit 1
 fi
 
-echo "[PREP] Installing base tools (curl git python3 python3-pip)..."
+echo "[PREP] Installing base tools (curl git python3 python3-venv python3-pip)..."
 sh -lc "$PKG_UPDATE"
-sh -lc "$PKG_INSTALL curl git python3 python3-pip || true"
+sh -lc "$PKG_INSTALL curl git python3 python3-venv python3-pip || true"
 
 echo "[PREP] Installing Docker (Engine + Compose v2) via get.docker.com..."
 curl -fsSL https://get.docker.com | sh
@@ -358,11 +357,20 @@ else
   service docker start || true
 fi
 
-echo "[PREP] Ensuring pip is up to date..."
-python3 -m pip install --upgrade pip || true
-
-echo "[PREP] Installing dockertree from GitHub..."
-python3 -m pip install --upgrade git+https://github.com/catalpainternational/dockertree.git
+echo "[PREP] Setting up dockertree in dedicated venv..."
+VENV_DIR=/opt/dockertree-venv
+mkdir -p "$VENV_DIR"
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/pip" install --upgrade pip wheel
+"$VENV_DIR/bin/pip" install --upgrade git+https://github.com/catalpainternational/dockertree.git || {
+  echo "[PREP] venv install failed, trying pipx/system pip as fallback" >&2
+  if command -v pipx >/dev/null 2>&1; then
+    pipx install --force git+https://github.com/catalpainternational/dockertree.git || true
+  else
+    python3 -m pip install --break-system-packages --upgrade git+https://github.com/catalpainternational/dockertree.git || true
+  fi
+}
+ln -sf "$VENV_DIR/bin/dockertree" /usr/local/bin/dockertree || true
 
 echo "[PREP] Versions:"
 docker --version || true
@@ -370,15 +378,17 @@ docker compose version || true
 git --version || true
 dockertree --version || true
 '''
-            cmd = [
-                "ssh", f"{username}@{server}",
-                "bash -lc", remote_script
-            ]
+
+            # Send script via SSH stdin and execute under bash -lc
+            exec_cmd = "cat > /tmp/dtprep.sh && chmod +x /tmp/dtprep.sh && /tmp/dtprep.sh && rm -f /tmp/dtprep.sh"
+            ssh_cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
             log_info("Preparing server (installing dependencies)...")
-            # Use subprocess.run with list; for passing the script, join properly
             result = subprocess.run(
-                ["ssh", f"{username}@{server}", "bash -lc", remote_script],
-                capture_output=True, text=True, check=False
+                ssh_cmd,
+                input=remote_script,
+                capture_output=True,
+                text=True,
+                check=False
             )
             if result.returncode != 0:
                 log_error("Remote preparation failed")
@@ -400,6 +410,11 @@ dockertree --version || true
                            domain: Optional[str], ip: Optional[str]) -> None:
         """Run remote import and start services via SSH."""
         try:
+            # Ensure git identity exists to avoid commit failure on fresh servers
+            ensure_git_identity = (
+                "(git config --global user.email >/dev/null 2>&1 || git config --global user.email 'dockertree@local') && "
+                "(git config --global user.name >/dev/null 2>&1 || git config --global user.name 'Dockertree')"
+            )
             # Build import command
             import_cmd = f"dockertree packages import {remote_file} --standalone"
             if domain:
@@ -408,7 +423,7 @@ dockertree --version || true
                 import_cmd += f" --ip {ip}"
 
             start_cmd = f"dockertree start-proxy && dockertree {branch_name} up -d"
-            full_cmd = f"bash -lc \"{import_cmd} && {start_cmd}\""
+            full_cmd = f"bash -lc \"{ensure_git_identity} && {import_cmd} && {start_cmd}\""
             cmd = ["ssh", f"{username}@{server}", full_cmd]
             log_info("Running remote import and start commands...")
             subprocess.run(cmd, check=False)
