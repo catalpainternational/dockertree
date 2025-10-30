@@ -408,50 +408,81 @@ dockertree --version || true
 
     def _run_remote_import(self, username: str, server: str, remote_file: str, branch_name: str,
                            domain: Optional[str], ip: Optional[str]) -> None:
-        """Run remote import and start services via SSH."""
+        """Run remote import and start services via SSH using a robust here-doc script."""
         try:
-            # Ensure git identity exists to avoid commit failure on fresh servers
-            ensure_git_identity = (
-                "(git config --global user.email >/dev/null 2>&1 || git config --global user.email 'dockertree@local') && "
-                "(git config --global user.name >/dev/null 2>&1 || git config --global user.name 'Dockertree')"
+            script = self._compose_remote_script(
+                remote_file=remote_file,
+                branch_name=branch_name,
+                domain=domain,
+                ip=ip,
             )
-
-            # Build flags common to both standalone and normal import
-            # (we'll conditionally add --non-interactive depending on server CLI version)
-            extra_flags = ""
-            if domain:
-                extra_flags += f" --domain {domain}"
-            if ip:
-                extra_flags += f" --ip {ip}"
-
-            # Detect existing dockertree project under /root and prefer normal import when present
-            # Fallback to standalone when no project exists
-            remote_logic = (
-                # Determine dockertree binary (prefer venv install)
-                "if [ -x /opt/dockertree-venv/bin/dockertree ]; then DOCKERTREE_BIN=/opt/dockertree-venv/bin/dockertree; "
-                "elif command -v dockertree >/dev/null 2>&1; then DOCKERTREE_BIN=\"$(command -v dockertree)\"; else DOCKERTREE_BIN=dockertree; fi; "
-                # Parse version (expected: dockertree, version X.Y.Z)
-                "VER=$($DOCKERTREE_BIN --version 2>/dev/null | sed -n 's/.*version[[:space:]]*\\([0-9.]*\\).*/\\1/p'); "
-                # Simple semantic compare: supports 0.9.2 threshold
-                "need_flag=0; if [ -n \"$VER\" ]; then \\\n                   major=$(echo $VER | cut -d. -f1); minor=$(echo $VER | cut -d. -f2); patch=$(echo $VER | cut -d. -f3); \\\n                   [ -z \"$minor\" ] && minor=0; [ -z \"$patch\" ] && patch=0; \\\n                   if [ \"$major\" -gt 0 ] || { [ \"$major\" -eq 0 ] && { [ \"$minor\" -gt 9 ] || { [ \"$minor\" -eq 9 ] && [ \"$patch\" -ge 2 ]; }; }; }; then need_flag=1; fi; \\\n                 fi; "
-                f"COMMON='packages import {remote_file}{extra_flags}'; "
-                "if [ $need_flag -eq 1 ]; then COMMON=\"$COMMON --non-interactive\"; fi; "
-                # Find an existing dockertree project by locating .dockertree/config.yml
-                "HIT=$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit); "
-                "if [ -n \"$HIT\" ]; then ROOT=$(dirname \"$(dirname \"$HIT\")\"); cd \"$ROOT\" && $DOCKERTREE_BIN $COMMON; else $DOCKERTREE_BIN $COMMON --standalone; fi;"
-            )
-
-            # Determine ROOT again after import in case project was created
-            start_logic = (
-                "HIT2=$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit); "
-                "if [ -n \"$HIT2\" ]; then ROOT2=$(dirname \"$(dirname \"$HIT2\")\"); else ROOT2=/root; fi; "
-                "if [ -x /opt/dockertree-venv/bin/dockertree ]; then DTBIN=/opt/dockertree-venv/bin/dockertree; elif command -v dockertree >/dev/null 2>&1; then DTBIN=\"$(command -v dockertree)\"; else DTBIN=dockertree; fi; "
-                f"cd \"$ROOT2\" && $DTBIN start-proxy && $DTBIN {branch_name} up -d"
-            )
-            full_cmd = f"bash -lc \"{ensure_git_identity} && {remote_logic} && {start_logic}\""
-            cmd = ["ssh", f"{username}@{server}", full_cmd]
+            exec_cmd = "cat > /tmp/dtrun.sh && chmod +x /tmp/dtrun.sh && /tmp/dtrun.sh && rm -f /tmp/dtrun.sh"
+            cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
             log_info("Running remote import and start commands...")
-            subprocess.run(cmd, check=False)
+            subprocess.run(cmd, input=script, text=True, check=False)
         except Exception as e:
             log_warning(f"Remote import failed: {e}")
+
+    def _compose_remote_script(self, remote_file: str, branch_name: str, domain: Optional[str], ip: Optional[str]) -> str:
+        """Compose a robust remote bash script for importing and starting services.
+
+        The script sets strict mode, ensures git identity, resolves the dockertree binary,
+        detects existing project vs standalone, runs import with proper flags and quoting,
+        then starts proxy and brings up the branch.
+        """
+        import_flags_parts = []
+        if domain:
+            import_flags_parts.append(f"--domain '{domain}'")
+        if ip:
+            import_flags_parts.append(f"--ip '{ip}'")
+        import_flags = " ".join(import_flags_parts)
+
+        script = f"""
+set -euo pipefail
+
+# Ensure git identity exists to avoid commit failures on fresh servers
+if ! git config --global user.email >/dev/null 2>&1; then git config --global user.email 'dockertree@local'; fi
+if ! git config --global user.name >/dev/null 2>&1; then git config --global user.name 'Dockertree'; fi
+
+# Determine dockertree binary (prefer venv install)
+if [ -x /opt/dockertree-venv/bin/dockertree ]; then
+  DTBIN=/opt/dockertree-venv/bin/dockertree
+elif command -v dockertree >/dev/null 2>&1; then
+  DTBIN="$(command -v dockertree)"
+else
+  DTBIN=dockertree
+fi
+
+PKG_FILE='{remote_file}'
+BRANCH_NAME='{branch_name}'
+IMPORT_FLAGS="{import_flags}"
+
+# Find an existing dockertree project by locating .dockertree/config.yml
+HIT="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit || true)"
+if [ -n "$HIT" ]; then
+  ROOT="$(dirname "$(dirname "$HIT")")"
+  cd "$ROOT"
+  "$DTBIN" packages import "$PKG_FILE" $IMPORT_FLAGS --non-interactive
+else
+  ROOT="/root"
+  cd "$ROOT"
+  "$DTBIN" packages import "$PKG_FILE" $IMPORT_FLAGS --standalone --non-interactive
+fi
+
+# Determine ROOT again after import in case project was created
+HIT2="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit || true)"
+if [ -n "$HIT2" ]; then
+  ROOT2="$(dirname "$(dirname "$HIT2")")"
+else
+  ROOT2="/root"
+fi
+cd "$ROOT2"
+
+# Start proxy (ignore non-interactive flag if unsupported)
+"$DTBIN" start-proxy --non-interactive || "$DTBIN" start-proxy || true
+
+# Bring up the environment for the branch
+"$DTBIN" "$BRANCH_NAME" up -d
+"""
+        return script
 

@@ -85,7 +85,7 @@ Dockertree CLI provides complete environment isolation through:
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `setup` | Initialize dockertree for this project | `dockertree setup` |
+| `setup` | Initialize dockertree for this project | `dockertree setup [--monkey-patch]` |
 
 ### Global Caddy Management
 
@@ -229,6 +229,27 @@ dockertree packages import my-package.tar.gz --standalone
 | `completion status` | Show completion status | `dockertree completion status` |
 
 ## 🔧 Configuration
+### Django Compatibility Checks
+
+During `dockertree setup`, if a Django project is detected (`manage.py` present and a `settings.py` found), Dockertree validates your settings are environment-driven for reverse proxy use:
+
+- ALLOWED_HOSTS (comma-separated)
+- CSRF_TRUSTED_ORIGINS (space-separated)
+- USE_X_FORWARDED_HOST (boolean)
+- SECURE_PROXY_SSL_HEADER (tuple as `HTTP_X_FORWARDED_PROTO,https`)
+
+If any are missing, Dockertree prints a nicely formatted guidance block and, when `--monkey-patch` is supplied, appends a safe snippet to `settings.py` to read these values from environment variables.
+
+Suggested snippet (auto-added with `--monkey-patch`):
+```python
+import os
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "").split()
+USE_X_FORWARDED_HOST = os.getenv("USE_X_FORWARDED_HOST", "False") == "True"
+_hdr = os.getenv("SECURE_PROXY_SSL_HEADER")
+if _hdr:
+    SECURE_PROXY_SSL_HEADER = tuple(_hdr.split(",", 1))
+```
 
 ### Project Setup
 
@@ -779,3 +800,9 @@ deployment:
 ---
 
 *For detailed architecture information, see [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md)*
+
+Additional Push Details:
+- Auto-import uses a robust remote script with strict mode and consistent quoting to avoid empty variables and broken chains.
+- The remote script resolves the dockertree binary (prefers `/opt/dockertree-venv/bin/dockertree`, falls back to `dockertree`).
+- Import runs with `--non-interactive`; older dockertree versions safely ignore unknown flags.
+- If an existing dockertree project is detected on the server, a normal import is used; otherwise standalone import is performed.

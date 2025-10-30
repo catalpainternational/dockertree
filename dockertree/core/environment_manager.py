@@ -355,6 +355,8 @@ PROJECT_ROOT={project_root}
 SITE_DOMAIN={site_domain}
 ALLOWED_HOSTS={allowed_hosts}
 DEBUG=False
+USE_X_FORWARDED_HOST=True
+CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
 """
     
     def apply_domain_overrides(self, worktree_path: Path, domain: str) -> bool:
@@ -415,6 +417,28 @@ DEBUG=False
                     content,
                     flags=re.MULTILINE | re.IGNORECASE
                 )
+
+                # Ensure proxy/CSRF headers for domain deployments
+                # USE_X_FORWARDED_HOST
+                if 'USE_X_FORWARDED_HOST=' in content:
+                    content = re.sub(r'USE_X_FORWARDED_HOST=.*', 'USE_X_FORWARDED_HOST=True', content, flags=re.MULTILINE)
+                else:
+                    content += "\nUSE_X_FORWARDED_HOST=True\n"
+
+                # SECURE_PROXY_SSL_HEADER hint (value consumed by Django settings if supported)
+                if 'SECURE_PROXY_SSL_HEADER=' in content:
+                    content = re.sub(r'SECURE_PROXY_SSL_HEADER=.*', 'SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https', content, flags=re.MULTILINE)
+                else:
+                    content += "\nSECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https\n"
+
+                # CSRF_TRUSTED_ORIGINS
+                csrf_value = f"https://{domain} http://{domain}"
+                if base_domain:
+                    csrf_value += f" https://*.{base_domain}"
+                if 'CSRF_TRUSTED_ORIGINS=' in content:
+                    content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
                 
                 # Replace any localhost references in URLs
                 project_name = sanitize_project_name(get_project_name())
@@ -457,6 +481,25 @@ DEBUG=False
                     content,
                     flags=re.MULTILINE | re.IGNORECASE
                 )
+
+                # Ensure proxy/CSRF headers in env.dockertree
+                if 'USE_X_FORWARDED_HOST=' in content:
+                    content = re.sub(r'USE_X_FORWARDED_HOST=.*', 'USE_X_FORWARDED_HOST=True', content, flags=re.MULTILINE)
+                else:
+                    content += "\nUSE_X_FORWARDED_HOST=True\n"
+
+                if 'SECURE_PROXY_SSL_HEADER=' in content:
+                    content = re.sub(r'SECURE_PROXY_SSL_HEADER=.*', 'SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https', content, flags=re.MULTILINE)
+                else:
+                    content += "\nSECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https\n"
+
+                csrf_value = f"https://{domain} http://{domain}"
+                if base_domain:
+                    csrf_value += f" https://*.{base_domain}"
+                if 'CSRF_TRUSTED_ORIGINS=' in content:
+                    content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
                 
                 env_dockertree.write_text(content)
                 log_info(f"Applied domain overrides to env.dockertree: {domain}")
@@ -492,6 +535,19 @@ DEBUG=False
 
                 content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
 
+                # Proxy/CSRF headers for IP deployments (HTTP-only)
+                if 'USE_X_FORWARDED_HOST=' in content:
+                    content = re.sub(r'USE_X_FORWARDED_HOST=.*', 'USE_X_FORWARDED_HOST=True', content, flags=re.MULTILINE)
+                else:
+                    content += "\nUSE_X_FORWARDED_HOST=True\n"
+
+                # No SECURE_PROXY_SSL_HEADER for IP/http
+                csrf_value = f"http://{ip}"
+                if 'CSRF_TRUSTED_ORIGINS=' in content:
+                    content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
+
                 env_file.write_text(content)
                 log_info(f"Applied IP overrides to .env file: {ip}")
 
@@ -502,6 +558,15 @@ DEBUG=False
                 content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
                 content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS=localhost,127.0.0.1,{ip},web', content, flags=re.MULTILINE)
                 content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
+                if 'USE_X_FORWARDED_HOST=' in content:
+                    content = re.sub(r'USE_X_FORWARDED_HOST=.*', 'USE_X_FORWARDED_HOST=True', content, flags=re.MULTILINE)
+                else:
+                    content += "\nUSE_X_FORWARDED_HOST=True\n"
+                csrf_value = f"http://{ip}"
+                if 'CSRF_TRUSTED_ORIGINS=' in content:
+                    content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
                 env_dockertree.write_text(content)
                 log_info(f"Applied IP overrides to env.dockertree: {ip}")
 

@@ -284,6 +284,8 @@ PROJECT_ROOT={project_root}
 SITE_DOMAIN={site_domain}
 ALLOWED_HOSTS={allowed_hosts}
 DEBUG=True
+USE_X_FORWARDED_HOST=True
+CSRF_TRUSTED_ORIGINS=http://{site_domain}
 """
 
 # Volume naming

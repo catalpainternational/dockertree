@@ -883,13 +883,14 @@ def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_pack
 
 @cli.command()
 @click.option('--project-name', help='Project name (default: directory name)')
+@click.option('--monkey-patch', is_flag=True, default=False, help='If a Django project is detected, auto-patch settings.py to read env vars')
 @add_verbose_option
-def setup(project_name: Optional[str]):
+def setup(project_name: Optional[str], monkey_patch: bool):
     """Initialize dockertree for this project."""
     try:
         setup_manager = SetupManager()
         check_prerequisites(project_root=setup_manager.project_root)
-        success = setup_manager.setup_project(project_name)
+        success = setup_manager.setup_project(project_name, monkey_patch=monkey_patch)
         if not success:
             error_exit("Failed to setup dockertree for this project")
     except Exception as e:

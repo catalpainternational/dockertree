@@ -113,6 +113,8 @@ User runs: dockertree setup
 5. Copy Caddyfile template
     ↓
 Ready for worktree creation
+    ↓
+6. Detect Django settings and validate env-driven keys (optional monkey patch)
 ```
 
 ### Configuration Files
@@ -144,6 +146,12 @@ environment:
 - Web services automatically connected to `dockertree_caddy_proxy` network
 
 ### Dynamic Configuration Loading
+### Django Compatibility Validation
+- Detection: presence of `manage.py` and a `settings.py` module in the project
+- Validated keys: `ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, `USE_X_FORWARDED_HOST`, `SECURE_PROXY_SSL_HEADER`
+- Behavior:
+  - If missing/incomplete, print console guidance with a safe copy/paste snippet
+  - If `--monkey-patch` was passed to `dockertree setup`, append a guarded block to `settings.py` that reads the values from environment variables
 
 The system uses a fallback hierarchy:
 1. **Project Config**: `.dockertree/config.yml` (if exists)

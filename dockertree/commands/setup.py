@@ -34,7 +34,7 @@ class SetupManager:
         self.project_root = project_root or Path.cwd()
         self.dockertree_dir = self.project_root / DOCKERTREE_DIR
     
-    def setup_project(self, project_name: Optional[str] = None, domain: Optional[str] = None, ip: Optional[str] = None, non_interactive: bool = False) -> bool:
+    def setup_project(self, project_name: Optional[str] = None, domain: Optional[str] = None, ip: Optional[str] = None, non_interactive: bool = False, monkey_patch: bool = False) -> bool:
         """Initialize dockertree for a project.
         
         Args:
@@ -101,10 +101,114 @@ class SetupManager:
             if not self._handle_completion_setup():
                 log_warning("Completion setup was skipped or failed")
         
+        # 9. Django-specific guidance and optional patching
+        try:
+            self._django_post_setup_checks(monkey_patch=monkey_patch, non_interactive=non_interactive)
+        except Exception as e:
+            log_warning(f"Django compatibility checks skipped: {e}")
+
         log_success("Dockertree setup completed successfully!")
         log_info(f"Configuration: {self.dockertree_dir}/config.yml")
         log_info("Next: dockertree start")
         return True
+
+    def _django_post_setup_checks(self, monkey_patch: bool, non_interactive: bool) -> None:
+        """If this looks like a Django project, validate env-driven settings and guide user.
+
+        Checks for: ALLOWED_HOSTS, CSRF_TRUSTED_ORIGINS, USE_X_FORWARDED_HOST, SECURE_PROXY_SSL_HEADER.
+        Optionally monkey-patches settings.py to read these from env vars.
+        """
+        project_root = self.project_root
+        manage_py = project_root / "manage.py"
+        if not manage_py.exists():
+            return
+        settings_path = self._locate_django_settings(project_root)
+        if not settings_path:
+            return
+
+        missing = self._find_missing_env_config(settings_path)
+        if not missing:
+            log_success("✓ Django settings appear to read required values from environment variables")
+            return
+
+        log_warning("Django settings are not fully environment-driven for reverse proxy/Caddy:")
+        for item in missing:
+            log_warning(f"  - {item}")
+
+        self._print_django_guidance()
+
+        if monkey_patch:
+            ok = self._monkey_patch_settings(settings_path)
+            if ok:
+                log_success(f"Applied monkey patch to: {settings_path}")
+            else:
+                log_warning("Monkey patch failed; please update settings manually using the guidance above.")
+
+    def _locate_django_settings(self, root: Path) -> Optional[Path]:
+        """Heuristically find Django settings.py."""
+        # common locations: project_name/settings.py; any */settings.py near manage.py
+        candidates = list(root.glob("**/settings.py"))
+        # Prefer a settings.py in same tree as manage.py
+        for cand in candidates:
+            if (cand.parent / "__init__.py").exists():
+                return cand
+        return candidates[0] if candidates else None
+
+    def _find_missing_env_config(self, settings_py: Path) -> list[str]:
+        """Naively scan settings.py for env-driven configuration of required keys."""
+        text = settings_py.read_text()
+        missing: list[str] = []
+        def lacks(patterns: list[str]) -> bool:
+            return not any(p in text for p in patterns)
+
+        # ALLOWED_HOSTS from env (comma-split or similar)
+        if lacks(["ALLOWED_HOSTS = os.getenv", "ALLOWED_HOSTS=os.getenv", "env('ALLOWED_HOSTS'", "split(", "] for parsing"]):
+            missing.append("ALLOWED_HOSTS from env (comma-separated)")
+        # CSRF_TRUSTED_ORIGINS from env (space-separated)
+        if lacks(["CSRF_TRUSTED_ORIGINS = os.getenv", "env('CSRF_TRUSTED_ORIGINS'", "split("]):
+            missing.append("CSRF_TRUSTED_ORIGINS from env (space-separated)")
+        # USE_X_FORWARDED_HOST from env
+        if lacks(["USE_X_FORWARDED_HOST = os.getenv", "env('USE_X_FORWARDED_HOST'"]):
+            missing.append("USE_X_FORWARDED_HOST from env (True/False)")
+        # SECURE_PROXY_SSL_HEADER from env (tuple encoded as 'HTTP_X_FORWARDED_PROTO,https')
+        if lacks(["SECURE_PROXY_SSL_HEADER =", "SECURE_PROXY_SSL_HEADER = tuple("]):
+            missing.append("SECURE_PROXY_SSL_HEADER from env ('HTTP_X_FORWARDED_PROTO,https')")
+        return missing
+
+    def _print_django_guidance(self) -> None:
+        log_info("")
+        log_info("Guidance for Django behind Caddy (copy into settings.py):")
+        log_info("""
+import os
+
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+CSRF_TRUSTED_ORIGINS = os.getenv("CSRF_TRUSTED_ORIGINS", "").split()
+
+USE_X_FORWARDED_HOST = os.getenv("USE_X_FORWARDED_HOST", "False") == "True"
+_hdr = os.getenv("SECURE_PROXY_SSL_HEADER")
+if _hdr:
+    SECURE_PROXY_SSL_HEADER = tuple(_hdr.split(",", 1))
+        """)
+
+    def _monkey_patch_settings(self, settings_py: Path) -> bool:
+        try:
+            text = settings_py.read_text()
+            block = (
+                "\n\n# Dockertree auto-added settings for reverse proxy and env-driven config\n"
+                "import os\n"
+                "ALLOWED_HOSTS = os.getenv(\"ALLOWED_HOSTS\", \"localhost,127.0.0.1\").split(\",\")\n"
+                "CSRF_TRUSTED_ORIGINS = os.getenv(\"CSRF_TRUSTED_ORIGINS\", \"\").split()\n"
+                "USE_X_FORWARDED_HOST = os.getenv(\"USE_X_FORWARDED_HOST\", \"False\") == \"True\"\n"
+                "_hdr = os.getenv(\"SECURE_PROXY_SSL_HEADER\")\n"
+                "if _hdr:\n    SECURE_PROXY_SSL_HEADER = tuple(_hdr.split(\",\", 1))\n"
+            )
+            if "Dockertree auto-added settings" in text:
+                return True
+            settings_py.write_text(text + block)
+            return True
+        except Exception as e:
+            log_warning(f"Failed to patch settings.py: {e}")
+            return False
     
     def _create_dockertree_directory(self) -> bool:
         """Create .dockertree directory structure."""
