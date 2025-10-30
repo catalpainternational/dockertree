@@ -193,6 +193,38 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
         from ..config.settings import get_project_name, sanitize_project_name
         project_name = sanitize_project_name(get_project_name())
         return f"{project_name}-{branch_name}.localhost"
+
+    def get_access_url(self, branch_name: str) -> str:
+        """Get the preferred access URL for a worktree.
+
+        If env.dockertree defines SITE_DOMAIN starting with http(s):// use it directly.
+        Otherwise, construct http://{domain}/ where domain is either SITE_DOMAIN or
+        the default {project}-{branch}.localhost fallback.
+        """
+        try:
+            # Attempt to read SITE_DOMAIN from worktree env.dockertree
+            from ..config.settings import get_worktree_paths
+            new_path, legacy_path = get_worktree_paths(branch_name)
+            env_path = get_env_compose_file_path(new_path)
+            if not env_path.exists() and legacy_path.exists():
+                env_path = get_env_compose_file_path(legacy_path)
+            site_domain_value = None
+            if env_path.exists():
+                content = env_path.read_text()
+                for line in content.splitlines():
+                    if line.startswith('SITE_DOMAIN='):
+                        site_domain_value = line.split('=', 1)[1].strip()
+                        break
+            if site_domain_value:
+                # If already a full URL, return as-is
+                if site_domain_value.startswith('http://') or site_domain_value.startswith('https://'):
+                    return site_domain_value.rstrip('/')
+                # Else treat as hostname
+                return f"http://{site_domain_value}"
+        except Exception:
+            pass
+        # Fallback: build from computed domain
+        return f"http://{self.get_domain_name(branch_name)}"
     
     def get_allowed_hosts(self, branch_name: str) -> str:
         """Get the allowed hosts for a worktree."""

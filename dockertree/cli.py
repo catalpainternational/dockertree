@@ -323,11 +323,10 @@ def up(branch_name: str, detach: bool, json: bool):
                 error_exit(f"Failed to start worktree environment for {branch_name}")
         else:
             if json:
-                domain_name = worktree_manager.env_manager.get_domain_name(branch_name)
+                access_url = worktree_manager.env_manager.get_access_url(branch_name)
                 JSONOutput.print_success(f"Worktree environment started for {branch_name}", {
                     "branch_name": branch_name,
-                    "domain_name": domain_name,
-                    "url": f"http://{domain_name}/"
+                    "url": access_url
                 })
     except Exception as e:
         if json:
