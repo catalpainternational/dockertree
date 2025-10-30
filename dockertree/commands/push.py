@@ -426,9 +426,11 @@ dockertree --version || true
             # Detect existing dockertree project under /root and prefer normal import when present
             # Fallback to standalone when no project exists
             remote_logic = (
-                "EXISTING=$(find /root -maxdepth 2 -type f -path '*/.dockertree/config.yml' -printf '%h\\n' | head -n1); "
-                "if [ -n \"$EXISTING\" ]; then "
-                f"  cd \"$EXISTING\" && dockertree packages import {remote_file}{extra_flags}; "
+                # Find an existing dockertree project by locating .dockertree/config.yml
+                "HIT=$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit); "
+                "if [ -n \"$HIT\" ]; then "
+                "  ROOT=$(dirname \"$(dirname \"$HIT\")\"); "
+                f"  cd \"$ROOT\" && dockertree packages import {remote_file}{extra_flags}; "
                 "else "
                 f"  dockertree packages import {remote_file} --standalone{extra_flags}; "
                 "fi"
