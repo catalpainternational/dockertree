@@ -415,15 +415,27 @@ dockertree --version || true
                 "(git config --global user.email >/dev/null 2>&1 || git config --global user.email 'dockertree@local') && "
                 "(git config --global user.name >/dev/null 2>&1 || git config --global user.name 'Dockertree')"
             )
-            # Build import command
-            import_cmd = f"dockertree packages import {remote_file} --standalone"
+
+            # Build flags common to both standalone and normal import
+            extra_flags = ""
             if domain:
-                import_cmd += f" --domain {domain}"
+                extra_flags += f" --domain {domain}"
             if ip:
-                import_cmd += f" --ip {ip}"
+                extra_flags += f" --ip {ip}"
+
+            # Detect existing dockertree project under /root and prefer normal import when present
+            # Fallback to standalone when no project exists
+            remote_logic = (
+                "EXISTING=$(find /root -maxdepth 2 -type f -path '*/.dockertree/config.yml' -printf '%h\\n' | head -n1); "
+                "if [ -n \"$EXISTING\" ]; then "
+                f"  cd \"$EXISTING\" && dockertree packages import {remote_file}{extra_flags}; "
+                "else "
+                f"  dockertree packages import {remote_file} --standalone{extra_flags}; "
+                "fi"
+            )
 
             start_cmd = f"dockertree start-proxy && dockertree {branch_name} up -d"
-            full_cmd = f"bash -lc \"{ensure_git_identity} && {import_cmd} && {start_cmd}\""
+            full_cmd = f"bash -lc \"{ensure_git_identity} && {remote_logic} && {start_cmd}\""
             cmd = ["ssh", f"{username}@{server}", full_cmd]
             log_info("Running remote import and start commands...")
             subprocess.run(cmd, check=False)
