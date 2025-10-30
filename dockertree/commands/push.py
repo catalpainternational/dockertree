@@ -417,7 +417,8 @@ dockertree --version || true
             )
 
             # Build flags common to both standalone and normal import
-            extra_flags = " --non-interactive"
+            # (we'll conditionally add --non-interactive depending on server CLI version)
+            extra_flags = ""
             if domain:
                 extra_flags += f" --domain {domain}"
             if ip:
@@ -426,21 +427,26 @@ dockertree --version || true
             # Detect existing dockertree project under /root and prefer normal import when present
             # Fallback to standalone when no project exists
             remote_logic = (
+                # Determine dockertree binary (prefer venv install)
+                "if [ -x /opt/dockertree-venv/bin/dockertree ]; then DOCKERTREE_BIN=/opt/dockertree-venv/bin/dockertree; "
+                "elif command -v dockertree >/dev/null 2>&1; then DOCKERTREE_BIN=\"$(command -v dockertree)\"; else DOCKERTREE_BIN=dockertree; fi; "
+                # Parse version (expected: dockertree, version X.Y.Z)
+                "VER=$($DOCKERTREE_BIN --version 2>/dev/null | sed -n 's/.*version[[:space:]]*\\([0-9.]*\\).*/\\1/p'); "
+                # Simple semantic compare: supports 0.9.2 threshold
+                "need_flag=0; if [ -n \"$VER\" ]; then \\\n                   major=$(echo $VER | cut -d. -f1); minor=$(echo $VER | cut -d. -f2); patch=$(echo $VER | cut -d. -f3); \\\n                   [ -z \"$minor\" ] && minor=0; [ -z \"$patch\" ] && patch=0; \\\n                   if [ \"$major\" -gt 0 ] || { [ \"$major\" -eq 0 ] && { [ \"$minor\" -gt 9 ] || { [ \"$minor\" -eq 9 ] && [ \"$patch\" -ge 2 ]; }; }; }; then need_flag=1; fi; \\\n                 fi; "
+                f"COMMON='packages import {remote_file}{extra_flags}'; "
+                "if [ $need_flag -eq 1 ]; then COMMON=\"$COMMON --non-interactive\"; fi; "
                 # Find an existing dockertree project by locating .dockertree/config.yml
                 "HIT=$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit); "
-                "if [ -n \"$HIT\" ]; then "
-                "  ROOT=$(dirname \"$(dirname \"$HIT\")\"); "
-                f"  cd \"$ROOT\" && dockertree packages import {remote_file}{extra_flags}; "
-                "else "
-                f"  dockertree packages import {remote_file} --standalone{extra_flags}; "
-                "fi"
+                "if [ -n \"$HIT\" ]; then ROOT=$(dirname \"$(dirname \"$HIT\")\"); cd \"$ROOT\" && $DOCKERTREE_BIN $COMMON; else $DOCKERTREE_BIN $COMMON --standalone; fi;"
             )
 
             # Determine ROOT again after import in case project was created
             start_logic = (
                 "HIT2=$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit); "
                 "if [ -n \"$HIT2\" ]; then ROOT2=$(dirname \"$(dirname \"$HIT2\")\"); else ROOT2=/root; fi; "
-                f"cd \"$ROOT2\" && dockertree start-proxy && dockertree {branch_name} up -d"
+                "if [ -x /opt/dockertree-venv/bin/dockertree ]; then DTBIN=/opt/dockertree-venv/bin/dockertree; elif command -v dockertree >/dev/null 2>&1; then DTBIN=\"$(command -v dockertree)\"; else DTBIN=dockertree; fi; "
+                f"cd \"$ROOT2\" && $DTBIN start-proxy && $DTBIN {branch_name} up -d"
             )
             full_cmd = f"bash -lc \"{ensure_git_identity} && {remote_logic} && {start_logic}\""
             cmd = ["ssh", f"{username}@{server}", full_cmd]

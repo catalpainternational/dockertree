@@ -665,7 +665,7 @@ class PackageManager:
         """Generate package metadata with checksums."""
         metadata = {
             "package_version": "1.0",
-            "dockertree_version": "0.9.1",
+            "dockertree_version": "0.9.2",
             "created_at": datetime.now().isoformat(),
             "branch_name": branch_name,
             "project_name": get_project_name(),

@@ -159,7 +159,7 @@ class DockertreeCLI(click.MultiCommand):
 
 # Create the CLI instance
 cli = DockertreeCLI(help='Dockertree: Git Worktrees for Isolated Development Environments\n\nUsage: dockertree <worktree_name> up|down  or  dockertree <command>')
-cli = click.version_option(version="0.9.1", prog_name="dockertree")(cli)
+cli = click.version_option(version="0.9.2", prog_name="dockertree")(cli)
 
 # Add global verbose option
 def verbose_callback(ctx, param, value):
