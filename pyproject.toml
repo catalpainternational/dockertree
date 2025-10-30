@@ -1,6 +1,6 @@
 [project]
 name = "dockertree"
-version = "0.9.1"
+version = "0.9.2"
 description = "Git worktrees with isolated Docker Compose environments"
 readme = "README.md"
 requires-python = ">=3.11"

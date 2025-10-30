@@ -106,7 +106,7 @@ class SetupManager:
             self._django_post_setup_checks(monkey_patch=monkey_patch, non_interactive=non_interactive)
         except Exception as e:
             log_warning(f"Django compatibility checks skipped: {e}")
-
+        
         log_success("Dockertree setup completed successfully!")
         log_info(f"Configuration: {self.dockertree_dir}/config.yml")
         log_info("Next: dockertree start")
