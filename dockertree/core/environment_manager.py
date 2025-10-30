@@ -39,8 +39,19 @@ class EnvironmentManager:
             self.project_root = Path(project_root).resolve()
     
     def create_worktree_env(self, branch_name: str, worktree_path: Path, 
-                           source_env_path: Optional[Path] = None) -> bool:
-        """Create worktree environment files."""
+                           source_env_path: Optional[Path] = None,
+                           domain: Optional[str] = None) -> bool:
+        """Create worktree environment files.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            worktree_path: Path to the worktree directory
+            source_env_path: Optional source .env file path
+            domain: Optional domain override (subdomain.domain.tld) for production/staging
+            
+        Returns:
+            True if successful, False otherwise
+        """
         log_info("Creating worktree environment files")
         
         # Ensure worktree directory exists
@@ -57,7 +68,7 @@ class EnvironmentManager:
         if not env_copied:
             log_warning("No .env file found to copy, creating default .env file")
             # Create a default .env file if none exists
-            if not self._create_default_env_file(worktree_path, branch_name):
+            if not self._create_default_env_file(worktree_path, branch_name, domain):
                 log_warning("Failed to create default .env file")
         
         # Create env.dockertree with worktree-specific settings
@@ -65,19 +76,36 @@ class EnvironmentManager:
         dockertree_dir = worktree_path / ".dockertree"
         dockertree_dir.mkdir(parents=True, exist_ok=True)
         
-        env_compose_content = generate_env_compose_content(branch_name)
+        # Generate environment content, applying domain overrides if provided
+        if domain:
+            env_compose_content = self._generate_env_compose_with_domain(branch_name, domain)
+        else:
+            env_compose_content = generate_env_compose_content(branch_name)
+            
         env_compose_path = get_env_compose_file_path(worktree_path)
         
         try:
             env_compose_path.write_text(env_compose_content)
+            
+            # Apply domain overrides to .env file if domain is provided
+            if domain:
+                self.apply_domain_overrides(worktree_path, domain)
+                
             log_success(f"Environment files created for {branch_name}")
             return True
         except Exception as e:
             log_warning(f"Failed to create environment file: {e}")
             return False
     
-    def _create_default_env_file(self, worktree_path: Path, branch_name: str) -> bool:
-        """Create a default .env file if none exists."""
+    def _create_default_env_file(self, worktree_path: Path, branch_name: str, 
+                                 domain: Optional[str] = None) -> bool:
+        """Create a default .env file if none exists.
+        
+        Args:
+            worktree_path: Path to worktree directory
+            branch_name: Branch name
+            domain: Optional domain override (subdomain.domain.tld)
+        """
         from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree, DEFAULT_ENV_VARS
         
         env_file = worktree_path / ".env"
@@ -89,8 +117,14 @@ class EnvironmentManager:
         # Create default environment content with project prefix
         project_name = sanitize_project_name(get_project_name())
         compose_project_name = f"{project_name}-{branch_name}"
-        site_domain = f"{project_name}-{branch_name}.localhost"
-        allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
+        
+        # Use domain override if provided, otherwise use localhost
+        if domain:
+            site_domain = f"https://{domain}"
+            allowed_hosts = f"localhost,127.0.0.1,{domain},*.{domain.split('.', 1)[1] if '.' in domain else domain},web"
+        else:
+            site_domain = f"{project_name}-{branch_name}.localhost"
+            allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
         
         default_env_content = f"""# Default environment configuration for {branch_name}
 # This file was automatically created by dockertree
@@ -256,3 +290,190 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
             "environment_variables": self.get_environment_variables(branch_name),
             "compose_environment": self.generate_compose_environment(branch_name)
         }
+    
+    def _generate_env_compose_with_domain(self, branch_name: str, domain: str) -> str:
+        """Generate env.dockertree content with domain override.
+        
+        Args:
+            branch_name: Branch name
+            domain: Domain override (subdomain.domain.tld)
+            
+        Returns:
+            Environment file content with domain overrides
+        """
+        from ..config.settings import get_project_name, sanitize_project_name
+        project_root = self.project_root
+        project_name = sanitize_project_name(get_project_name())
+        compose_project_name = f"{project_name}-{branch_name}"
+        
+        # Construct URLs from domain
+        site_domain = f"https://{domain}"
+        allowed_hosts = f"localhost,127.0.0.1,{domain}"
+        
+        # Extract base domain (everything after first dot)
+        if '.' in domain:
+            base_domain = domain.split('.', 1)[1]
+            allowed_hosts += f",*.{base_domain}"
+        allowed_hosts += ",web"
+        
+        return f"""# Dockertree environment configuration for {branch_name}
+# Domain override: {domain}
+COMPOSE_PROJECT_NAME={compose_project_name}
+PROJECT_ROOT={project_root}
+SITE_DOMAIN={site_domain}
+ALLOWED_HOSTS={allowed_hosts}
+DEBUG=False
+"""
+    
+    def apply_domain_overrides(self, worktree_path: Path, domain: str) -> bool:
+        """Apply domain overrides to existing environment files.
+        
+        This method modifies .env files to replace localhost references
+        with production/staging domain values.
+        
+        Args:
+            worktree_path: Path to worktree directory
+            domain: Domain override (subdomain.domain.tld)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from ..config.settings import sanitize_project_name, get_project_name
+            import re
+            
+            # Construct URLs from domain
+            http_url = f"http://{domain}"
+            https_url = f"https://{domain}"
+            
+            # Update .env file if it exists
+            env_file = worktree_path / ".env"
+            if env_file.exists():
+                content = env_file.read_text()
+                
+                # Replace SITE_DOMAIN
+                content = re.sub(
+                    r'SITE_DOMAIN=.*',
+                    f'SITE_DOMAIN={https_url}',
+                    content,
+                    flags=re.MULTILINE
+                )
+                
+                # Update ALLOWED_HOSTS to include domain
+                # Extract base domain
+                base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+                
+                # Build new ALLOWED_HOSTS
+                if 'ALLOWED_HOSTS=' in content:
+                    # Replace existing ALLOWED_HOSTS
+                    content = re.sub(
+                        r'ALLOWED_HOSTS=.*',
+                        f'ALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.{base_domain},web',
+                        content,
+                        flags=re.MULTILINE
+                    )
+                else:
+                    # Add ALLOWED_HOSTS if missing
+                    content += f"\nALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.{base_domain},web\n"
+                
+                # Set DEBUG=False for production
+                content = re.sub(
+                    r'DEBUG=.*',
+                    'DEBUG=False',
+                    content,
+                    flags=re.MULTILINE | re.IGNORECASE
+                )
+                
+                # Replace any localhost references in URLs
+                project_name = sanitize_project_name(get_project_name())
+                localhost_domain = f"{project_name}-.*\\.localhost"
+                content = re.sub(
+                    localhost_domain,
+                    domain,
+                    content
+                )
+                
+                env_file.write_text(content)
+                log_info(f"Applied domain overrides to .env file: {domain}")
+            
+            # Update env.dockertree file
+            env_dockertree = get_env_compose_file_path(worktree_path)
+            if env_dockertree.exists():
+                content = env_dockertree.read_text()
+                
+                # Replace SITE_DOMAIN
+                content = re.sub(
+                    r'SITE_DOMAIN=.*',
+                    f'SITE_DOMAIN={https_url}',
+                    content,
+                    flags=re.MULTILINE
+                )
+                
+                # Update ALLOWED_HOSTS
+                base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+                content = re.sub(
+                    r'ALLOWED_HOSTS=.*',
+                    f'ALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.{base_domain},web',
+                    content,
+                    flags=re.MULTILINE
+                )
+                
+                # Set DEBUG=False
+                content = re.sub(
+                    r'DEBUG=.*',
+                    'DEBUG=False',
+                    content,
+                    flags=re.MULTILINE | re.IGNORECASE
+                )
+                
+                env_dockertree.write_text(content)
+                log_info(f"Applied domain overrides to env.dockertree: {domain}")
+            
+            return True
+            
+        except Exception as e:
+            log_warning(f"Failed to apply domain overrides: {e}")
+            return False
+
+    def apply_ip_overrides(self, worktree_path: Path, ip: str) -> bool:
+        """Apply IP overrides to existing environment files (HTTP-only).
+
+        Sets SITE_DOMAIN to http://{ip}, updates ALLOWED_HOSTS to include
+        the IP, and forces DEBUG=False.
+        """
+        try:
+            import re
+
+            http_url = f"http://{ip}"
+
+            # Update .env file
+            env_file = worktree_path / ".env"
+            if env_file.exists():
+                content = env_file.read_text()
+
+                content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
+
+                if 'ALLOWED_HOSTS=' in content:
+                    content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS=localhost,127.0.0.1,{ip},web', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nALLOWED_HOSTS=localhost,127.0.0.1,{ip},web\n"
+
+                content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
+
+                env_file.write_text(content)
+                log_info(f"Applied IP overrides to .env file: {ip}")
+
+            # Update env.dockertree
+            env_dockertree = get_env_compose_file_path(worktree_path)
+            if env_dockertree.exists():
+                content = env_dockertree.read_text()
+                content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
+                content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS=localhost,127.0.0.1,{ip},web', content, flags=re.MULTILINE)
+                content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
+                env_dockertree.write_text(content)
+                log_info(f"Applied IP overrides to env.dockertree: {ip}")
+
+            return True
+        except Exception as e:
+            log_warning(f"Failed to apply IP overrides: {e}")
+            return False

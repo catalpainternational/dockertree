@@ -111,6 +111,7 @@ class PackageTools:
                 - restore_data: Whether to restore volume data (optional, defaults to true)
                 - standalone: Force standalone mode (optional, None = auto-detect)
                 - target_directory: Target directory for standalone import (optional)
+                - domain: Domain override (subdomain.domain.tld) for production/staging (optional)
                 - working_directory: Working directory (optional)
         
         Returns:
@@ -128,6 +129,8 @@ class PackageTools:
             restore_data = arguments.get("restore_data", True)
             standalone = arguments.get("standalone")
             target_directory = arguments.get("target_directory")
+            domain = arguments.get("domain")
+            ip = arguments.get("ip")
             
             # Build command arguments
             cmd_args = [
@@ -147,6 +150,11 @@ class PackageTools:
             
             if target_directory:
                 cmd_args.extend(["--target-dir", target_directory])
+            
+            if domain:
+                cmd_args.extend(["--domain", domain])
+            if ip:
+                cmd_args.extend(["--ip", ip])
             
             cmd_args.append("--json")
             

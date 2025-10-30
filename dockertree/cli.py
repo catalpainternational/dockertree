@@ -16,6 +16,7 @@ from .commands.utility import UtilityManager
 from .commands.volumes import VolumeManager
 from .commands.setup import SetupManager
 from .commands.packages import PackageCommands
+from .commands.push import PushManager
 from .utils.logging import log_error, error_exit, set_verbose
 from .utils.validation import check_prerequisites, check_setup_or_prompt, check_prerequisites_no_git
 from .utils.pattern_matcher import has_wildcard
@@ -99,7 +100,7 @@ class DockertreeCLI(click.MultiCommand):
         """Return list of available commands."""
         return sorted([
             'create', 'delete', 'remove', 'start-proxy', 'stop-proxy', 'start', 'stop', 
-            'list', 'prune', 'volumes', 'packages', 'help', 'delete-all', 'remove-all',
+            'list', 'prune', 'volumes', 'packages', 'push', 'help', 'delete-all', 'remove-all',
             'setup', 'clean-legacy', 'completion', '_completion', '-D', '-r'  # Add dash-prefixed aliases
         ])
     
@@ -138,6 +139,8 @@ class DockertreeCLI(click.MultiCommand):
             return volumes
         elif name == 'packages':
             return packages
+        elif name == 'push':
+            return push
         elif name == 'help':
             return help
         elif name == 'delete-all':
@@ -712,14 +715,17 @@ def export_package(branch_name: str, output_dir: str, include_code: bool, compre
               help='Force standalone mode (create new project)')
 @click.option('--target-dir', type=click.Path(),
               help='Target directory for standalone import')
+@click.option('--domain', help='Domain override (subdomain.domain.tld) for production/staging')
+@click.option('--ip', help='IP override for HTTP-only deployments (no TLS)')
 @add_json_option
 @add_verbose_option
 def import_package(package_file: str, target_branch: str, restore_data: bool,
-                  standalone: bool, target_dir: str, json: bool):
+                  standalone: bool, target_dir: str, domain: str, ip: str, json: bool):
     """Import environment from package.
     
     Automatically detects if you're in an existing project or need standalone mode.
     Use --standalone to force creating a new project from the package.
+    Use --domain to override localhost URLs for production/staging deployments.
     """
     try:
         # Only check setup if explicitly not standalone
@@ -731,12 +737,21 @@ def import_package(package_file: str, target_branch: str, restore_data: bool,
         package_commands = PackageCommands()
         
         # Pass all parameters to PackageCommands
+        # Validate mutual exclusivity
+        if domain and ip:
+            if json:
+                JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
+            else:
+                error_exit("Options --domain and --ip are mutually exclusive")
+
         success = package_commands.import_package(
             Path(package_file),
             target_branch,
             restore_data,
             standalone=standalone,
-            target_directory=Path(target_dir) if target_dir else None
+            target_directory=Path(target_dir) if target_dir else None,
+            domain=domain,
+            ip=ip
         )
         
         if not success:
@@ -798,6 +813,71 @@ def validate_package(package_file: str, json: bool):
             JSONOutput.print_error(f"Error validating package: {e}")
         else:
             error_exit(f"Error validating package: {e}")
+
+
+@cli.command()
+@click.argument('branch_name', required=False)
+@click.argument('scp_target')
+@click.option('--output-dir', type=click.Path(), default='./packages', help='Temporary package location (default: ./packages)')
+@click.option('--keep-package', is_flag=True, default=False, help='Don\'t delete package after successful push')
+@click.option('--auto-import', is_flag=True, default=False, help='Automatically import and start on remote server after push')
+@click.option('--prepare-server', is_flag=True, default=False, help='Check remote server for required dependencies before push')
+@click.option('--domain', help='Domain override for remote import (subdomain.domain.tld)')
+@click.option('--ip', help='IP override for remote import (HTTP-only)')
+@add_json_option
+@add_verbose_option
+def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, json: bool):
+    """Push dockertree package to remote server via SCP.
+    
+    Exports a complete dockertree environment package and transfers it to a remote server.
+    If branch_name is not provided, auto-detects from current working directory.
+    
+    Usage:
+        # Auto-detect branch from current directory
+        dockertree push user@server:/path/to/packages
+        
+        # Explicit branch name
+        dockertree push feature-auth user@server:/path/to/packages
+    
+    After pushing, SSH to the server and import with:
+        dockertree packages import <package-file> --standalone --domain your-domain.com
+    """
+    try:
+        check_setup_or_prompt()
+        check_prerequisites()
+        
+        # Validate mutual exclusivity
+        if domain and ip:
+            if json:
+                JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
+            else:
+                error_exit("Options --domain and --ip are mutually exclusive")
+        
+        push_manager = PushManager()
+        success = push_manager.push_package(
+            branch_name=branch_name,
+            scp_target=scp_target,
+            output_dir=Path(output_dir),
+            keep_package=keep_package,
+            auto_import=auto_import,
+            domain=domain,
+            ip=ip,
+            prepare_server=prepare_server
+        )
+        
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to push package to {scp_target}")
+            else:
+                error_exit(f"Failed to push package to {scp_target}")
+        else:
+            if json:
+                JSONOutput.print_success(f"Package pushed successfully to {scp_target}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error pushing package: {e}")
+        else:
+            error_exit(f"Error pushing package: {e}")
 
 
 @cli.command()

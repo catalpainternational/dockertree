@@ -165,7 +165,8 @@ class PackageManager:
     
     def import_package(self, package_path: Path, target_branch: str = None,
                       restore_data: bool = True, standalone: bool = None,
-                      target_directory: Path = None) -> Dict[str, Any]:
+                      target_directory: Path = None, domain: Optional[str] = None,
+                      ip: Optional[str] = None) -> Dict[str, Any]:
         """Import package with automatic standalone detection.
         
         Args:
@@ -174,6 +175,7 @@ class PackageManager:
             restore_data: Whether to restore volume data
             standalone: Force standalone mode (None = auto-detect)
             target_directory: Target directory for standalone import
+            domain: Optional domain override (subdomain.domain.tld) for production/staging
             
         Returns:
             Dictionary with success status and import info
@@ -185,11 +187,18 @@ class PackageManager:
                 if standalone:
                     log_info("No existing dockertree project detected - using standalone mode")
             
+            # Validate mutually exclusive domain/ip
+            if domain and ip:
+                return {
+                    "success": False,
+                    "error": "Options --domain and --ip are mutually exclusive"
+                }
+
             # Route to appropriate import method
             if standalone:
-                return self._standalone_import(package_path, target_directory, restore_data)
+                return self._standalone_import(package_path, target_directory, restore_data, domain, ip)
             else:
-                return self._normal_import(package_path, target_branch, restore_data)
+                return self._normal_import(package_path, target_branch, restore_data, domain, ip)
                 
         except Exception as e:
             log_error(f"Error importing package: {e}")
@@ -251,13 +260,15 @@ class PackageManager:
         return (temp_extract_dir, package_dir, metadata)
     
     def _normal_import(self, package_path: Path, target_branch: str = None,
-                      restore_data: bool = True) -> Dict[str, Any]:
+                      restore_data: bool = True, domain: Optional[str] = None,
+                      ip: Optional[str] = None) -> Dict[str, Any]:
         """Import package to existing project as new worktree.
         
         Args:
             package_path: Path to the package file
             target_branch: Target branch name (defaults to package branch name)
             restore_data: Whether to restore volume data
+            domain: Optional domain override (subdomain.domain.tld) for production/staging
             
         Returns:
             Dictionary with success status and worktree info
@@ -322,6 +333,14 @@ class PackageManager:
             if not env_success:
                 log_warning("Failed to restore some environment files")
             
+            # Apply domain/ip overrides if provided
+            if domain:
+                log_info(f"Applying domain overrides: {domain}")
+                self.env_manager.apply_domain_overrides(worktree_path, domain)
+            elif ip:
+                log_info(f"Applying IP overrides: {ip}")
+                self.env_manager.apply_ip_overrides(worktree_path, ip)
+            
             # Restore volumes if requested
             if restore_data:
                 volumes_backup = package_dir / "volumes" / f"backup_{metadata['branch_name']}.tar"
@@ -365,7 +384,8 @@ class PackageManager:
                 shutil.rmtree(temp_extract_dir, ignore_errors=True)
     
     def _standalone_import(self, package_path: Path, target_directory: Path = None,
-                          restore_data: bool = True) -> Dict[str, Any]:
+                          restore_data: bool = True, domain: Optional[str] = None,
+                          ip: Optional[str] = None) -> Dict[str, Any]:
         """Import package in standalone mode - creates complete project.
         
         Creates new git repository, extracts code archive, initializes dockertree,
@@ -375,6 +395,7 @@ class PackageManager:
             package_path: Path to the package file
             target_directory: Target directory for new project
             restore_data: Whether to restore volume data
+            domain: Optional domain override (subdomain.domain.tld) for production/staging
             
         Returns:
             Dictionary with success status and project info
@@ -430,7 +451,7 @@ class PackageManager:
             original_project_name = metadata.get("project_name")
             from ..commands.setup import SetupManager
             setup_manager = SetupManager(project_root=target_directory)
-            if not setup_manager.setup_project(project_name=original_project_name):
+            if not setup_manager.setup_project(project_name=original_project_name, domain=domain, ip=ip):
                 return {
                     "success": False,
                     "error": "Failed to initialize dockertree setup"
@@ -449,6 +470,18 @@ class PackageManager:
                     log_warning(f"Failed to create worktree for branch '{branch_name}': {create_result.get('error')}")
                 else:
                     log_success(f"Created worktree for branch '{branch_name}'")
+                    
+                    # Apply domain overrides to worktree if provided
+                    if domain or ip:
+                        worktree_path = Path(target_directory) / "worktrees" / branch_name
+                        if worktree_path.exists():
+                            env_manager = EnvironmentManager(project_root=target_directory)
+                            if domain:
+                                log_info(f"Applying domain overrides to worktree: {domain}")
+                                env_manager.apply_domain_overrides(worktree_path, domain)
+                            elif ip:
+                                log_info(f"Applying IP overrides to worktree: {ip}")
+                                env_manager.apply_ip_overrides(worktree_path, ip)
             
             # Restore volumes if requested
             if restore_data:

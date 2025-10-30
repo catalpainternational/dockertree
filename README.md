@@ -175,6 +175,8 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 |---------|-------------|---------|
 | `packages export <branch>` | Export worktree as shareable package (includes code by default) | `dockertree packages export feature-auth` |
 | `packages import <file>` | Import environment from package (auto-detects standalone mode) | `dockertree packages import my-package.tar.gz` |
+| `packages import <file> --domain <sub.domain.tld>` | Import with domain override (HTTPS via Caddy) | `dockertree packages import pkg.tar.gz --domain myapp.example.com` |
+| `packages import <file> --ip <x.x.x.x>` | Import with IP override (HTTP-only) | `dockertree packages import pkg.tar.gz --ip 203.0.113.10` |
 | `packages import <file> --standalone` | Force standalone import (create new project) | `dockertree packages import my-package.tar.gz --standalone --target-dir ./myproject` |
 | `packages list` | List available packages | `dockertree packages list` |
 | `packages validate <file>` | Validate package integrity | `dockertree packages validate my-package.tar.gz` |
@@ -631,6 +633,10 @@ dockertree packages import myapp-feature-auth.tar.gz --no-data
 
 # Import to specific branch name
 dockertree packages import myapp-feature-auth.tar.gz --target-branch new-branch-name
+
+# Domain/IP overrides for deployment
+dockertree packages import myapp-feature-auth.tar.gz --standalone --domain myapp.example.com  # HTTPS via Caddy
+dockertree packages import myapp-feature-auth.tar.gz --standalone --ip 203.0.113.10           # HTTP-only (no TLS)
 ```
 
 **Export Options**:
@@ -738,6 +744,37 @@ The dockertree CLI follows a modular architecture designed for easy extension:
 - ✅ User guide in each .dockertree directory
 - ✅ MCP server for AI assistant integration
 - ✅ JSON output mode for programmatic access
+ - ✅ Push command for SCP-based deployment with optional auto-import
+
+## 🚀 Deployment (Push)
+
+### Basic Push
+```bash
+# Export and transfer a package to a remote server via SCP
+dockertree push feature-auth user@server:/var/dockertree/packages
+```
+
+### Auto-Import on Remote (Phase 2)
+```bash
+# Push and then automatically import & start on the server
+dockertree push feature-auth user@server:/var/dockertree/packages \
+  --auto-import --prepare-server
+
+# Options:
+#   --domain myapp.example.com   # Use HTTPS via Caddy
+#   --ip 203.0.113.10            # IP-only HTTP mode (no Let's Encrypt for IPs)
+```
+
+### Notes
+- When using `--ip`, deployments are HTTP-only. Certificate authorities do not issue certificates for IP addresses; use a domain for HTTPS.
+- You can add defaults in `.dockertree/config.yml` (optional):
+```yaml
+deployment:
+  default_server: user@server:/var/dockertree/packages
+  default_domain: myapp.example.com
+  default_ip: 203.0.113.10
+  ssh_key: ~/.ssh/deploy_key
+```
 
 ---
 

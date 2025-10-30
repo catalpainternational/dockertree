@@ -67,7 +67,8 @@ class PackageCommands:
     
     def import_package(self, package_file: Path, target_branch: str = None,
                       restore_data: bool = True, standalone: bool = None,
-                      target_directory: Path = None) -> bool:
+                      target_directory: Path = None, domain: Optional[str] = None,
+                      ip: Optional[str] = None) -> bool:
         """Import package - CLI interface with auto-detection.
         
         Args:
@@ -76,15 +77,23 @@ class PackageCommands:
             restore_data: Whether to restore volume data
             standalone: Force standalone mode (None = auto-detect)
             target_directory: Target directory for standalone import
+            domain: Optional domain override (subdomain.domain.tld) for production/staging
             
         Returns:
             True if import succeeded, False otherwise
         """
         log_info(f"Importing package: {package_file}")
+        if domain:
+            log_info(f"Using domain override: {domain}")
         
         # Pass through to PackageManager (core logic)
+        # Validate mutual exclusivity
+        if domain and ip:
+            log_error("Options --domain and --ip are mutually exclusive")
+            return False
+        
         result = self.package_manager.import_package(
-            package_file, target_branch, restore_data, standalone, target_directory
+            package_file, target_branch, restore_data, standalone, target_directory, domain, ip
         )
         
         if result.get("success"):

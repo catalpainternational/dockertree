@@ -34,9 +34,16 @@ class SetupManager:
         self.project_root = project_root or Path.cwd()
         self.dockertree_dir = self.project_root / DOCKERTREE_DIR
     
-    def setup_project(self, project_name: Optional[str] = None) -> bool:
-        """Initialize dockertree for a project."""
+    def setup_project(self, project_name: Optional[str] = None, domain: Optional[str] = None, ip: Optional[str] = None) -> bool:
+        """Initialize dockertree for a project.
+        
+        Args:
+            project_name: Optional project name (defaults to directory name)
+            domain: Optional domain override (subdomain.domain.tld) for production/staging
+        """
         log_info("Setting up dockertree for this project...")
+        if domain:
+            log_info(f"Using domain override: {domain}")
         
         # 0. Check prerequisites first
         check_prerequisites(project_root=self.project_root)
@@ -59,7 +66,7 @@ class SetupManager:
                 return False
         
         # 3. Generate worktree-specific compose file
-        if not self._transform_compose_file(compose_file):
+        if not self._transform_compose_file(compose_file, domain, ip):
             return False
         
         # 3.5. Validate transformed paths
@@ -151,8 +158,13 @@ services:
             log_error(f"Failed to create minimal docker-compose.yml: {e}")
             return None
     
-    def _transform_compose_file(self, source_compose: Path) -> bool:
-        """Transform compose file for worktree use."""
+    def _transform_compose_file(self, source_compose: Path, domain: Optional[str] = None, ip: Optional[str] = None) -> bool:
+        """Transform compose file for worktree use.
+        
+        Args:
+            source_compose: Path to source docker-compose.yml
+            domain: Optional domain override (subdomain.domain.tld) for production/staging
+        """
         try:
             target_compose = self.dockertree_dir / "docker-compose.worktree.yml"
             
@@ -201,8 +213,22 @@ services:
                 # Add Caddy labels for web services
                 if service_name in ['web', 'app', 'frontend', 'api']:
                     existing_labels = service_config.setdefault('labels', [])
+                    
+                    # Use domain override if provided, otherwise use localhost pattern
+                    if domain:
+                        # For production/staging, use the provided domain
+                        proxy_domain = domain
+                        log_info(f"Using production domain for {service_name}: {domain}")
+                    elif ip:
+                        # IP deployments - HTTP only, no automatic HTTPS
+                        proxy_domain = ip
+                        log_warning("IP deployments are HTTP-only. Let's Encrypt requires a domain name.")
+                    else:
+                        # For development, use localhost pattern
+                        proxy_domain = "${COMPOSE_PROJECT_NAME}.localhost"
+                    
                     new_labels = [
-                        f"caddy.proxy=${{COMPOSE_PROJECT_NAME}}.localhost",
+                        f"caddy.proxy={proxy_domain}",
                         f"caddy.proxy.reverse_proxy=${{COMPOSE_PROJECT_NAME}}-{service_name}:8000"
                         # Note: Health check disabled by default. Add manually if needed:
                         # "caddy.proxy.health_check=/health-check/"

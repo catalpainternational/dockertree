@@ -49,6 +49,68 @@ DEFAULT_ENV_VARS = {
     "CADDY_EMAIL": "admin@example.com",
 }
 
+# Deployment defaults helpers (Phase 2)
+def _get_config_value(path_keys: list[str], default: Optional[str] = None) -> Optional[str]:
+    """Safely read a nested value from .dockertree/config.yml.
+
+    Args:
+        path_keys: List of nested keys to traverse
+        default: Default value when not found
+
+    Returns:
+        String value or default
+    """
+    try:
+        config_path = get_project_root() / DOCKERTREE_DIR / "config.yml"
+        if not config_path.exists():
+            return default
+        import yaml  # local import to avoid top-level dependency at import time
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        node: Any = cfg
+        for key in path_keys:
+            if not isinstance(node, dict) or key not in node:
+                return default
+            node = node[key]
+        if isinstance(node, (str, int, float)):
+            return str(node)
+        return default
+    except Exception:
+        return default
+
+
+def get_deployment_defaults() -> Dict[str, Optional[str]]:
+    """Get deployment default values from config if present.
+
+    Keys:
+      - default_server
+      - default_domain
+      - default_ip
+      - ssh_key
+    """
+    return {
+        "default_server": _get_config_value(["deployment", "default_server"], None),
+        "default_domain": _get_config_value(["deployment", "default_domain"], None),
+        "default_ip": _get_config_value(["deployment", "default_ip"], None),
+        "ssh_key": _get_config_value(["deployment", "ssh_key"], None),
+    }
+
+
+def get_default_server() -> Optional[str]:
+    return get_deployment_defaults().get("default_server")
+
+
+def get_default_domain() -> Optional[str]:
+    return get_deployment_defaults().get("default_domain")
+
+
+def get_default_ip() -> Optional[str]:
+    return get_deployment_defaults().get("default_ip")
+
+
+def get_deployment_ssh_key() -> Optional[str]:
+    return get_deployment_defaults().get("ssh_key")
+
 # Configuration loading functions
 def get_project_config() -> Dict[str, Any]:
     """Load project configuration from .dockertree/config.yml"""

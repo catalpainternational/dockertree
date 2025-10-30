@@ -771,6 +771,42 @@ dockertree packages import backup-20240115.tar.gz --standalone
 ```
 
 ## 🔌 Extension Architecture
+## 🌐 Deployment Architecture (Push & Import)
+
+### Domain vs IP Deployments
+
+- Domain (`--domain sub.domain.tld`):
+  - Caddy routes traffic using the provided domain
+  - HTTPS available via automatic certificate management
+  - Environment overrides set `SITE_DOMAIN=https://{domain}` and include domain in `ALLOWED_HOSTS`
+
+- IP (`--ip x.x.x.x`):
+  - HTTP-only (no TLS); certificate authorities do not issue certificates for IPs
+  - Caddy can route using the IP value, but remains HTTP unless manually configured
+  - Environment overrides set `SITE_DOMAIN=http://{ip}` and include IP in `ALLOWED_HOSTS`
+
+### Push Command Flow
+
+```
+Export → Compress → SCP Transfer → (optional) Server Preparation → (optional) Remote Import → Start Proxy → Up
+```
+
+- Server preparation (optional): checks presence of git, docker, docker compose, dockertree
+- Remote import (optional): runs `dockertree packages import` with `--domain` or `--ip`, then starts services
+
+### Configuration Defaults
+
+The following optional keys in `.dockertree/config.yml` influence push/import behavior:
+
+```yaml
+deployment:
+  default_server: username@server:/path/to/packages
+  default_domain: myapp.example.com
+  default_ip: 203.0.113.10
+  ssh_key: ~/.ssh/deploy_key
+```
+
+These are read via helper functions in `config/settings.py` and are entirely optional to preserve Phase 1 behavior.
 
 ### Adding New Commands
 

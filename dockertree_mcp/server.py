@@ -32,6 +32,7 @@ from .tools.worktree_tools import WorktreeTools
 from .tools.volume_tools import VolumeTools
 from .tools.caddy_tools import CaddyTools
 from .tools.package_tools import PackageTools
+from .tools.push_tools import PushTools
 from .resources.worktree_resources import WorktreeResources
 from .resources.documentation import DockertreeDocumentation
 from .config import MCPConfig
@@ -460,6 +461,14 @@ async def list_tools() -> List[Tool]:
                         "type": "string",
                         "description": "Target directory for standalone import (optional, defaults to {project_name}-standalone)"
                     },
+                    "ip": {
+                        "type": "string",
+                        "description": "IP override for HTTP-only deployments (optional)"
+                    },
+                    "domain": {
+                        "type": "string",
+                        "description": "Domain override (subdomain.domain.tld) for production/staging deployments (optional)"
+                    },
                     "working_directory": {
                         "type": "string",
                         "description": "Working directory for normal mode import. Not used in standalone mode. Example: '/Users/ders/kenali/blank'",
@@ -505,6 +514,38 @@ async def list_tools() -> List[Tool]:
                 },
                 "required": ["package_file"]
             }
+        ),
+        # Push/deployment tools
+        Tool(
+            name="push_package",
+            description="Push dockertree package to remote server via SCP. Exports a complete dockertree environment package and transfers it to a remote server for deployment. If branch_name is not provided, auto-detects from current working directory.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Name of the branch to push (optional, auto-detects if not provided)"
+                    },
+                    "scp_target": {
+                        "type": "string",
+                        "description": "SCP target in format username@server:path (required)"
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Temporary package location (optional, defaults to ./packages)"
+                    },
+                    "keep_package": {
+                        "type": "boolean",
+                        "description": "Don't delete package after successful push (optional, defaults to false)"
+                    },
+                    "working_directory": {
+                        "type": "string",
+                        "description": "REQUIRED in practice: Absolute path to the project directory where dockertree should operate. Use the Cursor workspace path or your current project directory. Example: '/Users/ders/kenali/blank'",
+                        "default": None
+                    }
+                },
+                "required": ["scp_target"]
+            }
         )
     ]
 
@@ -528,6 +569,7 @@ async def call_tool(name: str, arguments: dict) -> List[dict]:
         volume_tools = VolumeTools(config)
         caddy_tools = CaddyTools(config)
         package_tools = PackageTools()
+        push_tools = PushTools(config)
         
         # Route to appropriate tool handler
         if name == "create_worktree":
@@ -568,6 +610,8 @@ async def call_tool(name: str, arguments: dict) -> List[dict]:
             result = await package_tools.list_packages(arguments)
         elif name == "validate_package":
             result = await package_tools.validate_package(arguments)
+        elif name == "push_package":
+            result = await push_tools.push_package(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
         
