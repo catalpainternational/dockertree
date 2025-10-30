@@ -166,7 +166,7 @@ class PackageManager:
     def import_package(self, package_path: Path, target_branch: str = None,
                       restore_data: bool = True, standalone: bool = None,
                       target_directory: Path = None, domain: Optional[str] = None,
-                      ip: Optional[str] = None) -> Dict[str, Any]:
+                      ip: Optional[str] = None, non_interactive: bool = False) -> Dict[str, Any]:
         """Import package with automatic standalone detection.
         
         Args:
@@ -196,7 +196,7 @@ class PackageManager:
 
             # Route to appropriate import method
             if standalone:
-                return self._standalone_import(package_path, target_directory, restore_data, domain, ip)
+                return self._standalone_import(package_path, target_directory, restore_data, domain, ip, non_interactive)
             else:
                 return self._normal_import(package_path, target_branch, restore_data, domain, ip)
                 
@@ -385,7 +385,7 @@ class PackageManager:
     
     def _standalone_import(self, package_path: Path, target_directory: Path = None,
                           restore_data: bool = True, domain: Optional[str] = None,
-                          ip: Optional[str] = None) -> Dict[str, Any]:
+                          ip: Optional[str] = None, non_interactive: bool = False) -> Dict[str, Any]:
         """Import package in standalone mode - creates complete project.
         
         Creates new git repository, extracts code archive, initializes dockertree,
@@ -451,7 +451,7 @@ class PackageManager:
             original_project_name = metadata.get("project_name")
             from ..commands.setup import SetupManager
             setup_manager = SetupManager(project_root=target_directory)
-            if not setup_manager.setup_project(project_name=original_project_name, domain=domain, ip=ip):
+            if not setup_manager.setup_project(project_name=original_project_name, domain=domain, ip=ip, non_interactive=non_interactive):
                 return {
                     "success": False,
                     "error": "Failed to initialize dockertree setup"

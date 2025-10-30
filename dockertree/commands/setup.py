@@ -34,7 +34,7 @@ class SetupManager:
         self.project_root = project_root or Path.cwd()
         self.dockertree_dir = self.project_root / DOCKERTREE_DIR
     
-    def setup_project(self, project_name: Optional[str] = None, domain: Optional[str] = None, ip: Optional[str] = None) -> bool:
+    def setup_project(self, project_name: Optional[str] = None, domain: Optional[str] = None, ip: Optional[str] = None, non_interactive: bool = False) -> bool:
         """Initialize dockertree for a project.
         
         Args:
@@ -83,13 +83,23 @@ class SetupManager:
             log_warning("Failed to create template env.dockertree")
             # Don't fail setup, this is optional
         
-        # 7. Ask user about adding .dockertree to .gitignore
-        if not self._handle_gitignore_setup():
-            log_warning("Gitignore setup was skipped or failed")
-        
-        # 8. Ask user about installing shell completion
-        if not self._handle_completion_setup():
-            log_warning("Completion setup was skipped or failed")
+        if non_interactive:
+            # Non-interactive: silently ensure worktrees/ in .gitignore, skip completion
+            try:
+                from ..utils.file_utils import append_line_to_file
+                gitignore_path = self.project_root / '.gitignore'
+                append_line_to_file(gitignore_path, 'worktrees/')
+                log_success("Added worktrees/ to .gitignore")
+            except Exception:
+                log_warning("Failed to update .gitignore silently in non-interactive mode")
+        else:
+            # 7. Ask user about adding .dockertree to .gitignore
+            if not self._handle_gitignore_setup():
+                log_warning("Gitignore setup was skipped or failed")
+            
+            # 8. Ask user about installing shell completion
+            if not self._handle_completion_setup():
+                log_warning("Completion setup was skipped or failed")
         
         log_success("Dockertree setup completed successfully!")
         log_info(f"Configuration: {self.dockertree_dir}/config.yml")

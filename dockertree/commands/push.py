@@ -417,7 +417,7 @@ dockertree --version || true
             )
 
             # Build flags common to both standalone and normal import
-            extra_flags = ""
+            extra_flags = " --non-interactive"
             if domain:
                 extra_flags += f" --domain {domain}"
             if ip:
@@ -436,8 +436,13 @@ dockertree --version || true
                 "fi"
             )
 
-            start_cmd = f"dockertree start-proxy && dockertree {branch_name} up -d"
-            full_cmd = f"bash -lc \"{ensure_git_identity} && {remote_logic} && {start_cmd}\""
+            # Determine ROOT again after import in case project was created
+            start_logic = (
+                "HIT2=$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit); "
+                "if [ -n \"$HIT2\" ]; then ROOT2=$(dirname \"$(dirname \"$HIT2\")\"); else ROOT2=/root; fi; "
+                f"cd \"$ROOT2\" && dockertree start-proxy && dockertree {branch_name} up -d"
+            )
+            full_cmd = f"bash -lc \"{ensure_git_identity} && {remote_logic} && {start_logic}\""
             cmd = ["ssh", f"{username}@{server}", full_cmd]
             log_info("Running remote import and start commands...")
             subprocess.run(cmd, check=False)

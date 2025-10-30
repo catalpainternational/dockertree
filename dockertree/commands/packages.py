@@ -68,7 +68,7 @@ class PackageCommands:
     def import_package(self, package_file: Path, target_branch: str = None,
                       restore_data: bool = True, standalone: bool = None,
                       target_directory: Path = None, domain: Optional[str] = None,
-                      ip: Optional[str] = None) -> bool:
+                      ip: Optional[str] = None, non_interactive: bool = False) -> bool:
         """Import package - CLI interface with auto-detection.
         
         Args:
@@ -93,7 +93,7 @@ class PackageCommands:
             return False
         
         result = self.package_manager.import_package(
-            package_file, target_branch, restore_data, standalone, target_directory, domain, ip
+            package_file, target_branch, restore_data, standalone, target_directory, domain, ip, non_interactive
         )
         
         if result.get("success"):

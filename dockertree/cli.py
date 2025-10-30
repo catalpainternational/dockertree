@@ -717,10 +717,11 @@ def export_package(branch_name: str, output_dir: str, include_code: bool, compre
               help='Target directory for standalone import')
 @click.option('--domain', help='Domain override (subdomain.domain.tld) for production/staging')
 @click.option('--ip', help='IP override for HTTP-only deployments (no TLS)')
+@click.option('--non-interactive', is_flag=True, default=False, help='Run import/setup non-interactively (auto-accept safe defaults)')
 @add_json_option
 @add_verbose_option
 def import_package(package_file: str, target_branch: str, restore_data: bool,
-                  standalone: bool, target_dir: str, domain: str, ip: str, json: bool):
+                  standalone: bool, target_dir: str, domain: str, ip: str, non_interactive: bool, json: bool):
     """Import environment from package.
     
     Automatically detects if you're in an existing project or need standalone mode.
@@ -751,7 +752,8 @@ def import_package(package_file: str, target_branch: str, restore_data: bool,
             standalone=standalone,
             target_directory=Path(target_dir) if target_dir else None,
             domain=domain,
-            ip=ip
+            ip=ip,
+            non_interactive=non_interactive
         )
         
         if not success:
