@@ -59,6 +59,7 @@ def test_compose_remote_script_non_interactive_flag(tmp_path: Path):
         domain=None,
         ip=None,
     )
-    # Always ensure --non-interactive is present for import and start-proxy fallback
+    # Always ensure --non-interactive is present and start-proxy suppresses stderr
     assert "--non-interactive" in script
+    assert "start-proxy --non-interactive >/dev/null 2>&1" in script
 

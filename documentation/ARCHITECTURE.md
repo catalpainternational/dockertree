@@ -153,6 +153,13 @@ environment:
   - If missing/incomplete, print console guidance with a safe copy/paste snippet
   - If `--monkey-patch` was passed to `dockertree setup`, append a guarded block to `settings.py` that reads the values from environment variables
 
+### SQLite Persistence Guidance
+
+Export/import captures Docker volumes by design. For SQLite-backed projects, ensure the database file is stored on a named volume mounted into the web container (e.g., mount `sqlite_data` at `/data` and configure Django `NAME` to `/data/db.sqlite3`).
+
+- Rationale: files under bind mounts like `/app/db.sqlite3` are not part of any Docker named volume and won’t be included in Dockertree volume backups.
+- Outcome: with a named volume (e.g., `sqlite_data`), SQLite state is preserved alongside other volumes during export/import.
+
 The system uses a fallback hierarchy:
 1. **Project Config**: `.dockertree/config.yml` (if exists)
 2. **Default Config**: Built-in defaults for new projects

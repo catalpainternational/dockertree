@@ -251,6 +251,25 @@ if _hdr:
     SECURE_PROXY_SSL_HEADER = tuple(_hdr.split(",", 1))
 ```
 
+### SQLite persistence (recommended pattern)
+
+When using SQLite in Docker, store the database file on a named Docker volume so Dockertree export/import captures it (just like Postgres/Redis volumes):
+
+- In Django settings, point SQLite to a path under a data mount, e.g. `/data/db.sqlite3` (or use an env var like `SQLITE_PATH=/data/db.sqlite3`).
+- In your compose, mount a named volume for the web service:
+
+```yaml
+services:
+  web:
+    volumes:
+      - sqlite_data:/data
+
+volumes:
+  sqlite_data: {}
+```
+
+Dockertree will back up and restore `sqlite_data` with other volumes, preserving DB state across export/import. If you keep the DB at `/app/db.sqlite3` (bind-mounted source tree), it is not part of any Docker volume snapshot and will not be included.
+
 ### Project Setup
 
 When you run `dockertree setup`, it creates a `.dockertree/` directory with:

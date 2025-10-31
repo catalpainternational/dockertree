@@ -180,9 +180,10 @@ def add_verbose_option(f):
 
 
 @cli.command('start-proxy')
+@click.option('--non-interactive', is_flag=True, default=False, help='Run non-interactively', hidden=True)
 @add_json_option
 @add_verbose_option
-def start_proxy(json: bool):
+def start_proxy(non_interactive: bool, json: bool):
     """Start global Caddy proxy container."""
     try:
         check_setup_or_prompt()
@@ -205,9 +206,10 @@ def start_proxy(json: bool):
 
 
 @cli.command('stop-proxy')
+@click.option('--non-interactive', is_flag=True, default=False, help='Run non-interactively', hidden=True)
 @add_json_option
 @add_verbose_option
-def stop_proxy(json: bool):
+def stop_proxy(non_interactive: bool, json: bool):
     """Stop global Caddy proxy container."""
     try:
         check_setup_or_prompt()

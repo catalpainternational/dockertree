@@ -356,6 +356,21 @@ services:
                     networks = service_config.setdefault('networks', [])
                     if 'dockertree_caddy_proxy' not in networks:
                         networks.append('dockertree_caddy_proxy')
+
+                    # Ensure a named volume mount exists for SQLite persistence
+                    # Mount a named volume at /data so Django can point SQLite NAME to /data/db.sqlite3
+                    volumes_list = service_config.setdefault('volumes', [])
+                    # Normalize to list
+                    if isinstance(volumes_list, dict):
+                        # Convert uncommon dict format to list mount (source:target)
+                        normalized = []
+                        for vname, vcfg in volumes_list.items():
+                            target = vcfg.get('target') if isinstance(vcfg, dict) else None
+                            if target:
+                                normalized.append(f"{vname}:{target}")
+                        service_config['volumes'] = volumes_list = normalized
+                    if all(not (isinstance(v, str) and v.split(':',1)[0] == 'sqlite_data') for v in volumes_list):
+                        volumes_list.append('sqlite_data:/data')
                 
                 # Add environment variables
                 if 'environment' in service_config:
@@ -408,6 +423,13 @@ services:
                 # Resolve relative paths in volumes and other configurations
                 self._resolve_relative_paths(service_config)
             
+            # Ensure volumes section exists so we can add sqlite_data named volume
+            compose_data.setdefault('volumes', {})
+
+            # Add sqlite_data volume definition if not present (worktree transform will name it per branch)
+            if 'sqlite_data' not in compose_data['volumes']:
+                compose_data['volumes']['sqlite_data'] = None
+
             # Transform volumes to use branch-specific names
             # Exclude caddy volumes as they are shared globally
             volumes_to_exclude = ['caddy_data', 'caddy_config']

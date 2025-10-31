@@ -479,7 +479,7 @@ fi
 cd "$ROOT2"
 
 # Start proxy (ignore non-interactive flag if unsupported)
-"$DTBIN" start-proxy --non-interactive || "$DTBIN" start-proxy || true
+"$DTBIN" start-proxy --non-interactive >/dev/null 2>&1 || "$DTBIN" start-proxy || true
 
 # Bring up the environment for the branch
 "$DTBIN" "$BRANCH_NAME" up -d
