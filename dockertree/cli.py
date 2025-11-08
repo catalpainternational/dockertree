@@ -17,7 +17,10 @@ from .commands.volumes import VolumeManager
 from .commands.setup import SetupManager
 from .commands.packages import PackageCommands
 from .commands.push import PushManager
-from .utils.logging import log_error, error_exit, set_verbose
+from .commands.droplets import DropletCommands
+from .commands.domains import DomainCommands
+from .core.dns_manager import parse_domain
+from .utils.logging import log_error, log_info, error_exit, set_verbose
 from .utils.validation import check_prerequisites, check_setup_or_prompt, check_prerequisites_no_git
 from .utils.pattern_matcher import has_wildcard
 from .utils.json_output import JSONOutput, add_json_option, handle_json_output
@@ -44,7 +47,7 @@ class DockertreeCLI(click.MultiCommand):
             reserved_commands = {
                 'start-proxy', 'stop-proxy', 'start', 'stop', 'create', 
                 'delete', 'remove', 'remove-all', 'delete-all', 'list', 'prune', 
-                'volumes', 'setup', 'help', 'completion', '-D', '-r'
+                'volumes', 'setup', 'help', 'completion', 'droplets', 'domains', '-D', '-r'
             }
             
             if args[0] not in reserved_commands:
@@ -63,13 +66,13 @@ class DockertreeCLI(click.MultiCommand):
             reserved_commands = {
                 'start-proxy', 'stop-proxy', 'start', 'stop', 'create', 
                 'delete', 'remove', 'remove-all', 'delete-all', 'list', 'prune', 
-                'volumes', 'setup', 'help', 'completion', '-D', '-r'
+                'volumes', 'setup', 'help', 'completion', 'push', 'packages', 'droplets', 'domains', '-D', '-r'
             }
             
             # Common docker compose subcommands that should trigger passthrough
             compose_commands = {
-                'exec', 'logs', 'ps', 'run', 'build', 'pull', 'push', 'restart',
-                'start', 'stop', 'up', 'down', 'config', 'images', 'port',
+                'exec', 'logs', 'ps', 'run', 'build', 'pull', 'restart',
+                'up', 'down', 'config', 'images', 'port',
                 'top', 'events', 'kill', 'pause', 'unpause', 'scale'
             }
             
@@ -101,7 +104,7 @@ class DockertreeCLI(click.MultiCommand):
         return sorted([
             'create', 'delete', 'remove', 'start-proxy', 'stop-proxy', 'start', 'stop', 
             'list', 'prune', 'volumes', 'packages', 'push', 'help', 'delete-all', 'remove-all',
-            'setup', 'clean-legacy', 'completion', '_completion', '-D', '-r'  # Add dash-prefixed aliases
+            'setup', 'clean-legacy', 'completion', '_completion', 'droplets', 'domains', '-D', '-r'  # Add dash-prefixed aliases
         ])
     
     def get_command(self, ctx, name):
@@ -153,12 +156,40 @@ class DockertreeCLI(click.MultiCommand):
             return completion
         elif name == '_completion':
             return _completion
+        elif name == 'droplets':
+            return droplets
+        elif name == 'domains':
+            return domains
         elif name == 'passthrough':
             return passthrough
         return None
 
 # Create the CLI instance
-cli = DockertreeCLI(help='Dockertree: Git Worktrees for Isolated Development Environments\n\nUsage: dockertree <worktree_name> up|down  or  dockertree <command>')
+cli = DockertreeCLI(help='''Dockertree: Git Worktrees for Isolated Development Environments
+
+Create isolated development environments using Git worktrees with Docker Compose.
+Each worktree gets its own database, Redis, media storage, and unique URL.
+
+Usage:
+    dockertree <worktree_name> up|down
+
+    dockertree <command> [options]
+
+Examples:
+    # Create and start a worktree
+    dockertree create feature-auth
+
+    dockertree feature-auth up
+
+    # Stop and remove a worktree
+    dockertree feature-auth down
+
+    dockertree remove feature-auth
+
+    # List all active worktrees
+    dockertree list
+
+For more information, use: dockertree <command> --help''')
 cli = click.version_option(version="0.9.2", prog_name="dockertree")(cli)
 
 # Add global verbose option
@@ -168,14 +199,14 @@ def verbose_callback(ctx, param, value):
     return value
 
 cli = click.option('--verbose', '-v', is_flag=True, default=False, 
-                   help='Show INFO and WARNING messages', 
+                   help='Enable verbose output (show INFO and WARNING messages)', 
                    callback=verbose_callback, expose_value=False, is_eager=True)(cli)
 
 
 def add_verbose_option(f):
     """Decorator to add verbose option to commands."""
     return click.option('--verbose', '-v', is_flag=True, default=False,
-                       help='Show INFO and WARNING messages',
+                       help='Enable verbose output (show INFO and WARNING messages)',
                        callback=verbose_callback, expose_value=False, is_eager=True)(f)
 
 
@@ -184,7 +215,17 @@ def add_verbose_option(f):
 @add_json_option
 @add_verbose_option
 def start_proxy(non_interactive: bool, json: bool):
-    """Start global Caddy proxy container."""
+    """Start the global Caddy proxy container.
+
+    The Caddy proxy enables automatic routing to worktree environments.
+    This must be running for worktrees to be accessible via their URLs.
+
+    Examples:
+
+        dockertree start-proxy
+
+        dockertree start  # alias for start-proxy
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -210,7 +251,17 @@ def start_proxy(non_interactive: bool, json: bool):
 @add_json_option
 @add_verbose_option
 def stop_proxy(non_interactive: bool, json: bool):
-    """Stop global Caddy proxy container."""
+    """Stop the global Caddy proxy container.
+
+    Stops the Caddy proxy, which will make all worktree URLs inaccessible.
+    Worktree containers will continue running but won't be accessible via HTTP.
+
+    Examples:
+
+        dockertree stop-proxy
+
+        dockertree stop  # alias for stop-proxy
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -234,7 +285,12 @@ def stop_proxy(non_interactive: bool, json: bool):
 @cli.command('start')
 @add_verbose_option
 def start():
-    """Start global Caddy proxy container (alias for start-proxy)."""
+    """Start the global Caddy proxy container (alias for start-proxy).
+
+    Examples:
+
+        dockertree start
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -249,7 +305,12 @@ def start():
 @cli.command('stop')
 @add_verbose_option
 def stop():
-    """Stop global Caddy proxy container (alias for stop-proxy)."""
+    """Stop the global Caddy proxy container (alias for stop-proxy).
+
+    Examples:
+
+        dockertree stop
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -266,7 +327,17 @@ def stop():
 @add_json_option
 @add_verbose_option
 def create(branch_name: str, json: bool):
-    """Create worktree in worktrees directory."""
+    """Create a new worktree for the specified branch.
+
+    Creates a Git worktree in the worktrees directory and sets up the
+    necessary Docker Compose override file for isolated development.
+
+    Examples:
+
+        dockertree create feature-auth
+
+        dockertree create bugfix-123
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -299,13 +370,21 @@ def create(branch_name: str, json: bool):
 
 @cli.command()
 @click.argument('branch_name')
-@click.option('-d', '--detach', is_flag=True, default=True, help='Run in detached mode')
+@click.option('-d', '--detach', is_flag=True, default=True, help='Run containers in detached mode (default: True)')
 @add_json_option
 @add_verbose_option
 def up(branch_name: str, detach: bool, json: bool):
-    """Start worktree environment for specified branch.
-    
-    Usage: dockertree <worktree_name> up [-d]
+    """Start the worktree environment for the specified branch.
+
+    Starts all Docker containers for the worktree environment, including
+    database, Redis, and application containers. The environment will be
+    accessible via a unique URL.
+
+    Examples:
+
+        dockertree feature-auth up
+
+        dockertree feature-auth up -d
     """
     if not detach:
         if json:
@@ -342,9 +421,14 @@ def up(branch_name: str, detach: bool, json: bool):
 @add_json_option
 @add_verbose_option
 def down(branch_name: str, json: bool):
-    """Stop worktree environment for specified branch.
-    
-    Usage: dockertree <worktree_name> down
+    """Stop the worktree environment for the specified branch.
+
+    Stops all Docker containers for the worktree environment. Data in
+    volumes is preserved and can be restored when starting again.
+
+    Examples:
+
+        dockertree feature-auth down
     """
     try:
         check_setup_or_prompt()
@@ -367,14 +451,26 @@ def down(branch_name: str, json: bool):
 
 @cli.command()
 @click.argument('branch_name')
-@click.option('--force', is_flag=True, help='Force removal even with unmerged changes')
+@click.option('--force', is_flag=True, help='Force deletion even with unmerged changes (skip confirmation)')
 @add_json_option
 @add_verbose_option
 def delete(branch_name: str, force: bool, json: bool):
-    """Delete worktree and branch completely.
-    
-    Supports wildcard patterns: test-*, feature-?, bugfix-[abc]
-    Case-insensitive matching with confirmation for multiple matches.
+    """Delete worktree and Git branch completely.
+
+    Permanently removes the worktree, all associated containers, volumes,
+    and the Git branch. This action cannot be undone.
+
+    Supports wildcard patterns for batch deletion:
+    - test-* matches all branches starting with "test-"
+    - feature-? matches single character wildcards
+    - bugfix-[abc] matches character classes
+
+    Examples:
+
+        dockertree delete feature-auth
+
+        dockertree delete feature-* --force
+        dockertree delete test-?
     """
     try:
         check_setup_or_prompt()
@@ -416,10 +512,20 @@ def delete(branch_name: str, force: bool, json: bool):
 
 
 @cli.command()
-@click.option('--force', is_flag=True, help='Force removal even with unmerged changes')
+@click.option('--force', is_flag=True, help='Force deletion without confirmation')
 @add_verbose_option
 def delete_all(force: bool):
-    """Delete all worktrees, containers, and volumes."""
+    """Delete all worktrees, containers, volumes, and Git branches.
+
+    Permanently removes all worktrees and their associated resources.
+    This is a destructive operation that cannot be undone.
+
+    Examples:
+
+        dockertree delete-all
+
+        dockertree delete-all --force
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -433,14 +539,26 @@ def delete_all(force: bool):
 
 @cli.command()
 @click.argument('branch_name')
-@click.option('--force', is_flag=True, help='Force removal even with unmerged changes')
+@click.option('--force', is_flag=True, help='Force removal even with unmerged changes (skip confirmation)')
 @add_json_option
 @add_verbose_option
 def remove(branch_name: str, force: bool, json: bool):
-    """Remove worktree and containers/volumes but keep git branch.
-    
-    Supports wildcard patterns: test-*, feature-?, bugfix-[abc]
-    Case-insensitive matching with confirmation for multiple matches.
+    """Remove worktree and containers/volumes but keep the Git branch.
+
+    Removes the worktree and all associated Docker resources (containers
+    and volumes), but preserves the Git branch for future use.
+
+    Supports wildcard patterns for batch removal:
+    - test-* matches all branches starting with "test-"
+    - feature-? matches single character wildcards
+    - bugfix-[abc] matches character classes
+
+    Examples:
+
+        dockertree remove feature-auth
+
+        dockertree remove feature-* --force
+        dockertree remove test-?
     """
     try:
         check_setup_or_prompt()
@@ -482,10 +600,20 @@ def remove(branch_name: str, force: bool, json: bool):
 
 
 @cli.command()
-@click.option('--force', is_flag=True, help='Force removal even with unmerged changes')
+@click.option('--force', is_flag=True, help='Force removal without confirmation')
 @add_verbose_option
 def remove_all(force: bool):
-    """Remove all worktrees and containers/volumes but keep git branches."""
+    """Remove all worktrees and containers/volumes but keep Git branches.
+
+    Removes all worktrees and their Docker resources, but preserves all
+    Git branches for future use.
+
+    Examples:
+
+        dockertree remove-all
+
+        dockertree remove-all --force
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -501,7 +629,17 @@ def remove_all(force: bool):
 @add_json_option
 @add_verbose_option
 def list(json: bool):
-    """List active worktrees."""
+    """List all active worktrees.
+
+    Displays information about all worktrees including branch names,
+    status, and access URLs.
+
+    Examples:
+
+        dockertree list
+
+        dockertree list --json
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -522,7 +660,17 @@ def list(json: bool):
 @add_json_option
 @add_verbose_option
 def prune(json: bool):
-    """Remove prunable worktree references."""
+    """Remove prunable worktree references.
+
+    Cleans up stale Git worktree references that are no longer valid.
+    This is useful after manually removing worktree directories.
+
+    Examples:
+
+        dockertree prune
+
+        dockertree prune --json
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -544,7 +692,17 @@ def prune(json: bool):
 @cli.group()
 @add_verbose_option
 def volumes():
-    """Volume management commands."""
+    """Manage Docker volumes for worktrees.
+
+    Provides commands for listing, backing up, restoring, and cleaning
+    Docker volumes associated with worktree environments.
+
+    Examples:
+
+        dockertree volumes list
+
+        dockertree volumes backup feature-auth
+    """
     pass
 
 
@@ -552,7 +710,17 @@ def volumes():
 @add_json_option
 @add_verbose_option
 def volumes_list(json: bool):
-    """List all worktree volumes."""
+    """List all worktree volumes.
+
+    Displays all Docker volumes associated with worktree environments,
+    including volume names and their associated branch names.
+
+    Examples:
+
+        dockertree volumes list
+
+        dockertree volumes list --json
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -573,7 +741,17 @@ def volumes_list(json: bool):
 @add_json_option
 @add_verbose_option
 def volumes_size(json: bool):
-    """Show volume sizes."""
+    """Show sizes of all worktree volumes.
+
+    Displays the disk space usage for each worktree volume, helping
+    identify which volumes are consuming the most space.
+
+    Examples:
+
+        dockertree volumes size
+
+        dockertree volumes size --json
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -592,11 +770,21 @@ def volumes_size(json: bool):
 
 @volumes.command('backup')
 @click.argument('branch_name')
-@click.option('--backup-dir', type=click.Path(), help='Backup directory path')
+@click.option('--backup-dir', type=click.Path(), help='Directory to save backup (default: ./backups)')
 @add_json_option
 @add_verbose_option
 def volumes_backup(branch_name: str, backup_dir: Optional[str], json: bool):
-    """Backup worktree volumes."""
+    """Backup worktree volumes to a tar archive.
+
+    Creates a backup of all volumes associated with the specified worktree.
+    The backup can be restored later using the restore command.
+
+    Examples:
+
+        dockertree volumes backup feature-auth
+
+        dockertree volumes backup feature-auth --backup-dir /path/to/backups
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -624,7 +812,15 @@ def volumes_backup(branch_name: str, backup_dir: Optional[str], json: bool):
 @add_json_option
 @add_verbose_option
 def volumes_restore(branch_name: str, backup_file: str, json: bool):
-    """Restore worktree volumes from backup."""
+    """Restore worktree volumes from a backup archive.
+
+    Restores volumes for the specified worktree from a previously created
+    backup. The worktree must exist before restoring volumes.
+
+    Examples:
+
+        dockertree volumes restore feature-auth ./backups/feature-auth.tar.gz
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -650,7 +846,15 @@ def volumes_restore(branch_name: str, backup_file: str, json: bool):
 @add_json_option
 @add_verbose_option
 def volumes_clean(branch_name: str, json: bool):
-    """Clean up worktree volumes."""
+    """Clean up (remove) worktree volumes.
+
+    Permanently removes all volumes associated with the specified worktree.
+    This action cannot be undone. Make sure to backup volumes first if needed.
+
+    Examples:
+
+        dockertree volumes clean feature-auth
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -673,21 +877,485 @@ def volumes_clean(branch_name: str, json: bool):
 
 @cli.group()
 @add_verbose_option
+def droplets():
+    """Manage DigitalOcean droplets.
+
+    Provides commands for creating, listing, and managing DigitalOcean
+    droplets. Requires DIGITALOCEAN_API_TOKEN environment variable or
+    --api-token option.
+
+    Examples:
+
+        dockertree droplets list
+
+        dockertree droplets create my-droplet
+    """
+    pass
+
+
+@droplets.command('create')
+@click.argument('name')
+@click.option('--region', help='Droplet region (default: nyc1 or from DIGITALOCEAN_REGION env var)')
+@click.option('--size', help='Droplet size (default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var)')
+@click.option('--image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
+@click.option('--ssh-keys', multiple=True, help='SSH key IDs or fingerprints (can be specified multiple times)')
+@click.option('--tags', multiple=True, help='Tags for the droplet (can be specified multiple times)')
+@click.option('--wait', is_flag=True, default=False, help='Wait for droplet to be ready before returning')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@add_json_option
+@add_verbose_option
+def droplets_create(name: str, region: Optional[str], size: Optional[str], image: Optional[str],
+                    ssh_keys: tuple, tags: tuple, wait: bool, api_token: Optional[str], json: bool):
+    """Create a new DigitalOcean droplet.
+
+    Creates a new droplet with the specified configuration. Default values
+    can be set via environment variables or command-line options.
+
+    Examples:
+
+        dockertree droplets create my-droplet
+
+        dockertree droplets create my-droplet --region sfo3 --size s-2vcpu-4gb
+        dockertree droplets create my-droplet --ssh-keys 12345 --wait
+    """
+    try:
+        check_prerequisites_no_git()  # Don't require git for droplet operations
+        droplet_commands = DropletCommands()
+        ssh_keys_list = list(ssh_keys) if ssh_keys else None
+        tags_list = list(tags) if tags else None
+        success = droplet_commands.create_droplet(
+            name=name,
+            region=region,
+            size=size,
+            image=image,
+            ssh_keys=ssh_keys_list,
+            tags=tags_list,
+            wait=wait,
+            api_token=api_token,
+            json=json
+        )
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to create droplet: {name}")
+            else:
+                error_exit(f"Failed to create droplet: {name}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error creating droplet: {e}")
+        else:
+            error_exit(f"Error creating droplet: {e}")
+
+
+@droplets.command('list')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
+@click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
+@add_verbose_option
+def droplets_list(api_token: Optional[str], output_json: bool, output_csv: bool):
+    """List all DigitalOcean droplets.
+
+    Displays all droplets in a formatted table by default. The list includes
+    droplet IDs, names, regions, sizes, status, and associated DNS domains.
+
+    Examples:
+
+        dockertree droplets list
+
+        dockertree droplets list --as-json
+        dockertree droplets list --as-csv
+    """
+    try:
+        check_prerequisites_no_git()  # Don't require git for droplet operations
+        droplet_commands = DropletCommands()
+        success = droplet_commands.list_droplets(api_token=api_token, json=output_json, csv=output_csv)
+        if not success:
+            if output_json or output_csv:
+                JSONOutput.print_error("Failed to list droplets")
+            else:
+                error_exit("Failed to list droplets")
+    except Exception as e:
+        if output_json or output_csv:
+            JSONOutput.print_error(f"Error listing droplets: {e}")
+        else:
+            error_exit(f"Error listing droplets: {e}")
+
+
+@droplets.command('destroy')
+@click.argument('droplet_id', type=int)
+@click.option('--force', is_flag=True, default=False, help='Skip confirmation prompts')
+@click.option('--only-droplet', is_flag=True, default=False, help='Only destroy droplet, skip DNS deletion')
+@click.option('--only-domain', is_flag=True, default=False, help='Only destroy DNS records, skip droplet deletion')
+@click.option('--domain', help='Domain name for DNS deletion (optional, auto-detects if not provided)')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--dns-token', help='DNS API token (if different from droplet token)')
+@add_json_option
+@add_verbose_option
+def droplets_destroy(droplet_id: int, force: bool, only_droplet: bool, only_domain: bool,
+                    domain: Optional[str], api_token: Optional[str], dns_token: Optional[str], json: bool):
+    """Destroy a DigitalOcean droplet and/or associated DNS records.
+
+    By default, destroys only the droplet. Use --only-domain to destroy
+    DNS records only, or omit flags to destroy both droplet and DNS records.
+
+    Requires typing the droplet name to confirm (unless --force). When
+    deleting DNS records, requires typing the full domain name to confirm
+    (unless --force).
+
+    Examples:
+
+        dockertree droplets destroy 123456789
+
+        dockertree droplets destroy 123456789 --force
+        dockertree droplets destroy 123456789 --only-domain
+    """
+    try:
+        # Validate flags
+        if only_droplet and only_domain:
+            if json:
+                JSONOutput.print_error("Cannot specify both --only-droplet and --only-domain")
+            else:
+                error_exit("Cannot specify both --only-droplet and --only-domain")
+            return
+        
+        check_prerequisites_no_git()  # Don't require git for droplet operations
+        droplet_commands = DropletCommands()
+        success = droplet_commands.destroy_droplet(
+            droplet_id=droplet_id,
+            force=force,
+            api_token=api_token,
+            json=json,
+            only_droplet=only_droplet,
+            only_domain=only_domain,
+            domain=domain,
+            dns_token=dns_token
+        )
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to destroy droplet: {droplet_id}")
+            else:
+                error_exit(f"Failed to destroy droplet: {droplet_id}")
+    except ValueError:
+        if json:
+            JSONOutput.print_error(f"Invalid droplet ID: {droplet_id}. Must be an integer.")
+        else:
+            error_exit(f"Invalid droplet ID: {droplet_id}. Must be an integer.")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error destroying droplet: {e}")
+        else:
+            error_exit(f"Error destroying droplet: {e}")
+
+
+@droplets.command('info')
+@click.argument('droplet_id', type=int)
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@add_json_option
+@add_verbose_option
+def droplets_info(droplet_id: int, api_token: Optional[str], json: bool):
+    """Get detailed information about a droplet.
+
+    Displays comprehensive information about the specified droplet including
+    status, region, size, IP addresses, and associated DNS domains.
+
+    Examples:
+
+        dockertree droplets info 123456789
+
+        dockertree droplets info 123456789 --json
+    """
+    try:
+        check_prerequisites_no_git()  # Don't require git for droplet operations
+        droplet_commands = DropletCommands()
+        success = droplet_commands.get_droplet_info(
+            droplet_id=droplet_id,
+            api_token=api_token,
+            json=json
+        )
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to get droplet info: {droplet_id}")
+            else:
+                error_exit(f"Failed to get droplet info: {droplet_id}")
+    except ValueError:
+        if json:
+            JSONOutput.print_error(f"Invalid droplet ID: {droplet_id}. Must be an integer.")
+        else:
+            error_exit(f"Invalid droplet ID: {droplet_id}. Must be an integer.")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error getting droplet info: {e}")
+        else:
+            error_exit(f"Error getting droplet info: {e}")
+
+
+@cli.group()
+@add_verbose_option
+def domains():
+    """Manage DNS domains and DNS A records.
+    
+    Provides commands for creating, listing, deleting, and viewing DNS A records
+    via Digital Ocean DNS API. Supports managing subdomains and root domain records.
+    """
+    pass
+
+
+@domains.command('create')
+@click.argument('subdomain')
+@click.argument('domain')
+@click.argument('ip')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@add_json_option
+@add_verbose_option
+def domains_create(subdomain: str, domain: str, ip: str, dns_token: Optional[str], json: bool):
+    """Create a new DNS A record.
+
+    Creates a DNS A record pointing the specified subdomain to an IP address.
+    Use '@' as the subdomain to create a record for the root domain.
+
+    Examples:
+
+        dockertree domains create app example.com 192.0.2.1
+
+        dockertree domains create @ example.com 192.0.2.1
+        dockertree domains create api staging.example.com 10.0.0.1
+    """
+    try:
+        check_prerequisites_no_git()  # Don't require git for domain operations
+        domain_commands = DomainCommands()
+        success = domain_commands.create_domain(
+            subdomain=subdomain,
+            domain=domain,
+            ip=ip,
+            dns_token=dns_token,
+            json=json
+        )
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to create DNS A record: {subdomain}.{domain}")
+            else:
+                error_exit(f"Failed to create DNS A record: {subdomain}.{domain}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error creating DNS A record: {e}")
+        else:
+            error_exit(f"Error creating DNS A record: {e}")
+
+
+@domains.command('list')
+@click.option('--domain', help='Base domain to filter by (optional, lists all domains if not provided)')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
+@click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
+@add_verbose_option
+def domains_list(domain: Optional[str], dns_token: Optional[str], output_json: bool, output_csv: bool):
+    """List all DNS A records.
+
+    Displays DNS A records in a formatted table by default. Shows subdomain,
+    domain, IP address, and TTL for each record.
+
+    Examples:
+
+        dockertree domains list
+
+        dockertree domains list --domain example.com
+        dockertree domains list --as-json
+
+        dockertree domains list --as-csv
+    """
+    try:
+        check_prerequisites_no_git()  # Don't require git for domain operations
+        domain_commands = DomainCommands()
+        success = domain_commands.list_domains(
+            domain=domain,
+            dns_token=dns_token,
+            json=output_json,
+            csv=output_csv
+        )
+        if not success:
+            if output_json or output_csv:
+                JSONOutput.print_error("Failed to list DNS A records")
+            else:
+                error_exit("Failed to list DNS A records")
+    except Exception as e:
+        if output_json or output_csv:
+            JSONOutput.print_error(f"Error listing DNS A records: {e}")
+        else:
+            error_exit(f"Error listing DNS A records: {e}")
+
+
+@domains.command('delete')
+@click.argument('full_domain')
+@click.option('--force', is_flag=True, default=False, help='Skip confirmation prompt')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@add_json_option
+@add_verbose_option
+def domains_delete(full_domain: str, force: bool, dns_token: Optional[str], json: bool):
+    """Delete a DNS A record.
+
+    Deletes a DNS A record for the specified domain. Provide the full domain
+    (e.g., 'app.example.com' for a subdomain or 'example.com' for root domain).
+
+    Requires typing the full domain name to confirm (unless --force).
+
+    Examples:
+
+        dockertree domains delete app.example.com
+
+        dockertree domains delete example.com
+
+        dockertree domains delete app.example.com --force
+    """
+    try:
+        # Parse full domain into subdomain and domain components
+        parts = full_domain.split('.')
+        if len(parts) < 2:
+            if json:
+                JSONOutput.print_error(f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld or domain.tld")
+            else:
+                error_exit(f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld or domain.tld")
+            return
+        
+        if len(parts) == 2:
+            # This is a root domain (e.g., 'example.com' -> subdomain='', domain='example.com')
+            subdomain = ''
+            domain = full_domain
+        else:
+            # This is a subdomain (e.g., 'app.example.com' -> subdomain='app', domain='example.com')
+            try:
+                subdomain, domain = parse_domain(full_domain)
+            except ValueError as e:
+                if json:
+                    JSONOutput.print_error(f"Invalid domain format: {e}")
+                else:
+                    error_exit(f"Invalid domain format: {e}")
+                return
+        
+        check_prerequisites_no_git()  # Don't require git for domain operations
+        domain_commands = DomainCommands()
+        success = domain_commands.delete_domain(
+            subdomain=subdomain,
+            domain=domain,
+            force=force,
+            dns_token=dns_token,
+            json=json
+        )
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to delete DNS A record: {full_domain}")
+            else:
+                error_exit(f"Failed to delete DNS A record: {full_domain}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error deleting DNS A record: {e}")
+        else:
+            error_exit(f"Error deleting DNS A record: {e}")
+
+
+@domains.command('info')
+@click.argument('full_domain')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@add_json_option
+@add_verbose_option
+def domains_info(full_domain: str, dns_token: Optional[str], json: bool):
+    """Get detailed information about a DNS A record.
+
+    Displays detailed information about a DNS A record including IP address,
+    TTL, and record ID. Provide the full domain (e.g., 'app.example.com'
+    for a subdomain or 'example.com' for root domain).
+
+    Examples:
+
+        dockertree domains info app.example.com
+
+        dockertree domains info example.com
+        dockertree domains info app.example.com --json
+    """
+    try:
+        # Parse full domain into subdomain and domain components
+        parts = full_domain.split('.')
+        if len(parts) < 2:
+            if json:
+                JSONOutput.print_error(f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld or domain.tld")
+            else:
+                error_exit(f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld or domain.tld")
+            return
+        
+        if len(parts) == 2:
+            # This is a root domain (e.g., 'example.com' -> subdomain='', domain='example.com')
+            subdomain = ''
+            domain = full_domain
+        else:
+            # This is a subdomain (e.g., 'app.example.com' -> subdomain='app', domain='example.com')
+            try:
+                subdomain, domain = parse_domain(full_domain)
+            except ValueError as e:
+                if json:
+                    JSONOutput.print_error(f"Invalid domain format: {e}")
+                else:
+                    error_exit(f"Invalid domain format: {e}")
+                return
+        
+        check_prerequisites_no_git()  # Don't require git for domain operations
+        domain_commands = DomainCommands()
+        success = domain_commands.get_domain_info(
+            subdomain=subdomain,
+            domain=domain,
+            dns_token=dns_token,
+            json=json
+        )
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to get DNS A record info: {full_domain}")
+            else:
+                error_exit(f"Failed to get DNS A record info: {full_domain}")
+    except Exception as e:
+        if json:
+            JSONOutput.print_error(f"Error getting DNS A record info: {e}")
+        else:
+            error_exit(f"Error getting DNS A record info: {e}")
+
+
+@cli.group()
+@add_verbose_option
 def packages():
-    """Manage environment packages."""
+    """Manage environment packages for sharing and deployment.
+
+    Provides commands for exporting, importing, listing, and validating
+    complete worktree environment packages that can be shared or deployed.
+
+    Examples:
+
+        dockertree packages export feature-auth
+
+        dockertree packages import ./packages/feature-auth.tar.gz
+    """
     pass
 
 
 @packages.command('export')
 @click.argument('branch_name')
-@click.option('--output-dir', type=click.Path(), default='./packages', help='Output directory for packages')
-@click.option('--include-code/--no-code', default=True, help='Include git archive of code (default: True)')
-@click.option('--compressed/--no-compress', default=True, help='Compress package to .tar.gz')
+@click.option('--output-dir', type=click.Path(), default='./packages', help='Output directory for packages (default: ./packages)')
+@click.option('--include-code/--no-code', default=True, help='Include git archive of code in package (default: True)')
+@click.option('--compressed/--no-compress', default=True, help='Compress package to .tar.gz format (default: True)')
 @click.option('--skip-volumes', is_flag=True, default=False, help='Skip volume backup (fallback when volume backup fails)')
 @add_json_option
 @add_verbose_option
 def export_package(branch_name: str, output_dir: str, include_code: bool, compressed: bool, skip_volumes: bool, json: bool):
-    """Export worktree environment to shareable package."""
+    """Export worktree environment to a shareable package.
+
+    Creates a complete package containing the worktree environment including
+    Docker Compose configuration, volumes, and optionally the codebase. The
+    package can be shared with others or deployed to remote servers.
+
+    Examples:
+
+        dockertree packages export feature-auth
+
+        dockertree packages export feature-auth --output-dir /path/to/packages
+        dockertree packages export feature-auth --no-code
+
+        dockertree packages export feature-auth --skip-volumes
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -710,24 +1378,35 @@ def export_package(branch_name: str, output_dir: str, include_code: bool, compre
 
 @packages.command('import')
 @click.argument('package_file', type=click.Path(exists=True))
-@click.option('--target-branch', help='Target branch name (for normal mode)')
-@click.option('--restore-data/--no-data', default=True, help='Restore volume data')
+@click.option('--target-branch', help='Target branch name (for normal mode, optional)')
+@click.option('--restore-data/--no-data', default=True, help='Restore volume data from backup (default: True)')
 @click.option('--standalone', is_flag=True, default=None,
-              help='Force standalone mode (create new project)')
+              help='Force standalone mode (create new project from package)')
 @click.option('--target-dir', type=click.Path(),
-              help='Target directory for standalone import')
-@click.option('--domain', help='Domain override (subdomain.domain.tld) for production/staging')
+              help='Target directory for standalone import (default: {project_name}-standalone)')
+@click.option('--domain', help='Domain override (subdomain.domain.tld) for production/staging deployments')
 @click.option('--ip', help='IP override for HTTP-only deployments (no TLS)')
 @click.option('--non-interactive', is_flag=True, default=False, help='Run import/setup non-interactively (auto-accept safe defaults)')
 @add_json_option
 @add_verbose_option
 def import_package(package_file: str, target_branch: str, restore_data: bool,
                   standalone: bool, target_dir: str, domain: str, ip: str, non_interactive: bool, json: bool):
-    """Import environment from package.
-    
+    """Import environment from a package.
+
+    Imports a complete worktree environment from a previously exported package.
     Automatically detects if you're in an existing project or need standalone mode.
+
     Use --standalone to force creating a new project from the package.
     Use --domain to override localhost URLs for production/staging deployments.
+
+    Examples:
+
+        dockertree packages import ./packages/feature-auth.tar.gz
+
+        dockertree packages import ./packages/feature-auth.tar.gz --standalone
+        dockertree packages import ./packages/feature-auth.tar.gz --domain app.example.com
+
+        dockertree packages import ./packages/feature-auth.tar.gz --ip 192.0.2.1
     """
     try:
         # Only check setup if explicitly not standalone
@@ -773,11 +1452,22 @@ def import_package(package_file: str, target_branch: str, restore_data: bool,
 
 
 @packages.command('list')
-@click.option('--package-dir', type=click.Path(), default='./packages', help='Package directory to search')
+@click.option('--package-dir', type=click.Path(), default='./packages', help='Package directory to search (default: ./packages)')
 @add_json_option
 @add_verbose_option
 def list_packages(package_dir: str, json: bool):
-    """List available packages."""
+    """List available packages.
+
+    Displays all available environment packages in the specified directory,
+    including package names, sizes, and creation dates.
+
+    Examples:
+
+        dockertree packages list
+
+        dockertree packages list --package-dir /path/to/packages
+        dockertree packages list --json
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -799,7 +1489,17 @@ def list_packages(package_dir: str, json: bool):
 @add_json_option
 @add_verbose_option
 def validate_package(package_file: str, json: bool):
-    """Validate package integrity."""
+    """Validate package integrity.
+
+    Checks that a package file is valid and contains all required components
+    for importing. Validates checksums and package structure.
+
+    Examples:
+
+        dockertree packages validate ./packages/feature-auth.tar.gz
+
+        dockertree packages validate ./packages/feature-auth.tar.gz --json
+    """
     try:
         check_setup_or_prompt()
         check_prerequisites()
@@ -822,26 +1522,43 @@ def validate_package(package_file: str, json: bool):
 @click.argument('branch_name', required=False)
 @click.argument('scp_target')
 @click.option('--output-dir', type=click.Path(), default='./packages', help='Temporary package location (default: ./packages)')
-@click.option('--keep-package', is_flag=True, default=False, help='Don\'t delete package after successful push')
+@click.option('--keep-package', is_flag=True, default=False, help='Keep package file after successful push (default: delete after push)')
 @click.option('--auto-import', is_flag=True, default=False, help='Automatically import and start on remote server after push')
 @click.option('--prepare-server', is_flag=True, default=False, help='Check remote server for required dependencies before push')
-@click.option('--domain', help='Domain override for remote import (subdomain.domain.tld)')
-@click.option('--ip', help='IP override for remote import (HTTP-only)')
+@click.option('--domain', help='Domain override for remote import (subdomain.domain.tld). DNS A record will be automatically created if it does not exist.')
+@click.option('--ip', help='IP override for remote import (HTTP-only, no TLS)')
+@click.option('--dns-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
+@click.option('--create-droplet', is_flag=True, default=False, help='Create new DigitalOcean droplet before pushing')
+@click.option('--droplet-name', help='Name for new droplet (default: branch name)')
+@click.option('--droplet-region', help='Droplet region (default: nyc1 or from DIGITALOCEAN_REGION env var)')
+@click.option('--droplet-size', help='Droplet size (default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var)')
+@click.option('--droplet-image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
+@click.option('--droplet-ssh-keys', type=str, help='SSH key names for droplet (comma-separated, e.g., anders,peter)')
+@click.option('--wait-for-droplet', is_flag=True, default=False, help='Wait for droplet to be ready before pushing')
 @add_json_option
 @add_verbose_option
-def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, json: bool):
+def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, create_droplet: bool, droplet_name: Optional[str], droplet_region: Optional[str], droplet_size: Optional[str], droplet_image: Optional[str], droplet_ssh_keys: Optional[str], wait_for_droplet: bool, json: bool):
     """Push dockertree package to remote server via SCP.
-    
-    Exports a complete dockertree environment package and transfers it to a remote server.
-    If branch_name is not provided, auto-detects from current working directory.
-    
-    Usage:
+
+    Exports a complete dockertree environment package and transfers it to a
+    remote server via SCP. If branch_name is not provided, auto-detects from
+    current working directory.
+
+    Examples:
+
         # Auto-detect branch from current directory
         dockertree push user@server:/path/to/packages
-        
+
         # Explicit branch name
         dockertree push feature-auth user@server:/path/to/packages
-    
+
+        # Create droplet and push
+        dockertree push feature-auth user@server:/path/to/packages --create-droplet
+
+        # Push with domain configuration
+        dockertree push feature-auth user@server:/path/to/packages --domain app.example.com
+
     After pushing, SSH to the server and import with:
         dockertree packages import <package-file> --standalone --domain your-domain.com
     """
@@ -857,6 +1574,8 @@ def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_pack
                 error_exit("Options --domain and --ip are mutually exclusive")
         
         push_manager = PushManager()
+        # Parse comma-separated SSH key names into a list
+        droplet_ssh_keys_list = [k.strip() for k in droplet_ssh_keys.split(',')] if droplet_ssh_keys else None
         success = push_manager.push_package(
             branch_name=branch_name,
             scp_target=scp_target,
@@ -865,7 +1584,16 @@ def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_pack
             auto_import=auto_import,
             domain=domain,
             ip=ip,
-            prepare_server=prepare_server
+            prepare_server=prepare_server,
+            dns_token=dns_token,
+            skip_dns_check=skip_dns_check,
+            create_droplet=create_droplet,
+            droplet_name=droplet_name,
+            droplet_region=droplet_region,
+            droplet_size=droplet_size,
+            droplet_image=droplet_image,
+            droplet_ssh_keys=droplet_ssh_keys_list,
+            wait_for_droplet=wait_for_droplet
         )
         
         if not success:
@@ -885,12 +1613,35 @@ def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_pack
 
 @cli.command()
 @click.option('--project-name', help='Project name (default: directory name)')
-@click.option('--monkey-patch', is_flag=True, default=False, help='If a Django project is detected, auto-patch settings.py to read env vars')
+@click.option('--monkey-patch', is_flag=True, default=False, help='If a Django project is detected, auto-patch settings.py to read environment variables')
+@click.option('--examples', is_flag=True, default=False, help='Regenerate example config files in examples/ directory')
 @add_verbose_option
-def setup(project_name: Optional[str], monkey_patch: bool):
-    """Initialize dockertree for this project."""
+def setup(project_name: Optional[str], monkey_patch: bool, examples: bool):
+    """Initialize dockertree for this project.
+
+    Sets up dockertree configuration files and directory structure for the
+    current project. This must be run before using other dockertree commands.
+
+    Examples:
+
+        dockertree setup
+
+        dockertree setup --project-name myproject
+        dockertree setup --monkey-patch
+
+        dockertree setup --examples
+    """
     try:
         setup_manager = SetupManager()
+        
+        # If --examples flag is set, regenerate example files and return early
+        if examples:
+            check_prerequisites(project_root=setup_manager.project_root)
+            success = setup_manager._regenerate_example_files()
+            if not success:
+                error_exit("Failed to regenerate example files")
+            return
+        
         check_prerequisites(project_root=setup_manager.project_root)
         success = setup_manager.setup_project(project_name, monkey_patch=monkey_patch)
         if not success:
@@ -902,7 +1653,15 @@ def setup(project_name: Optional[str], monkey_patch: bool):
 @cli.command('clean-legacy')
 @add_verbose_option
 def clean_legacy():
-    """Clean legacy dockertree elements from docker-compose.yml."""
+    """Clean legacy dockertree elements from docker-compose.yml.
+
+    Removes outdated dockertree configuration from docker-compose.yml files.
+    Useful when upgrading from older versions of dockertree.
+
+    Examples:
+
+        dockertree clean-legacy
+    """
     try:
         from .commands.setup import SetupManager
         setup_manager = SetupManager()
@@ -916,7 +1675,14 @@ def clean_legacy():
 @cli.command()
 @add_verbose_option
 def help():
-    """Show help information."""
+    """Show help information.
+
+    Displays the main help message with available commands and usage examples.
+
+    Examples:
+
+        dockertree help
+    """
     click.echo(cli.get_help(click.Context(cli)))
 
 
@@ -938,7 +1704,17 @@ def _completion(completion_type: str):
 @cli.group()
 @add_verbose_option
 def completion():
-    """Shell completion management commands."""
+    """Manage shell completion for dockertree.
+
+    Provides commands for installing, uninstalling, and checking the status
+    of shell completion support for bash, zsh, and fish shells.
+
+    Examples:
+
+        dockertree completion install
+
+        dockertree completion status
+    """
     pass
 
 
@@ -946,7 +1722,18 @@ def completion():
 @click.argument('shell', required=False)
 @add_verbose_option
 def completion_install(shell: Optional[str]):
-    """Install shell completion for dockertree."""
+    """Install shell completion for dockertree.
+
+    Installs tab completion support for the specified shell (bash, zsh, or fish).
+    If shell is not specified, auto-detects from the current shell.
+
+    Examples:
+
+        dockertree completion install
+
+        dockertree completion install bash
+        dockertree completion install zsh
+    """
     try:
         from .commands.completion import CompletionManager
         completion_manager = CompletionManager()
@@ -960,7 +1747,15 @@ def completion_install(shell: Optional[str]):
 @completion.command('uninstall')
 @add_verbose_option
 def completion_uninstall():
-    """Remove shell completion for dockertree."""
+    """Remove shell completion for dockertree.
+
+    Uninstalls tab completion support for all shells. Removes completion
+    scripts from shell configuration files.
+
+    Examples:
+
+        dockertree completion uninstall
+    """
     try:
         from .commands.completion import CompletionManager
         completion_manager = CompletionManager()
@@ -974,7 +1769,15 @@ def completion_uninstall():
 @completion.command('status')
 @add_verbose_option
 def completion_status():
-    """Show shell completion installation status."""
+    """Show shell completion installation status.
+
+    Displays the current status of shell completion installation for all
+    supported shells (bash, zsh, fish).
+
+    Examples:
+
+        dockertree completion status
+    """
     try:
         from .commands.completion import CompletionManager
         completion_manager = CompletionManager()
@@ -991,13 +1794,20 @@ def completion_status():
 @add_verbose_option
 def passthrough(branch_name: str):
     """Run docker compose command with automatic override file resolution.
-    
-    Usage: dockertree <worktree_name> <compose-args...>
-    
+
+    Executes docker compose commands for the specified worktree with automatic
+    resolution of the worktree-specific override file. This allows you to run
+    any docker compose command without manually specifying override files.
+
     Examples:
+
         dockertree feature-123 exec web python manage.py migrate
+
         dockertree feature-123 logs -f web
         dockertree feature-123 ps
+
+        dockertree feature-123 build
+        dockertree feature-123 run web python manage.py shell
     """
     try:
         check_setup_or_prompt()

@@ -3,7 +3,9 @@
 
 {
     # Basic configuration
-    auto_https off
+    # auto_https is enabled to support HTTPS for domain-based deployments
+    # The dynamic config script will configure TLS automation for domains
+    auto_https on
     servers {
         protocols h1 h2
     }

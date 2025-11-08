@@ -4,6 +4,8 @@ Setup command for dockertree CLI.
 This module provides the setup command that initializes dockertree for a project.
 """
 
+import re
+import shutil
 import yaml
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -33,6 +35,72 @@ class SetupManager:
         """
         self.project_root = project_root or Path.cwd()
         self.dockertree_dir = self.project_root / DOCKERTREE_DIR
+    
+    def _get_examples_dir(self) -> Path:
+        """Get path to examples directory in current project.
+        
+        Returns:
+            Path to .dockertree directory where example files are stored
+        """
+        # Example files are stored directly in .dockertree directory
+        return self.dockertree_dir
+    
+    def _generate_config_dict(self, project_name: str, compose_file: Path) -> Dict[str, Any]:
+        """Generate config dictionary from project name and compose file.
+        
+        Extracts the logic currently in _create_config_file() to make it reusable.
+        This method is called by both template-based and from-scratch creation paths.
+        
+        Args:
+            project_name: Project name
+            compose_file: Path to docker-compose.yml file
+            
+        Returns:
+            Dictionary with complete config structure
+        """
+        # Detect services from compose file
+        with open(compose_file) as f:
+            compose_data = yaml.safe_load(f)
+        
+        services = {}
+        volumes = []
+        
+        if 'services' in compose_data:
+            for service_name in compose_data['services'].keys():
+                services[service_name] = {
+                    "container_name_template": f"${{COMPOSE_PROJECT_NAME}}-{service_name}"
+                }
+        
+        if 'volumes' in compose_data:
+            volumes = list(compose_data['volumes'].keys())
+        
+        config = {
+            'project_name': project_name,
+            'caddy_network': 'dockertree_caddy_proxy',
+            'worktree_dir': 'worktrees',
+            'services': services,
+            'volumes': volumes,
+            'environment': {
+                'DEBUG': 'True',
+                'ALLOWED_HOSTS': 'localhost,127.0.0.1,*.localhost,web',
+            }
+        }
+        
+        return config
+    
+    def _generate_env_dockertree_content(self, branch_name: str = "master") -> str:
+        """Generate env.dockertree content for project root.
+        
+        Reuses generate_env_compose_content() from settings.py for consistency.
+        
+        Args:
+            branch_name: Branch name (defaults to "master" for project root)
+            
+        Returns:
+            Environment file content string
+        """
+        from ..config.settings import generate_env_compose_content
+        return generate_env_compose_content(branch_name)
     
     def setup_project(self, project_name: Optional[str] = None, domain: Optional[str] = None, ip: Optional[str] = None, non_interactive: bool = False, monkey_patch: bool = False) -> bool:
         """Initialize dockertree for a project.
@@ -800,45 +868,99 @@ services:
     
     
     def _create_config_file(self, project_name: Optional[str], compose_file: Path) -> bool:
-        """Create config.yml file."""
+        """Create config.yml file.
+        
+        If .dockertree/config.yml does not exist, checks for example template first.
+        If example exists, copies and edits it. Otherwise creates from scratch.
+        """
         try:
+            config_file = self.dockertree_dir / "config.yml"
+            
+            # Don't overwrite if it already exists
+            if config_file.exists():
+                log_info("config.yml already exists, skipping creation")
+                return True
+            
             # Auto-detect project name if not provided
             if not project_name:
                 project_name = self.project_root.name
             
-            # Detect services from compose file
-            with open(compose_file) as f:
-                compose_data = yaml.safe_load(f)
+            # Generate config dict (single source of truth)
+            config = self._generate_config_dict(project_name, compose_file)
             
-            services = {}
-            volumes = []
+            # Check if example template exists
+            examples_dir = self._get_examples_dir()
+            example_config = examples_dir / "example.config.yml"
             
-            if 'services' in compose_data:
-                for service_name in compose_data['services'].keys():
-                    services[service_name] = {
-                        "container_name_template": f"${{COMPOSE_PROJECT_NAME}}-{service_name}"
-                    }
-            
-            if 'volumes' in compose_data:
-                volumes = list(compose_data['volumes'].keys())
-            
-            config = {
-                'project_name': project_name,
-                'caddy_network': 'dockertree_caddy_proxy',
-                'worktree_dir': 'worktrees',
-                'services': services,
-                'volumes': volumes,
-                'environment': {
-                    'DEBUG': 'True',
-                    'ALLOWED_HOSTS': 'localhost,127.0.0.1,*.localhost,web',
-                }
-            }
-            
-            config_file = self.dockertree_dir / "config.yml"
-            with open(config_file, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-            
-            log_success(f"Created config file: {config_file}")
+            if example_config.exists():
+                # Copy example template and edit it
+                # Copy example to target location
+                shutil.copy2(example_config, config_file)
+                log_info(f"Copied example template from {example_config}")
+                
+                # Read the copied file
+                content = config_file.read_text()
+                
+                # Uncomment and set project_name
+                content = re.sub(
+                    r'^# project_name:.*',
+                    f'project_name: {project_name}',
+                    content,
+                    flags=re.MULTILINE
+                )
+                
+                # Uncomment and set caddy_network
+                content = re.sub(
+                    r'^# caddy_network:.*',
+                    f"caddy_network: {config['caddy_network']}",
+                    content,
+                    flags=re.MULTILINE
+                )
+                
+                # Uncomment and set worktree_dir
+                content = re.sub(
+                    r'^# worktree_dir:.*',
+                    f"worktree_dir: {config['worktree_dir']}",
+                    content,
+                    flags=re.MULTILINE
+                )
+                
+                # Uncomment services section and add detected services
+                # Replace the entire services section with actual services
+                services_yaml = yaml.dump({'services': config['services']}, default_flow_style=False, sort_keys=False)
+                # Find services section (from "services:" to next "# ==" or end of section)
+                services_match = re.search(r'^services:.*?(?=^# =|^volumes:|$)', content, re.MULTILINE | re.DOTALL)
+                if services_match:
+                    # Replace the matched section
+                    content = content[:services_match.start()] + services_yaml + content[services_match.end():]
+                else:
+                    # If not found, just replace "services:" line
+                    content = re.sub(r'^services:', services_yaml, content, flags=re.MULTILINE)
+                
+                # Uncomment and set volumes
+                volumes_yaml = yaml.dump({'volumes': config['volumes']}, default_flow_style=False, sort_keys=False)
+                volumes_match = re.search(r'^volumes:.*?(?=^# =|^environment:|$)', content, re.MULTILINE | re.DOTALL)
+                if volumes_match:
+                    content = content[:volumes_match.start()] + volumes_yaml + content[volumes_match.end():]
+                else:
+                    content = re.sub(r'^volumes:', volumes_yaml, content, flags=re.MULTILINE)
+                
+                # Uncomment and set environment variables
+                env_yaml = yaml.dump({'environment': config['environment']}, default_flow_style=False, sort_keys=False)
+                env_match = re.search(r'^environment:.*?(?=^# =|$)', content, re.MULTILINE | re.DOTALL)
+                if env_match:
+                    content = content[:env_match.start()] + env_yaml + content[env_match.end():]
+                else:
+                    content = re.sub(r'^environment:', env_yaml, content, flags=re.MULTILINE)
+                
+                # Write edited content
+                config_file.write_text(content)
+                log_success(f"Created config file from template: {config_file}")
+            else:
+                # No example template, create from scratch (existing behavior)
+                with open(config_file, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                log_success(f"Created config file: {config_file}")
             
             # Copy README.md to .dockertree directory
             if not self._copy_readme_file():
@@ -876,11 +998,12 @@ services:
             return False
     
     def _create_template_env_dockertree(self) -> bool:
-        """Create template env.dockertree for project root (enables master branch usage)."""
+        """Create template env.dockertree for project root (enables master branch usage).
+        
+        If .dockertree/env.dockertree does not exist, checks for example template first.
+        If example exists, copies and edits it. Otherwise creates from scratch.
+        """
         try:
-            from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree
-            
-            # Create env.dockertree in .dockertree directory
             env_dockertree_path = self.dockertree_dir / "env.dockertree"
             
             # Don't overwrite if it already exists
@@ -888,34 +1011,418 @@ services:
                 log_info("env.dockertree already exists, skipping creation")
                 return True
             
-            # Get project name for template
-            project_name = sanitize_project_name(get_project_name())
+            # Generate env content (reuses settings.py logic)
+            env_content = self._generate_env_dockertree_content("master")
             
-            # Use "master" as the default branch name for project root
-            allowed_hosts = get_allowed_hosts_for_worktree("master")
+            # Check if example template exists
+            examples_dir = self._get_examples_dir()
+            example_env = examples_dir / "example.env.dockertree"
             
-            template_content = f"""# Dockertree environment file for project root (master branch)
-# This file is automatically sourced by Docker Compose
-# Variables here can override those in .env
-
-# Project identification
-COMPOSE_PROJECT_NAME={project_name}-master
-PROJECT_ROOT=${{PWD}}
-
-# Domain configuration for Caddy proxy
-SITE_DOMAIN={project_name}-master.localhost
-ALLOWED_HOSTS={allowed_hosts}
-
-# Add any worktree-specific overrides below
-"""
+            if example_env.exists():
+                # Copy example template and edit it
+                # Copy example to target location
+                shutil.copy2(example_env, env_dockertree_path)
+                log_info(f"Copied example template from {example_env}")
+                
+                # Read the copied file
+                content = env_dockertree_path.read_text()
+                
+                # Parse generated content to extract values
+                # Format: KEY=value
+                env_vars = {}
+                for line in env_content.split('\n'):
+                    if '=' in line and not line.strip().startswith('#'):
+                        key, value = line.split('=', 1)
+                        env_vars[key.strip()] = value.strip()
+                
+                # Uncomment and set each variable
+                for key, value in env_vars.items():
+                    # Pattern: # KEY=value or #KEY=value
+                    pattern = rf'^#\s*{re.escape(key)}=.*'
+                    replacement = f'{key}={value}'
+                    content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+                
+                # Write edited content
+                env_dockertree_path.write_text(content)
+                log_success(f"Created template env.dockertree from template: {env_dockertree_path}")
+            else:
+                # No example template, create from scratch (existing behavior)
+                env_dockertree_path.write_text(env_content)
+                log_success(f"Created template env.dockertree: {env_dockertree_path}")
             
-            env_dockertree_path.write_text(template_content)
-            log_success(f"Created template env.dockertree: {env_dockertree_path}")
             log_info("This enables using dockertree commands with the master branch")
             return True
             
         except Exception as e:
             log_error(f"Failed to create template env.dockertree: {e}")
+            return False
+    
+    def _regenerate_example_files(self) -> bool:
+        """Regenerate example.config.yml and example.env.dockertree in examples/ directory.
+        
+        Uses same structure as active config generation but with all settings commented.
+        Ensures example files stay in sync with actual config structure.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            examples_dir = self._get_examples_dir()
+            examples_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate example.config.yml
+            example_config_path = examples_dir / "example.config.yml"
+            
+            # Read the existing example file if it exists to preserve structure
+            # Otherwise generate from scratch
+            if example_config_path.exists():
+                log_info("Regenerating example.config.yml (preserving existing structure)")
+            else:
+                log_info("Creating example.config.yml")
+            
+            # For now, we'll write a comprehensive template
+            # In the future, this could parse existing configs to generate examples
+            config_template = """# Dockertree Project Configuration Template
+# This file serves as a comprehensive template with all possible settings
+# Uncomment and modify settings as needed for your project
+# 
+# When running `dockertree setup`, if .dockertree/config.yml does not exist,
+# this template will be copied and automatically configured based on your
+# docker-compose.yml file.
+
+# ============================================================================
+# Project Identification
+# ============================================================================
+
+# Project name (used in container names, volumes, and domains)
+# Default: directory name
+# Automatically set during setup based on project directory name
+# project_name: myproject
+
+# ============================================================================
+# Network Configuration
+# ============================================================================
+
+# Docker network name for Caddy proxy
+# Default: dockertree_caddy_proxy
+# This network is shared across all worktrees for routing
+# caddy_network: dockertree_caddy_proxy
+
+# ============================================================================
+# Directory Configuration
+# ============================================================================
+
+# Directory where worktrees are stored
+# Default: worktrees
+# Worktrees will be created in {project_root}/{worktree_dir}/{branch_name}/
+# worktree_dir: worktrees
+
+# ============================================================================
+# Service Configuration
+# ============================================================================
+
+# Service configuration
+# Automatically detected from docker-compose.yml during setup
+# Each service can have a container_name_template
+# The ${COMPOSE_PROJECT_NAME} variable is automatically set per worktree
+# Format: {project_name}-{branch_name}
+services:
+  # Example web service
+  # web:
+  #   container_name_template: ${COMPOSE_PROJECT_NAME}-web
+  
+  # Example database service
+  # db:
+  #   container_name_template: ${COMPOSE_PROJECT_NAME}-db
+  
+  # Example Redis service
+  # redis:
+  #   container_name_template: ${COMPOSE_PROJECT_NAME}-redis
+  
+  # Add more services as needed:
+  # api:
+  #   container_name_template: ${COMPOSE_PROJECT_NAME}-api
+  # worker:
+  #   container_name_template: ${COMPOSE_PROJECT_NAME}-worker
+
+# ============================================================================
+# Volume Configuration
+# ============================================================================
+
+# Volume names (automatically detected from docker-compose.yml)
+# These will be prefixed with {project_name}-{branch_name}_ for each worktree
+# Example: myproject-feature-auth_postgres_data
+volumes:
+  # Example PostgreSQL volume
+  # - postgres_data
+  
+  # Example Redis volume
+  # - redis_data
+  
+  # Example media files volume
+  # - media_files
+  
+  # Add more volumes as needed:
+  # - sqlite_data
+  # - static_files
+  # - uploads
+
+# ============================================================================
+# Default Environment Variables
+# ============================================================================
+
+# Default environment variables for all worktrees
+# These can be overridden in worktree-specific env.dockertree files
+# These values are used as defaults when creating new worktrees
+environment:
+  # Debug mode (True for development, False for production)
+  # DEBUG: "True"
+  
+  # Allowed hosts for Django/Flask applications
+  # Automatically includes localhost, 127.0.0.1, worktree domain, *.localhost, and web
+  # ALLOWED_HOSTS: "localhost,127.0.0.1,*.localhost,web"
+  
+  # Add more default environment variables:
+  # POSTGRES_USER: "user"
+  # POSTGRES_PASSWORD: "password"
+  # POSTGRES_DB: "database"
+  # DJANGO_SECRET_KEY: "django-insecure-secret-key"
+  # SITE_DOMAIN: "localhost:8000"
+  # CADDY_EMAIL: "admin@example.com"
+
+# ============================================================================
+# Deployment Configuration (Optional)
+# ============================================================================
+
+# Deployment configuration
+# Used by 'dockertree push' command
+# These settings provide defaults for deployment operations
+# deployment:
+  # Default server for push operations
+  # Format: username@hostname:/path/to/packages
+  # Example: user@server.example.com:/var/dockertree/packages
+  # default_server: user@server.example.com:/var/dockertree/packages
+  
+  # Default domain for HTTPS deployments
+  # Used when --domain flag is not provided to push command
+  # Example: myapp.example.com
+  # default_domain: myapp.example.com
+  
+  # Default IP for HTTP-only deployments
+  # Used when --ip flag is not provided to push command
+  # Note: IP-only deployments are HTTP-only (no TLS)
+  # Example: 203.0.113.10
+  # default_ip: 203.0.113.10
+  
+  # SSH key path for deployment
+  # Used for SCP operations during push
+  # Example: ~/.ssh/deploy_key
+  # ssh_key: ~/.ssh/deploy_key
+
+# ============================================================================
+# DNS Configuration (Optional)
+# ============================================================================
+
+# DNS configuration
+# Used for automatic DNS management during deployment
+# Currently supports Digital Ocean DNS API
+# dns:
+  # DNS provider (currently only 'digitalocean' is supported)
+  # provider: digitalocean
+  
+  # API token for DNS provider
+  # Can use environment variable: ${DIGITALOCEAN_API_TOKEN} or ${DNS_API_TOKEN}
+  # Priority: CLI flag > shell environment > .env file > this config file
+  # api_token: ${DIGITALOCEAN_API_TOKEN}
+  
+  # Default domain for DNS operations
+  # Used when creating subdomains during deployment
+  # Example: example.com
+  # default_domain: example.com
+"""
+            
+            example_config_path.write_text(config_template)
+            log_success(f"Regenerated example.config.yml: {example_config_path}")
+            
+            # Generate example.env.dockertree
+            example_env_path = examples_dir / "example.env.dockertree"
+            
+            if example_env_path.exists():
+                log_info("Regenerating example.env.dockertree (preserving existing structure)")
+            else:
+                log_info("Creating example.env.dockertree")
+            
+            # Read the existing example file content (we already created it, so use that)
+            # But for regeneration, we'll write the comprehensive template
+            env_template = """# Dockertree Environment Configuration Template
+# This file serves as a comprehensive template with all possible environment variables
+# Uncomment and modify variables as needed for your project
+#
+# This file is automatically sourced by Docker Compose
+# Variables here override those in .env files
+#
+# When running `dockertree setup`, if .dockertree/env.dockertree does not exist,
+# this template will be copied and automatically configured for the project root.
+
+# ============================================================================
+# Project Identification
+# ============================================================================
+
+# Docker Compose project name (automatically set per worktree)
+# Format: {project_name}-{branch_name}
+# For project root, uses: {project_name}-master
+# COMPOSE_PROJECT_NAME=myproject-master
+
+# Project root directory (automatically set)
+# Points to the worktree directory
+# PROJECT_ROOT=${PWD}
+
+# ============================================================================
+# Domain and Host Configuration
+# ============================================================================
+
+# Site domain for the worktree
+# Local development: {project_name}-{branch_name}.localhost
+# Production: https://subdomain.example.com
+# IP-only: http://203.0.113.10
+# SITE_DOMAIN=myproject-master.localhost
+
+# Allowed hosts for Django/Flask applications
+# Automatically includes localhost, 127.0.0.1, worktree domain, *.localhost, and web
+# Format: comma-separated list
+# ALLOWED_HOSTS=localhost,127.0.0.1,myproject-master.localhost,*.localhost,web
+
+# ============================================================================
+# Django Configuration
+# ============================================================================
+
+# Debug mode (True for development, False for production)
+# DEBUG=True
+
+# Django secret key (use a secure random key in production)
+# Generate with: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+# DJANGO_SECRET_KEY=django-insecure-secret-key
+
+# Enable X-Forwarded-Host header support (required for reverse proxy)
+# Set to True when using Caddy or other reverse proxies
+# USE_X_FORWARDED_HOST=True
+
+# CSRF trusted origins (space-separated URLs)
+# For localhost: http://{project_name}-{branch_name}.localhost
+# For domains: https://subdomain.example.com http://subdomain.example.com
+# CSRF_TRUSTED_ORIGINS=http://myproject-master.localhost
+
+# Secure proxy SSL header (tuple format for Django)
+# Format: HTTP_X_FORWARDED_PROTO,https
+# Used to detect HTTPS when behind a reverse proxy
+# SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https
+
+# ============================================================================
+# Database Configuration (PostgreSQL)
+# ============================================================================
+
+# PostgreSQL user
+# POSTGRES_USER=user
+
+# PostgreSQL password
+# POSTGRES_PASSWORD=password
+
+# PostgreSQL database name
+# POSTGRES_DB=database
+
+# PostgreSQL host (automatically set to worktree-specific container)
+# Format: ${COMPOSE_PROJECT_NAME}-db
+# POSTGRES_HOST=${COMPOSE_PROJECT_NAME}-db
+
+# PostgreSQL port
+# POSTGRES_PORT=5432
+
+# Database URL (automatically constructed)
+# Format: postgres://user:password@host:port/database
+# DATABASE_URL=postgres://user:password@${COMPOSE_PROJECT_NAME}-db:5432/database
+
+# ============================================================================
+# Redis Configuration
+# ============================================================================
+
+# Redis host (automatically set to worktree-specific container)
+# Format: ${COMPOSE_PROJECT_NAME}-redis
+# REDIS_HOST=${COMPOSE_PROJECT_NAME}-redis
+
+# Redis port
+# REDIS_PORT=6379
+
+# Redis database number
+# REDIS_DB=0
+
+# Redis URL (automatically constructed)
+# Format: redis://host:port/db
+# REDIS_URL=redis://${COMPOSE_PROJECT_NAME}-redis:6379/0
+
+# ============================================================================
+# Caddy Proxy Configuration
+# ============================================================================
+
+# Email for Let's Encrypt certificate notifications
+# Used when deploying with HTTPS via Caddy
+# CADDY_EMAIL=admin@example.com
+
+# ============================================================================
+# DNS Provider Configuration (for deployment)
+# ============================================================================
+
+# Digital Ocean API token (for automatic DNS management)
+# Can also be set via environment variable: DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN
+# Priority: CLI flag > shell env > .env file > this file
+# DIGITALOCEAN_API_TOKEN=your_token_here
+
+# Generic DNS API token (alternative to DIGITALOCEAN_API_TOKEN)
+# DNS_API_TOKEN=your_token_here
+
+# ============================================================================
+# Droplet/Server Configuration (for deployment)
+# ============================================================================
+
+# Default region for droplet creation
+# Used with dockertree droplets create command
+# Example: nyc1, sfo3, lon1
+# DROPLET_DEFAULT_REGION=nyc1
+
+# Default size for droplet creation
+# Used with dockertree droplets create command
+# Example: s-1vcpu-1gb, s-2vcpu-4gb
+# DROPLET_DEFAULT_SIZE=s-1vcpu-1gb
+
+# Default image for droplet creation
+# Used with dockertree droplets create command
+# Example: ubuntu-22-04-x64, ubuntu-20-04-x64
+# DROPLET_DEFAULT_IMAGE=ubuntu-22-04-x64
+
+# Default SSH keys for droplet creation (comma-separated)
+# Used with dockertree droplets create and push commands
+# SSH key names (comma-separated, e.g., anders,peter)
+# Only key names are supported, not numeric IDs or fingerprints
+# DROPLET_DEFAULT_SSH_KEYS=anders,peter
+
+# ============================================================================
+# Application-Specific Configuration
+# ============================================================================
+
+# Add your application-specific environment variables below:
+# CUSTOM_SETTING=value
+# API_KEY=your_api_key
+# EXTERNAL_SERVICE_URL=https://api.example.com
+# LOG_LEVEL=INFO
+# SENTRY_DSN=https://your-sentry-dsn@sentry.io/project-id
+"""
+            
+            example_env_path.write_text(env_template)
+            log_success(f"Regenerated example.env.dockertree: {example_env_path}")
+            
+            return True
+            
+        except Exception as e:
+            log_error(f"Failed to regenerate example files: {e}")
             return False
     
     def _validate_project_root(self) -> bool:

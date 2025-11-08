@@ -334,6 +334,7 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
             Environment file content with domain overrides
         """
         from ..config.settings import get_project_name, sanitize_project_name
+        from ..utils.logging import log_warning
         project_root = self.project_root
         project_name = sanitize_project_name(get_project_name())
         compose_project_name = f"{project_name}-{branch_name}"
@@ -348,6 +349,27 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
             allowed_hosts += f",*.{base_domain}"
         allowed_hosts += ",web"
         
+        # Determine CADDY_EMAIL: check if already set in env.dockertree, otherwise use default
+        default_caddy_email = f"admin@{domain}"
+        caddy_email = default_caddy_email
+        
+        # Check if env.dockertree exists and has CADDY_EMAIL
+        worktree_path = Path(project_root) / "worktrees" / branch_name
+        env_compose_path = get_env_compose_file_path(worktree_path)
+        if env_compose_path.exists():
+            from ..utils.env_loader import load_env_file
+            existing_env = load_env_file(env_compose_path)
+            if 'CADDY_EMAIL' in existing_env:
+                caddy_email = existing_env['CADDY_EMAIL']
+            else:
+                log_warning(f"CADDY_EMAIL not set in env.dockertree. Using default: {default_caddy_email}")
+                log_warning("This email is used for Let's Encrypt certificate notifications.")
+                log_warning("To customize, add CADDY_EMAIL=your-email@example.com to .dockertree/env.dockertree")
+        else:
+            log_warning(f"CADDY_EMAIL not set. Using default: {default_caddy_email}")
+            log_warning("This email is used for Let's Encrypt certificate notifications.")
+            log_warning("To customize, add CADDY_EMAIL=your-email@example.com to .dockertree/env.dockertree")
+        
         return f"""# Dockertree environment configuration for {branch_name}
 # Domain override: {domain}
 COMPOSE_PROJECT_NAME={compose_project_name}
@@ -357,6 +379,7 @@ ALLOWED_HOSTS={allowed_hosts}
 DEBUG=False
 USE_X_FORWARDED_HOST=True
 CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
+CADDY_EMAIL={caddy_email}
 """
     
     def apply_domain_overrides(self, worktree_path: Path, domain: str) -> bool:
@@ -455,7 +478,21 @@ CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
             # Update env.dockertree file
             env_dockertree = get_env_compose_file_path(worktree_path)
             if env_dockertree.exists():
+                from ..utils.env_loader import load_env_file
+                existing_env = load_env_file(env_dockertree)
                 content = env_dockertree.read_text()
+                
+                # Check if CADDY_EMAIL is already set
+                if 'CADDY_EMAIL' not in existing_env:
+                    # Set default CADDY_EMAIL based on domain
+                    default_caddy_email = f"admin@{domain}"
+                    log_warning(f"CADDY_EMAIL not set in env.dockertree. Using default: {default_caddy_email}")
+                    log_warning("This email is used for Let's Encrypt certificate notifications.")
+                    log_warning("To customize, add CADDY_EMAIL=your-email@example.com to .dockertree/env.dockertree")
+                    
+                    # Add CADDY_EMAIL to content if not present
+                    if 'CADDY_EMAIL=' not in content:
+                        content += f"\nCADDY_EMAIL={default_caddy_email}\n"
                 
                 # Replace SITE_DOMAIN
                 content = re.sub(
@@ -503,6 +540,43 @@ CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
                 
                 env_dockertree.write_text(content)
                 log_info(f"Applied domain overrides to env.dockertree: {domain}")
+            
+            # Update docker-compose.worktree.yml to replace localhost patterns with domain
+            from ..utils.path_utils import get_compose_override_path
+            compose_file = get_compose_override_path(worktree_path)
+            if compose_file and compose_file.exists():
+                try:
+                    import yaml
+                    compose_content = compose_file.read_text()
+                    compose_data = yaml.safe_load(compose_content)
+                    
+                    if compose_data and 'services' in compose_data:
+                        updated = False
+                        for service_name, service_config in compose_data['services'].items():
+                            if 'labels' in service_config:
+                                labels = service_config['labels']
+                                # Handle both list and dict formats
+                                if isinstance(labels, list):
+                                    for i, label in enumerate(labels):
+                                        if isinstance(label, str) and 'caddy.proxy=' in label:
+                                            # Replace localhost pattern with domain
+                                            if '${COMPOSE_PROJECT_NAME}.localhost' in label or '.localhost' in label:
+                                                labels[i] = f"caddy.proxy={domain}"
+                                                updated = True
+                                                log_info(f"Updated Caddy label for {service_name}: {domain}")
+                                elif isinstance(labels, dict):
+                                    if 'caddy.proxy' in labels:
+                                        old_value = labels['caddy.proxy']
+                                        if '${COMPOSE_PROJECT_NAME}.localhost' in str(old_value) or '.localhost' in str(old_value):
+                                            labels['caddy.proxy'] = domain
+                                            updated = True
+                                            log_info(f"Updated Caddy label for {service_name}: {domain}")
+                        
+                        if updated:
+                            compose_file.write_text(yaml.dump(compose_data, default_flow_style=False, sort_keys=False))
+                            log_info(f"Updated docker-compose.worktree.yml with domain: {domain}")
+                except Exception as e:
+                    log_warning(f"Failed to update docker-compose.worktree.yml: {e}")
             
             return True
             
@@ -569,7 +643,44 @@ CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
                     content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
                 env_dockertree.write_text(content)
                 log_info(f"Applied IP overrides to env.dockertree: {ip}")
-
+            
+            # Update docker-compose.worktree.yml to replace localhost patterns with IP
+            from ..utils.path_utils import get_compose_override_path
+            compose_file = get_compose_override_path(worktree_path)
+            if compose_file and compose_file.exists():
+                try:
+                    import yaml
+                    compose_content = compose_file.read_text()
+                    compose_data = yaml.safe_load(compose_content)
+                    
+                    if compose_data and 'services' in compose_data:
+                        updated = False
+                        for service_name, service_config in compose_data['services'].items():
+                            if 'labels' in service_config:
+                                labels = service_config['labels']
+                                # Handle both list and dict formats
+                                if isinstance(labels, list):
+                                    for i, label in enumerate(labels):
+                                        if isinstance(label, str) and 'caddy.proxy=' in label:
+                                            # Replace localhost pattern with IP
+                                            if '${COMPOSE_PROJECT_NAME}.localhost' in label or '.localhost' in label:
+                                                labels[i] = f"caddy.proxy={ip}"
+                                                updated = True
+                                                log_info(f"Updated Caddy label for {service_name}: {ip}")
+                                elif isinstance(labels, dict):
+                                    if 'caddy.proxy' in labels:
+                                        old_value = labels['caddy.proxy']
+                                        if '${COMPOSE_PROJECT_NAME}.localhost' in str(old_value) or '.localhost' in str(old_value):
+                                            labels['caddy.proxy'] = ip
+                                            updated = True
+                                            log_info(f"Updated Caddy label for {service_name}: {ip}")
+                        
+                        if updated:
+                            compose_file.write_text(yaml.dump(compose_data, default_flow_style=False, sort_keys=False))
+                            log_info(f"Updated docker-compose.worktree.yml with IP: {ip}")
+                except Exception as e:
+                    log_warning(f"Failed to update docker-compose.worktree.yml: {e}")
+            
             return True
         except Exception as e:
             log_warning(f"Failed to apply IP overrides: {e}")

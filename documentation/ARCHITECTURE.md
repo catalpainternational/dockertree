@@ -292,6 +292,27 @@ The system uses a fallback hierarchy:
 **Dependencies**: GitManager
 **External Interactions**: Git operations, system queries
 
+#### DropletCommands (`commands/droplets.py`)
+**Responsibility**: Digital Ocean droplet management operations
+
+**Key Methods**:
+- `create_droplet()` - Create new droplet with configurable options
+- `list_droplets()` - List all droplets with status information (supports table, JSON, CSV output)
+- `destroy_droplet()` - Destroy droplet and/or DNS records with confirmation
+- `get_droplet_info()` - Get detailed droplet information
+- `_destroy_dns_only()` - Destroy DNS records only (internal helper)
+- `_destroy_dns_for_ip()` - Destroy DNS records pointing to specific IP (internal helper)
+
+**Key Features**:
+- **Selective Destruction**: `--only-droplet` and `--only-domain` flags for granular control
+- **DNS Auto-detection**: Automatically finds DNS records pointing to droplet IP
+- **Domain Confirmation**: Requires typing domain name for DNS deletion (unless `--force`)
+- **Multiple Output Formats**: Table (default), JSON (`--as-json`), CSV (`--as-csv`)
+- **Domain Display**: Lists associated domains for each droplet in list output
+
+**Dependencies**: DropletManager, DNSManager
+**External Interactions**: Digital Ocean API, droplet lifecycle management, DNS record management
+
 ### CLI Interface Layer
 
 #### DockertreeCLI (`cli.py`)
@@ -791,23 +812,127 @@ dockertree packages import backup-20240115.tar.gz --standalone
 ### Domain vs IP Deployments
 
 - Domain (`--domain sub.domain.tld`):
+  - Automatic DNS management via Digital Ocean DNS API
+  - DNS record creation with user confirmation if subdomain doesn't exist
   - Caddy routes traffic using the provided domain
-  - HTTPS available via automatic certificate management
+  - HTTPS available via automatic certificate management (Let's Encrypt)
   - Environment overrides set `SITE_DOMAIN=https://{domain}` and include domain in `ALLOWED_HOSTS`
+  - Dynamic HTTPS configuration via Caddy admin API
 
 - IP (`--ip x.x.x.x`):
   - HTTP-only (no TLS); certificate authorities do not issue certificates for IPs
   - Caddy can route using the IP value, but remains HTTP unless manually configured
   - Environment overrides set `SITE_DOMAIN=http://{ip}` and include IP in `ALLOWED_HOSTS`
 
+### DNS Provider Abstraction Layer
+
+Dockertree includes a DNS provider abstraction layer for automatic DNS management:
+
+#### DNSManager (`core/dns_manager.py`)
+**Responsibility**: Unified interface for DNS provider operations
+
+**Key Components**:
+- `DNSProvider` abstract base class with interface methods
+- Provider registry for auto-detection and factory creation
+- Shared utilities: `parse_domain()`, `is_domain()`, token resolution
+
+**Key Methods**:
+- `check_domain_exists()` - Check if subdomain exists and return current IP
+- `create_subdomain()` - Create A record for subdomain
+- `list_subdomains()` - List all subdomains for a domain
+- `delete_subdomain()` - Delete A record for subdomain
+
+**Provider Implementations**:
+- `DigitalOceanProvider` (`core/dns_providers/digitalocean.py`) - Digital Ocean DNS API v2
+
+**Provider-Specific Methods** (DigitalOceanProvider):
+- `find_dns_records_by_ip()` - Find DNS A records pointing to a specific IP address
+  - Supports domain-specific or account-wide search
+  - Returns list of (subdomain, domain, record_id) tuples
+
+**Features**:
+- Automatic domain existence checking
+- Automatic domain creation when `--domain` is provided (no confirmation prompt)
+- DNS record deletion with domain name confirmation
+- Server IP resolution (hostname to IP)
+- IP-to-domain reverse lookup for finding associated DNS records
+- Token management via CLI flags, shell environment variables, or `.env` files
+
+**Token Resolution Priority** (highest to lowest):
+1. Explicit `--dns-token` CLI flag
+2. Shell environment variable (`DIGITALOCEAN_API_TOKEN` or `DNS_API_TOKEN`)
+3. `.env` file in project root (`DIGITALOCEAN_API_TOKEN` or `DNS_API_TOKEN`)
+
+### Droplet Provider Abstraction Layer
+
+Dockertree includes a droplet provider abstraction layer for cloud server management:
+
+#### DropletManager (`core/droplet_manager.py`)
+**Responsibility**: Unified interface for droplet provider operations
+
+**Key Components**:
+- `DropletProvider` abstract base class with interface methods
+- Provider registry for auto-detection and factory creation
+- `DropletInfo` dataclass for structured droplet information
+- Shared utilities: token resolution, default configuration loading
+
+**Key Methods**:
+- `create_droplet()` - Create a new droplet
+- `list_droplets()` - List all droplets
+- `get_droplet()` - Get droplet information by ID
+- `destroy_droplet()` - Destroy a droplet
+- `wait_for_droplet_ready()` - Wait for droplet to be ready
+
+**Provider Implementations**:
+- `DigitalOceanProvider` (`core/dns_providers/digitalocean.py`) - Digital Ocean Droplets API v2
+
+**Features**:
+- Automatic droplet creation with configurable defaults
+- Droplet status polling and readiness detection
+- IP address extraction from droplet networks
+- Token management via CLI flags, shell environment variables, or `.env` files
+- Default configuration from `.env` or `.dockertree/env.dockertree`
+- Integration with DNS deletion for cleanup operations
+- Domain association display in list output
+
+**Token Resolution**: Reuses `DNSManager.resolve_dns_token()` since both use the same Digital Ocean API token
+
+**Default Configuration** (from `.env` or `.dockertree/env.dockertree`):
+- `DROPLET_DEFAULT_REGION` (default: `nyc1`)
+- `DROPLET_DEFAULT_SIZE` (default: `s-1vcpu-1gb`)
+- `DROPLET_DEFAULT_IMAGE` (default: `ubuntu-22-04-x64`)
+- `DROPLET_DEFAULT_SSH_KEYS` (comma-separated SSH key names, e.g., `anders,peter` - only names are supported, not numeric IDs or fingerprints)
+
 ### Push Command Flow
 
 ```
-Export → Compress → SCP Transfer → (optional) Server Preparation → (optional) Remote Import → Start Proxy → Up
+(optional) Droplet Creation → Export → (optional) DNS Management → Compress → SCP Transfer → (optional) Server Preparation → (optional) Remote Import → Start Proxy → Up
 ```
 
+- Droplet creation (optional): creates new Digital Ocean droplet when `--create-droplet` provided, updates SCP target to use droplet IP
+- DNS management (optional): checks/creates DNS records via Digital Ocean DNS API when `--domain` provided
 - Server preparation (optional): checks presence of git, docker, docker compose, dockertree
 - Remote import (optional): runs `dockertree packages import` with `--domain` or `--ip`, then starts services
+
+### HTTPS Configuration Architecture
+
+#### Dynamic HTTPS Detection
+- `caddy-dynamic-config.py` detects domains vs IPs/localhost using `_is_domain()` helper
+- When domains are detected, automatically configures:
+  - HTTPS listener on port 443
+  - TLS automation with Let's Encrypt (ACME)
+  - Certificate management via Caddy's built-in automation
+
+#### Caddyfile Configuration
+- Base `Caddyfile.dockertree` has `auto_https on` to enable automatic HTTPS
+- Dynamic configuration via admin API overrides base settings
+- TLS automation configured per-domain when domains are detected
+
+#### Certificate Management
+- Automatic certificate issuance via Let's Encrypt
+- Email from `CADDY_EMAIL` environment variable (defaults to `admin@example.com`)
+- Certificates stored in `dockertree_caddy_data` volume
+- Automatic renewal handled by Caddy
 
 ### Configuration Defaults
 
@@ -819,9 +944,40 @@ deployment:
   default_domain: myapp.example.com
   default_ip: 203.0.113.10
   ssh_key: ~/.ssh/deploy_key
+
+dns:
+  provider: digitalocean
+  api_token: ${DIGITALOCEAN_API_TOKEN}  # or DNS_API_TOKEN
+  default_domain: example.com
 ```
 
+**Token Resolution**:
+DNS API tokens can be provided via:
+- CLI flag: `--dns-token <token>`
+- Shell environment: `export DIGITALOCEAN_API_TOKEN=token` or `export DNS_API_TOKEN=token`
+- Project `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to project root `.env` file
+- Global config: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to `~/.dockertree/env.dockertree` file
+
+Priority order: CLI flag > shell environment > project `.env` file > global config file
+
 These are read via helper functions in `config/settings.py` and are entirely optional to preserve Phase 1 behavior.
+
+### Droplet Management Integration
+
+Droplet management is integrated into the push workflow:
+
+**Push Command Integration**:
+- `--create-droplet` flag triggers droplet creation before package export
+- Droplet IP address automatically updates SCP target
+- `--wait-for-droplet` ensures droplet is ready before pushing
+- Droplet defaults loaded from `.env` or `.dockertree/env.dockertree`
+
+**Workflow**:
+1. Create droplet (if `--create-droplet` specified)
+2. Wait for droplet ready (if `--wait-for-droplet` specified)
+3. Extract droplet IP address
+4. Update SCP target to use droplet IP
+5. Continue with standard push flow (export, transfer, import)
 
 ### Adding New Commands
 

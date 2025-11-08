@@ -97,35 +97,46 @@ def show_help() -> None:
     """Show help information."""
     help_text = """Dockertree: Git Worktrees for Isolated Development Environments
 
+Create isolated development environments using Git worktrees with Docker Compose.
+Each worktree gets its own database, Redis, media storage, and unique URL.
+
 USAGE:
+    dockertree <worktree_name> up|down
     dockertree <command> [options]
 
 COMMANDS:
-    start                    Start global Caddy container
-    stop                     Stop global Caddy container
-    create <branch-name>     Create worktree and change directory
-    up -d                    Start worktree environment
-    down                     Stop worktree environment
-    delete <branch-name> [--force]  Delete worktree and branch completely
-    remove <branch-name> [--force]  Remove worktree and containers/volumes but keep git branch
-    list                     List active worktrees
+    start                    Start global Caddy proxy container
+    stop                     Stop global Caddy proxy container
+    create <branch-name>     Create worktree for specified branch
+    <worktree> up            Start worktree environment
+    <worktree> down          Stop worktree environment
+    delete <branch-name>     Delete worktree and branch completely
+    remove <branch-name>     Remove worktree but keep git branch
+    list                     List all active worktrees
     prune                    Remove prunable worktree references
-    --version|-v             Show version information
+    volumes                  Manage Docker volumes for worktrees
+    packages                 Manage environment packages
+    droplets                 Manage DigitalOcean droplets
+    domains                  Manage DNS domains and records
+    push                     Push package to remote server
+    setup                    Initialize dockertree for project
+    completion               Manage shell completion
+    --version, -v            Show version information
     help                     Show this help message
 
 EXAMPLES:
-    # Start global Caddy
+    # Start global Caddy proxy
     dockertree start
     
     # Create and start a worktree
     dockertree create feature-auth
-    dockertree up -d
+    dockertree feature-auth up
     
     # Access environment (URL format: http://project-branch.localhost)
     open http://myproject-feature-auth.localhost
     
     # Stop and remove worktree (keeps git branch)
-    dockertree down
+    dockertree feature-auth down
     dockertree remove feature-auth
     
     # Or delete worktree completely (removes git branch)
@@ -141,11 +152,14 @@ EXAMPLES:
     dockertree stop
 
 VOLUME MANAGEMENT:
-    dockertree volumes list                    # List all worktree volumes
-    dockertree volumes size                    # Show volume sizes
-    dockertree volumes backup <branch-name>     # Backup worktree volumes
-    dockertree volumes restore <branch-name> <backup-file.tar>  # Restore worktree volumes
-    dockertree volumes clean <branch-name>     # Clean up worktree volumes"""
+    dockertree volumes list                    List all worktree volumes
+    dockertree volumes size                    Show volume sizes
+    dockertree volumes backup <branch-name>    Backup worktree volumes
+    dockertree volumes restore <branch-name> <backup-file.tar>
+                                                Restore worktree volumes
+    dockertree volumes clean <branch-name>     Clean up worktree volumes
+
+For more information, use: dockertree <command> --help"""
     
     console.print(Panel(help_text, title="Dockertree Help", border_style=Colors.BLUE))
 

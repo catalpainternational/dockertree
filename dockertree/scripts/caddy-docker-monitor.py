@@ -84,8 +84,47 @@ class CaddyDockerMonitor:
             logger.error(f"Failed to update Caddy config: {e}")
             return False
     
+    def _is_domain(self, host: str) -> bool:
+        """Check if a host string is a domain (not localhost or IP)."""
+        if not host or not isinstance(host, str):
+            return False
+        
+        # IP address patterns
+        import re
+        ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+        ipv6_pattern = r'^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$'
+        
+        if re.match(ipv4_pattern, host) or re.match(ipv6_pattern, host):
+            return False
+        
+        # localhost variants
+        if host in ['localhost', '127.0.0.1', '::1'] or host.endswith('.localhost'):
+            return False
+        
+        # Domain: contains dots and valid domain characters
+        return '.' in host and not host.startswith('.')
+    
     def create_route_config(self, containers: List[Dict]) -> Dict:
         """Create Caddy configuration with routes for containers."""
+        # Detect if any domains are being used (vs localhost/IP)
+        has_domains = False
+        domains = []
+        
+        for container in containers:
+            labels = container.get('Labels', {})
+            if 'caddy.proxy' in labels:
+                domain = labels['caddy.proxy']
+                if self._is_domain(domain):
+                    has_domains = True
+                    domains.append(domain)
+        
+        # Configure HTTP server (always present)
+        http_listen = [":80"]
+        # Add HTTPS listener if domains are detected
+        if has_domains:
+            http_listen.append(":443")
+            logger.info(f"HTTPS enabled for domains: {', '.join(domains)}")
+        
         config = {
             "admin": {
                 "listen": "0.0.0.0:2019",
@@ -96,13 +135,36 @@ class CaddyDockerMonitor:
                 "http": {
                     "servers": {
                         "srv0": {
-                            "listen": [":80"],
+                            "listen": http_listen,
                             "routes": []
                         }
                     }
                 }
             }
         }
+        
+        # Add TLS automation if domains are present
+        if has_domains:
+            import os
+            # Try to get CADDY_EMAIL from environment (set via env.dockertree in docker-compose)
+            caddy_email = os.getenv("CADDY_EMAIL")
+            if not caddy_email:
+                # Fallback: try to construct from first domain
+                first_domain = domains[0] if domains else "example.com"
+                caddy_email = f"admin@{first_domain}"
+                logger.warning(f"CADDY_EMAIL not set. Using default: {caddy_email}")
+            
+            config["apps"]["tls"] = {
+                "automation": {
+                    "policies": [{
+                        "subjects": domains,
+                        "issuers": [{
+                            "module": "acme",
+                            "email": caddy_email
+                        }]
+                    }]
+                }
+            }
         
         routes = []
         
@@ -132,7 +194,8 @@ class CaddyDockerMonitor:
                     }
                 
                 routes.append(route)
-                logger.info(f"Added route for {domain} -> {target}")
+                route_type = "HTTPS" if self._is_domain(domain) else "HTTP"
+                logger.info(f"Added {route_type} route for {domain} -> {target}")
         
         # Add default wildcard route at the end (must be last for proper matching)
         routes.append({

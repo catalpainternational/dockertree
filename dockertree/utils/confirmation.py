@@ -112,3 +112,70 @@ def confirm_use_existing_worktree(branch_name: str) -> bool:
         # Handle case where stdin is not available (e.g., in automated scripts)
         log_warning("Cannot prompt for confirmation (no stdin available). Use --force to skip confirmation.")
         return False
+
+
+def confirm_action(message: str) -> bool:
+    """Prompt user for confirmation of a generic action.
+    
+    Args:
+        message: The confirmation message to display
+        
+    Returns:
+        True if user confirms, False if user cancels
+    """
+    try:
+        response = input(f"{message} [Y/n]: ").strip().lower()
+        
+        # Handle empty response (Enter key) as 'yes'
+        if not response:
+            return True
+        
+        # Handle explicit responses
+        if response in ['y', 'yes']:
+            return True
+        elif response in ['n', 'no']:
+            return False
+        else:
+            log_warning("Invalid response. Please enter 'y' for yes or 'n' for no.")
+            return confirm_action(message)  # Retry
+            
+    except KeyboardInterrupt:
+        log_info("\nOperation cancelled by user")
+        return False
+    except EOFError:
+        # Handle case where stdin is not available (e.g., in automated scripts)
+        log_warning("Cannot prompt for confirmation (no stdin available).")
+        return False
+
+
+def confirm_by_typing_name(expected_name: str, message: str) -> bool:
+    """Require user to type the exact name to confirm a destructive action.
+    
+    Args:
+        expected_name: The exact name the user must type
+        message: Descriptive message explaining what will happen
+        
+    Returns:
+        True if user types the name correctly, False otherwise
+    """
+    try:
+        log_warning(message)
+        response = input(f"Type the droplet name '{expected_name}' to confirm: ").strip()
+        
+        # Check if the typed name matches exactly (case-sensitive)
+        if response == expected_name:
+            return True
+        elif not response:
+            log_warning("No name entered. Operation cancelled.")
+            return False
+        else:
+            log_warning(f"Name mismatch. Expected '{expected_name}', got '{response}'. Operation cancelled.")
+            return False
+            
+    except KeyboardInterrupt:
+        log_info("\nOperation cancelled by user")
+        return False
+    except EOFError:
+        # Handle case where stdin is not available (e.g., in automated scripts)
+        log_warning("Cannot prompt for confirmation (no stdin available). Use --force to skip confirmation.")
+        return False

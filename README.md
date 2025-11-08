@@ -170,6 +170,47 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 | `volumes restore <branch> <file>` | Restore from backup | `dockertree volumes restore feature-auth backup.tar` |
 | `volumes clean <branch>` | Clean up volumes | `dockertree volumes clean feature-auth` |
 
+### Droplet Management
+| Command | Description | Example |
+|---------|-------------|---------|
+| `droplets create <name>` | Create a new Digital Ocean droplet | `dockertree droplets create myapp-prod` |
+| `droplets list` | List all droplets (formatted table) | `dockertree droplets list` |
+| `droplets list --as-json` | List droplets as JSON | `dockertree droplets list --as-json` |
+| `droplets list --as-csv` | List droplets as CSV | `dockertree droplets list --as-csv` |
+| `droplets info <id>` | Get droplet information | `dockertree droplets info 12345678` |
+| `droplets destroy <id>` | Destroy a droplet | `dockertree droplets destroy 12345678` |
+
+**Droplet Creation Options:**
+- `--region <region>` - Droplet region (defaults from env or nyc1)
+- `--size <size>` - Droplet size (defaults from env or s-1vcpu-1gb)
+- `--image <image>` - Droplet image (defaults from env or ubuntu-22-04-x64)
+- `--ssh-keys <key>` - SSH key IDs or fingerprints (can be specified multiple times)
+- `--tags <tag>` - Tags for the droplet (can be specified multiple times)
+- `--wait` - Wait for droplet to be ready
+- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+
+**Droplet List Options:**
+- `--as-json` or `--json` - Output as JSON format
+- `--as-csv` - Output as CSV format
+- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+
+**Droplet Destroy Options:**
+- `--force` - Skip confirmation (destroys without typing droplet name)
+- `--only-droplet` - Only destroy droplet, skip DNS deletion
+- `--only-domain` - Only destroy DNS records, skip droplet deletion
+- `--domain <domain>` - Domain name for DNS deletion (optional, auto-detects if not provided)
+- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+- `--dns-token <token>` - DNS API token (if different from droplet token)
+- `--json` - Output as JSON format
+
+**Droplet Destroy Behavior:**
+- **Default**: Destroys droplet only (backward compatible)
+- **Confirmation**: Requires typing the exact droplet name to confirm (unless `--force`)
+- **DNS Auto-detection**: When destroying droplet, automatically finds and deletes DNS records pointing to droplet IP
+- **DNS-only mode**: Use `--only-domain` to delete DNS records without destroying the droplet
+- **Domain confirmation**: When deleting DNS records, requires typing the full domain name (e.g., "app.example.com") unless `--force`
+- **Domain override**: Use `--domain <domain>` to limit DNS search to specific domain
+
 ### Package Management
 | Command | Description | Example |
 |---------|-------------|---------|
@@ -279,6 +320,21 @@ When you run `dockertree setup`, it creates a `.dockertree/` directory with:
 - `Caddyfile.dockertree` - Caddy configuration
 - `README.md` - User guide optimized for coding agents
 - `worktrees/` - Worktree directories
+
+### Droplet Configuration
+
+Droplet defaults can be configured in `.env` or `.dockertree/env.dockertree`:
+
+```bash
+# .env or .dockertree/env.dockertree
+DROPLET_DEFAULT_REGION=nyc1
+DROPLET_DEFAULT_SIZE=s-1vcpu-1gb
+DROPLET_DEFAULT_IMAGE=ubuntu-22-04-x64
+# SSH key names (comma-separated, e.g., anders,peter)
+# Only key names are supported, not numeric IDs or fingerprints
+DROPLET_DEFAULT_SSH_KEYS=anders,peter
+DIGITALOCEAN_API_TOKEN=your_token_here
+```
 
 ### Configuration File
 
@@ -794,19 +850,120 @@ The dockertree CLI follows a modular architecture designed for easy extension:
 dockertree push feature-auth user@server:/var/dockertree/packages
 ```
 
-### Auto-Import on Remote (Phase 2)
+### Create Droplet and Push
 ```bash
-# Push and then automatically import & start on the server
-dockertree push feature-auth user@server:/var/dockertree/packages \
-  --auto-import --prepare-server
+# Create a new Digital Ocean droplet and push to it
+dockertree push feature-auth root@droplet:/var/dockertree/packages \
+  --create-droplet --wait-for-droplet \
+  --prepare-server --auto-import \
+  --domain app.example.com
 
-# Options:
-#   --domain myapp.example.com   # Use HTTPS via Caddy
-#   --ip 203.0.113.10            # IP-only HTTP mode (no Let's Encrypt for IPs)
+# With custom droplet configuration
+dockertree push feature-auth root@droplet:/var/dockertree/packages \
+  --create-droplet --droplet-name myapp-prod \
+  --droplet-region sfo3 --droplet-size s-2vcpu-4gb \
+  --wait-for-droplet --prepare-server --auto-import
 ```
 
+### Auto-Import on Remote with Domain and HTTPS
+```bash
+# Push with automatic DNS management and HTTPS deployment
+dockertree push feature-auth user@server:/var/dockertree/packages \
+  --auto-import --prepare-server \
+  --domain app.example.com \
+  --dns-token $DIGITALOCEAN_API_TOKEN
+
+# Or use environment variable for token
+export DIGITALOCEAN_API_TOKEN=your_token_here
+dockertree push feature-auth user@server:/var/dockertree/packages \
+  --auto-import --domain app.example.com
+
+# Or add to .env file in project root (no export needed)
+# .env file:
+# DIGITALOCEAN_API_TOKEN=your_token_here
+dockertree push feature-auth user@server:/var/dockertree/packages \
+  --auto-import --domain app.example.com
+
+# Options:
+#   --domain myapp.example.com        # Domain for HTTPS deployment
+#   --dns-token <token>                 # Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+#   --skip-dns-check                    # Skip DNS validation
+#   --ip 203.0.113.10                   # IP-only HTTP mode (no Let's Encrypt for IPs)
+#   --create-droplet                    # Create new droplet before pushing
+#   --droplet-name <name>                # Droplet name (defaults to branch name)
+#   --droplet-region <region>            # Droplet region (defaults from env or nyc1)
+#   --droplet-size <size>                # Droplet size (defaults from env or s-1vcpu-1gb)
+#   --droplet-image <image>              # Droplet image (defaults from env or ubuntu-22-04-x64)
+#   --droplet-ssh-keys <key>             # SSH key IDs/fingerprints (can be specified multiple times)
+#   --wait-for-droplet                   # Wait for droplet to be ready before pushing
+```
+
+### DNS Management
+Dockertree can automatically manage DNS records via Digital Ocean DNS API:
+
+- **Automatic Domain Creation**: If a subdomain doesn't exist, dockertree will automatically create it when `--domain` is provided
+- **Domain Validation**: Checks if DNS records already exist and point to the correct server
+- **Supported Provider**: Digital Ocean DNS
+- **API Token Configuration**: Multiple options supported (priority order):
+  1. CLI flag: `--dns-token <token>`
+  2. Shell environment: `export DIGITALOCEAN_API_TOKEN=token` or `export DNS_API_TOKEN=token`
+  3. `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to project root `.env` file
+  4. Global config: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to `~/.dockertree/env.dockertree` file
+
+### DNS Provider Setup
+
+#### Digital Ocean
+1. Generate a personal access token from https://cloud.digitalocean.com/account/api/tokens
+2. Configure token using one of these methods:
+   - **Shell environment** (recommended for CI/CD): `export DIGITALOCEAN_API_TOKEN=your_token`
+   - **Project `.env` file** (recommended for project-specific tokens): Add `DIGITALOCEAN_API_TOKEN=your_token` to your project root `.env` file
+   - **Global config** (recommended for personal tokens): Add `DIGITALOCEAN_API_TOKEN=your_token` to `~/.dockertree/env.dockertree` file
+   - **CLI flag**: Use `--dns-token <token>` when pushing
+
+### DNS Propagation
+
+When dockertree creates a DNS record, it is immediately available on Digital Ocean's authoritative nameservers, but it takes time to propagate to all DNS resolvers worldwide.
+
+**What is DNS Propagation?**
+DNS propagation is the time it takes for DNS record changes to spread across all DNS servers on the internet. When you create a new DNS record, it's immediately available on the authoritative nameservers (Digital Ocean's in this case), but other DNS resolvers (like Google's 8.8.8.8 or Cloudflare's 1.1.1.1) cache DNS records and may take time to update.
+
+**Expected Propagation Times:**
+- **Authoritative nameservers**: Immediate (Digital Ocean nameservers)
+- **Public resolvers**: 5-60 minutes typically
+- **Global propagation**: Up to 48 hours in rare cases
+
+**Verifying DNS Records:**
+
+You can verify DNS records in several ways:
+
+1. **Check on Digital Ocean nameservers** (immediate):
+   ```bash
+   dig your-domain.com A @ns1.digitalocean.com
+   dig your-domain.com A @ns2.digitalocean.com
+   dig your-domain.com A @ns3.digitalocean.com
+   ```
+
+2. **Check on public resolvers** (may take time):
+   ```bash
+   dig your-domain.com A @8.8.8.8      # Google DNS
+   dig your-domain.com A @1.1.1.1      # Cloudflare DNS
+   ```
+
+3. **Check from your local machine**:
+   ```bash
+   dig your-domain.com A
+   nslookup your-domain.com
+   ```
+
+**Troubleshooting:**
+- If the record exists on Digital Ocean nameservers but not on public resolvers, wait a few more minutes
+- If the record doesn't exist on any nameserver, check that the DNS record was created successfully
+- Browser DNS caches may need to be cleared or wait for TTL expiration
+
 ### Notes
+- When using `--domain`, dockertree automatically enables HTTPS via Caddy's Let's Encrypt integration
 - When using `--ip`, deployments are HTTP-only. Certificate authorities do not issue certificates for IP addresses; use a domain for HTTPS.
+- DNS records are automatically created when `--domain` is provided (use `--skip-dns-check` to skip DNS management)
 - You can add defaults in `.dockertree/config.yml` (optional):
 ```yaml
 deployment:
