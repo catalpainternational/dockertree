@@ -968,9 +968,21 @@ cd "$ROOT2"
                 else:
                     log_warning(f"DNS record exists but points to {current_ip} (expected {server_ip})")
                     if confirm_action(f"Update DNS record to point to {server_ip}?"):
-                        # For now, we'll just warn - updating existing records requires delete+create
-                        log_warning("DNS record update not yet implemented. Please update manually.")
-                        return False
+                        log_info(f"Updating DNS A record: {domain} -> {server_ip}")
+                        if provider.update_subdomain(subdomain, base_domain, server_ip):
+                            log_success(f"DNS record updated successfully: {domain} -> {server_ip}")
+                            
+                            # Verify on authoritative nameservers
+                            log_info("Verifying DNS record on authoritative nameservers...")
+                            if self._verify_dns_on_authoritative(domain, server_ip):
+                                log_info("DNS record verified on Digital Ocean nameservers")
+                            else:
+                                log_warning("DNS record updated but not yet visible on nameservers (may take a few seconds)")
+                            
+                            return True
+                        else:
+                            log_error("Failed to update DNS record")
+                            return False
                     else:
                         log_info("Continuing with existing DNS configuration...")
                         return True
