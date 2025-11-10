@@ -853,16 +853,20 @@ dockertree push feature-auth user@server:/var/dockertree/packages
 ### Create Droplet and Push
 ```bash
 # Create a new Digital Ocean droplet and push to it
-dockertree push feature-auth root@droplet:/var/dockertree/packages \
-  --create-droplet --wait-for-droplet \
+# scp_target is optional when using --create-droplet (defaults to root@<droplet-ip>:/root)
+dockertree push feature-auth --create-droplet \
   --prepare-server --auto-import \
   --domain app.example.com
 
+# With custom username and path (server part is ignored, replaced with droplet IP)
+dockertree push feature-auth ubuntu@dummy:/home/ubuntu --create-droplet \
+  --prepare-server --auto-import
+
 # With custom droplet configuration
-dockertree push feature-auth root@droplet:/var/dockertree/packages \
-  --create-droplet --droplet-name myapp-prod \
+dockertree push feature-auth --create-droplet \
+  --droplet-name myapp-prod \
   --droplet-region sfo3 --droplet-size s-2vcpu-4gb \
-  --wait-for-droplet --prepare-server --auto-import
+  --prepare-server --auto-import
 ```
 
 ### Auto-Import on Remote with Domain and HTTPS
@@ -889,13 +893,13 @@ dockertree push feature-auth user@server:/var/dockertree/packages \
 #   --dns-token <token>                 # Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
 #   --skip-dns-check                    # Skip DNS validation
 #   --ip 203.0.113.10                   # IP-only HTTP mode (no Let's Encrypt for IPs)
-#   --create-droplet                    # Create new droplet before pushing
+#   --create-droplet                    # Create new droplet before pushing (scp_target optional, defaults to root@<droplet-ip>:/root)
 #   --droplet-name <name>                # Droplet name (defaults to branch name)
 #   --droplet-region <region>            # Droplet region (defaults from env or nyc1)
 #   --droplet-size <size>                # Droplet size (defaults from env or s-1vcpu-1gb)
 #   --droplet-image <image>              # Droplet image (defaults from env or ubuntu-22-04-x64)
-#   --droplet-ssh-keys <key>             # SSH key IDs/fingerprints (can be specified multiple times)
-#   --wait-for-droplet                   # Wait for droplet to be ready before pushing
+#   --droplet-ssh-keys <key>             # SSH key names (comma-separated, e.g., anders,peter)
+# Note: When using --create-droplet, the droplet is always waited for until ready before pushing
 ```
 
 ### DNS Management

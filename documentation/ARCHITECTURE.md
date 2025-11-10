@@ -968,15 +968,17 @@ Droplet management is integrated into the push workflow:
 
 **Push Command Integration**:
 - `--create-droplet` flag triggers droplet creation before package export
+- When `--create-droplet` is used, `scp_target` is optional (defaults to `root@<droplet-ip>:/root`)
+- If `scp_target` is provided with `--create-droplet`, only username and path are used (server replaced with droplet IP)
+- Droplet is always waited for until ready before pushing (no option to skip - required for push to work)
 - Droplet IP address automatically updates SCP target
-- `--wait-for-droplet` ensures droplet is ready before pushing
 - Droplet defaults loaded from `.env` or `.dockertree/env.dockertree`
 
 **Workflow**:
 1. Create droplet (if `--create-droplet` specified)
-2. Wait for droplet ready (if `--wait-for-droplet` specified)
+2. Always wait for droplet ready (required - push needs IP address and SSH access)
 3. Extract droplet IP address
-4. Update SCP target to use droplet IP
+4. Update SCP target to use droplet IP (or construct from defaults if scp_target not provided)
 5. Continue with standard push flow (export, transfer, import)
 
 ### Adding New Commands

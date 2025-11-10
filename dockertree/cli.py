@@ -1520,7 +1520,7 @@ def validate_package(package_file: str, json: bool):
 
 @cli.command()
 @click.argument('branch_name', required=False)
-@click.argument('scp_target')
+@click.argument('scp_target', required=False)
 @click.option('--output-dir', type=click.Path(), default='./packages', help='Temporary package location (default: ./packages)')
 @click.option('--keep-package', is_flag=True, default=False, help='Keep package file after successful push (default: delete after push)')
 @click.option('--auto-import', is_flag=True, default=False, help='Automatically import and start on remote server after push')
@@ -1535,15 +1535,17 @@ def validate_package(package_file: str, json: bool):
 @click.option('--droplet-size', help='Droplet size (default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var)')
 @click.option('--droplet-image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
 @click.option('--droplet-ssh-keys', type=str, help='SSH key names for droplet (comma-separated, e.g., anders,peter)')
-@click.option('--wait-for-droplet', is_flag=True, default=False, help='Wait for droplet to be ready before pushing')
 @add_json_option
 @add_verbose_option
-def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, create_droplet: bool, droplet_name: Optional[str], droplet_region: Optional[str], droplet_size: Optional[str], droplet_image: Optional[str], droplet_ssh_keys: Optional[str], wait_for_droplet: bool, json: bool):
+def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, create_droplet: bool, droplet_name: Optional[str], droplet_region: Optional[str], droplet_size: Optional[str], droplet_image: Optional[str], droplet_ssh_keys: Optional[str], json: bool):
     """Push dockertree package to remote server via SCP.
 
     Exports a complete dockertree environment package and transfers it to a
     remote server via SCP. If branch_name is not provided, auto-detects from
     current working directory.
+
+    When using --create-droplet, scp_target is optional and defaults to root@<droplet-ip>:/root.
+    The droplet will always be waited for until ready before pushing.
 
     Examples:
 
@@ -1553,8 +1555,11 @@ def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_pack
         # Explicit branch name
         dockertree push feature-auth user@server:/path/to/packages
 
-        # Create droplet and push
-        dockertree push feature-auth user@server:/path/to/packages --create-droplet
+        # Create droplet and push (scp_target optional, defaults to root@<droplet-ip>:/root)
+        dockertree push feature-auth --create-droplet
+
+        # Create droplet with custom username and path
+        dockertree push feature-auth ubuntu@dummy:/home/ubuntu --create-droplet
 
         # Push with domain configuration
         dockertree push feature-auth user@server:/path/to/packages --domain app.example.com
@@ -1572,6 +1577,13 @@ def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_pack
                 JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
             else:
                 error_exit("Options --domain and --ip are mutually exclusive")
+        
+        # Validate scp_target is provided when not creating droplet
+        if not create_droplet and not scp_target:
+            if json:
+                JSONOutput.print_error("scp_target is required when --create-droplet is not used")
+            else:
+                error_exit("scp_target is required when --create-droplet is not used")
         
         push_manager = PushManager()
         # Parse comma-separated SSH key names into a list
@@ -1592,18 +1604,17 @@ def push(branch_name: Optional[str], scp_target: str, output_dir: str, keep_pack
             droplet_region=droplet_region,
             droplet_size=droplet_size,
             droplet_image=droplet_image,
-            droplet_ssh_keys=droplet_ssh_keys_list,
-            wait_for_droplet=wait_for_droplet
+            droplet_ssh_keys=droplet_ssh_keys_list
         )
         
         if not success:
             if json:
-                JSONOutput.print_error(f"Failed to push package to {scp_target}")
+                JSONOutput.print_error(f"Failed to push package")
             else:
-                error_exit(f"Failed to push package to {scp_target}")
+                error_exit(f"Failed to push package")
         else:
             if json:
-                JSONOutput.print_success(f"Package pushed successfully to {scp_target}")
+                JSONOutput.print_success(f"Package pushed successfully")
     except Exception as e:
         if json:
             JSONOutput.print_error(f"Error pushing package: {e}")

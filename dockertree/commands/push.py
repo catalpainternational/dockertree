@@ -8,6 +8,7 @@ them to remote servers via SCP for deployment.
 import subprocess
 import re
 import socket
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -16,7 +17,7 @@ from ..core.dns_manager import DNSManager, parse_domain, is_domain
 from ..core.droplet_manager import DropletManager
 # Import DNS providers to trigger registration
 from ..core import dns_providers  # noqa: F401
-from ..utils.logging import log_info, log_success, log_warning, log_error, print_plain
+from ..utils.logging import log_info, log_success, log_warning, log_error, print_plain, is_verbose
 from ..utils.path_utils import detect_execution_context, get_worktree_branch_name
 from ..utils.confirmation import confirm_action
 from ..utils.ssh_utils import add_ssh_host_key
@@ -39,7 +40,7 @@ class PushManager:
         
         self.package_manager = PackageManager(project_root=self.project_root)
     
-    def push_package(self, branch_name: Optional[str], scp_target: str, 
+    def push_package(self, branch_name: Optional[str], scp_target: Optional[str], 
                     output_dir: Path = None, keep_package: bool = False,
                     auto_import: bool = False, domain: Optional[str] = None,
                     ip: Optional[str] = None, prepare_server: bool = False,
@@ -50,13 +51,12 @@ class PushManager:
                     droplet_region: Optional[str] = None,
                     droplet_size: Optional[str] = None,
                     droplet_image: Optional[str] = None,
-                    droplet_ssh_keys: Optional[list] = None,
-                    wait_for_droplet: bool = False) -> bool:
+                    droplet_ssh_keys: Optional[list] = None) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
             branch_name: Branch/worktree name (optional, auto-detects if not provided)
-            scp_target: SCP target in format username@server:path
+            scp_target: SCP target in format username@server:path (optional when create_droplet is True)
             output_dir: Temporary package location (default: ./packages)
             keep_package: Don't delete package after successful push
             
@@ -77,20 +77,26 @@ class PushManager:
             else:
                 log_info(f"Using provided branch name: {branch_name}")
             
-            # Validate SCP target format
-            log_info(f"Validating SCP target format: {scp_target}")
-            if not self._validate_scp_target(scp_target):
-                log_error(f"Invalid SCP target format: {scp_target}")
-                log_info("Expected format: username@server:path")
-                return False
-            log_info("SCP target format is valid")
-            
-            # Parse SCP target (may be updated if droplet is created)
-            username, server, remote_path = self._parse_scp_target(scp_target)
-            log_info(f"Parsed SCP target - Username: {username}, Server: {server}, Remote Path: {remote_path}")
-            
-            # Create droplet if requested
+            # Handle scp_target based on whether we're creating a droplet
             if create_droplet:
+                # When creating a droplet, scp_target is optional
+                # Default to root@<droplet-ip>:/root if not provided
+                if scp_target:
+                    # Parse provided scp_target to extract username and path (server will be replaced)
+                    log_info(f"Parsing provided SCP target for username and path: {scp_target}")
+                    if not self._validate_scp_target(scp_target):
+                        log_error(f"Invalid SCP target format: {scp_target}")
+                        log_info("Expected format: username@server:path")
+                        return False
+                    username, _, remote_path = self._parse_scp_target(scp_target)
+                    log_info(f"Using username '{username}' and path '{remote_path}' from provided SCP target")
+                else:
+                    # Use defaults for new droplets
+                    username = "root"
+                    remote_path = "/root"
+                    log_info(f"Using default username '{username}' and path '{remote_path}' for new droplet")
+                
+                # Create droplet (always waits for it to be ready)
                 log_info("Droplet creation requested, creating new droplet...")
                 droplet_info = self._create_droplet_for_push(
                     droplet_name=droplet_name or branch_name,
@@ -98,7 +104,6 @@ class PushManager:
                     droplet_size=droplet_size,
                     droplet_image=droplet_image,
                     droplet_ssh_keys=droplet_ssh_keys,
-                    wait_for_droplet=wait_for_droplet,
                     api_token=dns_token
                 )
                 if not droplet_info:
@@ -109,11 +114,27 @@ class PushManager:
                 if droplet_info.ip_address:
                     server = droplet_info.ip_address
                     scp_target = f"{username}@{server}:{remote_path}"
-                    log_info(f"Updated SCP target to use droplet IP address: {server}")
+                    log_info(f"Updated SCP target to use droplet IP address: {scp_target}")
                 else:
-                    log_warning("Droplet created but IP address not available yet. Continuing with original server...")
+                    log_error("Droplet created but IP address not available. Cannot proceed with push.")
+                    return False
             else:
-                log_info("No droplet creation requested, using provided server")
+                # When not creating a droplet, scp_target is required
+                if not scp_target:
+                    log_error("scp_target is required when --create-droplet is not used")
+                    return False
+                
+                # Validate SCP target format
+                log_info(f"Validating SCP target format: {scp_target}")
+                if not self._validate_scp_target(scp_target):
+                    log_error(f"Invalid SCP target format: {scp_target}")
+                    log_info("Expected format: username@server:path")
+                    return False
+                log_info("SCP target format is valid")
+                
+                # Parse SCP target
+                username, server, remote_path = self._parse_scp_target(scp_target)
+                log_info(f"Parsed SCP target - Username: {username}, Server: {server}, Remote Path: {remote_path}")
             
             # Handle DNS management if domain is provided
             if domain and not skip_dns_check:
@@ -680,31 +701,99 @@ dockertree --version || true
             ssh_cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
             log_info("Executing server preparation script via SSH...")
             log_info("This may take 5-10 minutes depending on server state and network speed...")
-            result = subprocess.run(
-                ssh_cmd,
-                input=remote_script,
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode != 0:
-                log_error("Remote preparation failed")
+            
+            # Check if verbose mode is enabled for real-time streaming
+            if is_verbose():
+                log_info("Verbose mode enabled: streaming server preparation output in real-time...")
+                # Use Popen for real-time streaming
+                process = subprocess.Popen(
+                    ssh_cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1  # Line buffered
+                )
+                
+                # Write script to stdin and close
+                process.stdin.write(remote_script)
+                process.stdin.close()
+                
+                # Use threading to read from both stdout and stderr concurrently
+                stdout_lines = []
+                stderr_lines = []
+                stdout_done = threading.Event()
+                stderr_done = threading.Event()
+                
+                def read_stdout():
+                    """Read stdout lines and log them in real-time."""
+                    try:
+                        for line in iter(process.stdout.readline, ''):
+                            if line:
+                                line = line.rstrip()
+                                stdout_lines.append(line)
+                                # Show all output lines immediately in verbose mode
+                                log_info(f"  {line}")
+                    finally:
+                        stdout_done.set()
+                
+                def read_stderr():
+                    """Read stderr lines and log them in real-time."""
+                    try:
+                        for line in iter(process.stderr.readline, ''):
+                            if line:
+                                line = line.rstrip()
+                                stderr_lines.append(line)
+                                log_error(f"  {line}")
+                    finally:
+                        stderr_done.set()
+                
+                # Start threads to read from both streams
+                stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+                stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                
+                # Wait for process to complete
+                process.wait()
+                
+                # Wait for both threads to finish reading
+                stdout_done.wait(timeout=5)
+                stderr_done.wait(timeout=5)
+                
+                if process.returncode != 0:
+                    log_error("Remote preparation failed")
+                    return False
+                
+                log_info("Server preparation script completed successfully")
+                return True
+            else:
+                # Non-verbose mode: use buffered approach (original behavior)
+                result = subprocess.run(
+                    ssh_cmd,
+                    input=remote_script,
+                    capture_output=True,
+                    text=True,
+                    check=False
+                )
+                if result.returncode != 0:
+                    log_error("Remote preparation failed")
+                    if result.stdout:
+                        log_info("Server preparation output:")
+                        for line in result.stdout.splitlines():
+                            log_info(f"  {line}")
+                    if result.stderr:
+                        log_error("Server preparation errors:")
+                        for line in result.stderr.splitlines():
+                            log_error(f"  {line}")
+                    return False
+                # Show output at end (only if there was output)
                 if result.stdout:
                     log_info("Server preparation output:")
                     for line in result.stdout.splitlines():
                         log_info(f"  {line}")
-                if result.stderr:
-                    log_error("Server preparation errors:")
-                    for line in result.stderr.splitlines():
-                        log_error(f"  {line}")
-                return False
-            # Echo stdout for visibility in verbose mode
-            if result.stdout:
-                log_info("Server preparation output:")
-                for line in result.stdout.splitlines():
-                    log_info(f"  {line}")
-            log_info("Server preparation script completed successfully")
-            return True
+                log_info("Server preparation script completed successfully")
+                return True
         except Exception as e:
             log_error(f"Error preparing server: {e}")
             return False
@@ -751,12 +840,21 @@ dockertree --version || true
         detects existing project vs standalone, runs import with proper flags and quoting,
         then starts proxy and brings up the branch.
         """
-        import_flags_parts = []
+        # Build import flags with proper quoting
+        import_flags_list = []
         if domain:
-            import_flags_parts.append(f"--domain '{domain}'")
+            import_flags_list.append("--domain")
+            import_flags_list.append(domain)
         if ip:
-            import_flags_parts.append(f"--ip '{ip}'")
-        import_flags = " ".join(import_flags_parts)
+            import_flags_list.append("--ip")
+            import_flags_list.append(ip)
+        
+        # Convert to bash array syntax for proper argument handling
+        if import_flags_list:
+            import_flags_array = " ".join(f'"{flag}"' for flag in import_flags_list)
+            import_flags_usage = import_flags_array
+        else:
+            import_flags_usage = ""
 
         script = f"""
 set -euo pipefail
@@ -776,18 +874,17 @@ fi
 
 PKG_FILE='{remote_file}'
 BRANCH_NAME='{branch_name}'
-IMPORT_FLAGS="{import_flags}"
 
 # Find an existing dockertree project by locating .dockertree/config.yml
 HIT="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit || true)"
 if [ -n "$HIT" ]; then
   ROOT="$(dirname "$(dirname "$HIT")")"
   cd "$ROOT"
-  "$DTBIN" packages import "$PKG_FILE" $IMPORT_FLAGS --non-interactive
+  "$DTBIN" packages import "$PKG_FILE" {import_flags_usage} --non-interactive
 else
   ROOT="/root"
   cd "$ROOT"
-  "$DTBIN" packages import "$PKG_FILE" $IMPORT_FLAGS --standalone --non-interactive
+  "$DTBIN" packages import "$PKG_FILE" {import_flags_usage} --standalone --non-interactive
 fi
 
 # Determine ROOT again after import in case project was created
@@ -1017,9 +1114,11 @@ cd "$ROOT2"
                                  droplet_size: Optional[str] = None,
                                  droplet_image: Optional[str] = None,
                                  droplet_ssh_keys: Optional[list] = None,
-                                 wait_for_droplet: bool = False,
                                  api_token: Optional[str] = None):
         """Create a droplet for push deployment.
+        
+        Always waits for the droplet to be ready before returning, as the push
+        operation requires the droplet IP address and SSH access.
         
         Args:
             droplet_name: Name for the droplet
@@ -1027,7 +1126,6 @@ cd "$ROOT2"
             droplet_size: Droplet size
             droplet_image: Droplet image
             droplet_ssh_keys: List of SSH key IDs or fingerprints
-            wait_for_droplet: Wait for droplet to be ready
             api_token: Digital Ocean API token
             
         Returns:
@@ -1094,17 +1192,14 @@ cd "$ROOT2"
             
             log_success(f"Droplet created: {droplet_name} (ID: {droplet.id})")
             
-            # Wait for droplet to be ready if requested
-            if wait_for_droplet:
-                log_info("Waiting for droplet to be ready (this may take 1-2 minutes)...")
-                log_info("Checking droplet status and SSH availability...")
-                if not provider.wait_for_droplet_ready(droplet.id, check_ssh=True):
-                    log_warning("Droplet created but not ready within timeout")
-                    # Still return droplet info since it was created
-                else:
-                    log_info("Droplet is ready and SSH is accessible")
-            else:
-                log_info("Skipping droplet readiness wait (--wait-for-droplet not specified)")
+            # Always wait for droplet to be ready (required for push operation)
+            log_info("Waiting for droplet to be ready (this may take 1-2 minutes)...")
+            log_info("Checking droplet status and SSH availability...")
+            if not provider.wait_for_droplet_ready(droplet.id, check_ssh=True):
+                log_error("Droplet created but not ready within timeout. Cannot proceed with push.")
+                return None
+            
+            log_info("Droplet is ready and SSH is accessible")
             
             # Refresh droplet info to get IP address
             log_info("Refreshing droplet information to get IP address...")
@@ -1117,7 +1212,8 @@ cd "$ROOT2"
                 add_ssh_host_key(droplet.ip_address)
                 log_info("SSH host key added successfully")
             else:
-                log_warning("Droplet IP address not available yet. It may take a few minutes to be assigned.")
+                log_error("Droplet IP address not available. Cannot proceed with push.")
+                return None
             
             log_info("Droplet creation process completed")
             return droplet

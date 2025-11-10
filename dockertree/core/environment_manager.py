@@ -189,7 +189,46 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
             return False
     
     def get_domain_name(self, branch_name: str) -> str:
-        """Get the domain name for a worktree."""
+        """Get the domain name for a worktree.
+        
+        Reads SITE_DOMAIN from env.dockertree if available, otherwise
+        constructs the default localhost domain pattern.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            Domain name (without http:// or https:// prefix)
+        """
+        try:
+            # Attempt to read SITE_DOMAIN from worktree env.dockertree
+            from ..config.settings import get_worktree_paths
+            new_path, legacy_path = get_worktree_paths(branch_name)
+            env_path = get_env_compose_file_path(new_path)
+            if not env_path.exists() and legacy_path.exists():
+                env_path = get_env_compose_file_path(legacy_path)
+            site_domain_value = None
+            if env_path.exists():
+                content = env_path.read_text()
+                for line in content.splitlines():
+                    if line.startswith('SITE_DOMAIN='):
+                        site_domain_value = line.split('=', 1)[1].strip()
+                        break
+            if site_domain_value:
+                # Strip http:// or https:// prefix if present
+                domain = site_domain_value
+                if domain.startswith('https://'):
+                    domain = domain[8:]
+                elif domain.startswith('http://'):
+                    domain = domain[7:]
+                # Remove trailing slash if present
+                domain = domain.rstrip('/')
+                # Strip surrounding quotes if present (single or double)
+                domain = domain.strip("'\"")
+                return domain
+        except Exception:
+            pass
+        # Fallback: build from computed domain
         from ..config.settings import get_project_name, sanitize_project_name
         project_name = sanitize_project_name(get_project_name())
         return f"{project_name}-{branch_name}.localhost"
