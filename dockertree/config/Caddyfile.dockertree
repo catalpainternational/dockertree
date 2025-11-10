@@ -3,9 +3,9 @@
 
 {
     # Basic configuration
-    # auto_https is enabled to support HTTPS for domain-based deployments
-    # The dynamic config script will configure TLS automation for domains
-    auto_https on
+    # auto_https is controlled by dynamic config script for domain-based deployments
+    # HTTPS is enabled by default in Caddy v2, dynamic config handles TLS automation
+    auto_https off
     servers {
         protocols h1 h2
     }

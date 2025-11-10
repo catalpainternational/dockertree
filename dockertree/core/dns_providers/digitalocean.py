@@ -163,6 +163,55 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             log_warning(f"Error parsing Digital Ocean API response: {e}")
             return []
     
+    def update_subdomain(self, subdomain: str, domain: str, ip: str) -> bool:
+        """Update A record for subdomain to point to new IP.
+        
+        Args:
+            subdomain: Subdomain name (e.g., 'app')
+            domain: Base domain (e.g., 'example.com')
+            ip: New IP address to point to
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        # First, get all records to find the record ID
+        response = self._make_request('GET', f'/domains/{domain}/records')
+        if not response:
+            log_error(f"Failed to retrieve DNS records for {domain}")
+            return False
+        
+        try:
+            data = response.json()
+            records = data.get('domain_records', [])
+            
+            # Find the A record matching the subdomain
+            record_id = None
+            for record in records:
+                if record.get('type') == 'A' and record.get('name') == subdomain:
+                    record_id = record.get('id')
+                    break
+            
+            if not record_id:
+                log_warning(f"No A record found for {subdomain}.{domain}")
+                return False
+            
+            # Update the record
+            payload = {
+                'data': ip,
+                'ttl': 3600
+            }
+            update_response = self._make_request('PUT', f'/domains/{domain}/records/{record_id}', json=payload)
+            if not update_response:
+                log_error(f"Failed to update DNS record for {subdomain}.{domain}")
+                return False
+            
+            log_info(f"Successfully updated A record: {subdomain}.{domain} -> {ip}")
+            return True
+            
+        except (KeyError, ValueError) as e:
+            log_error(f"Error parsing Digital Ocean API response: {e}")
+            return False
+    
     def delete_subdomain(self, subdomain: str, domain: str) -> bool:
         """Delete A record for subdomain.
         
