@@ -139,7 +139,7 @@ class PushManager:
             # Handle DNS management if domain is provided
             if domain and not skip_dns_check:
                 log_info(f"Domain provided: {domain}, managing DNS records...")
-                dns_success = self._handle_dns_management(domain, server, dns_token)
+                dns_success = self._handle_dns_management(domain, server, dns_token, create_droplet)
                 if not dns_success:
                     log_warning("DNS management failed, but continuing with push...")
             elif skip_dns_check:
@@ -905,13 +905,15 @@ cd "$ROOT2"
         return script
     
     def _handle_dns_management(self, domain: str, server: str, 
-                               dns_token: Optional[str] = None) -> bool:
+                               dns_token: Optional[str] = None,
+                               create_droplet: bool = False) -> bool:
         """Handle DNS management for domain deployment using Digital Ocean DNS.
         
         Args:
             domain: Full domain name (e.g., 'app.example.com')
             server: Server hostname or IP
             dns_token: Digital Ocean API token
+            create_droplet: Whether a new droplet was created (auto-updates DNS if True)
             
         Returns:
             True if DNS is configured successfully, False otherwise
@@ -967,7 +969,10 @@ cd "$ROOT2"
                     return True
                 else:
                     log_warning(f"DNS record exists but points to {current_ip} (expected {server_ip})")
-                    if confirm_action(f"Update DNS record to point to {server_ip}?"):
+                    
+                    # Auto-update DNS when creating new droplet (automated deployment)
+                    if create_droplet:
+                        log_info(f"Auto-updating DNS for new droplet: {domain} -> {server_ip}")
                         log_info(f"Updating DNS A record: {domain} -> {server_ip}")
                         if provider.update_subdomain(subdomain, base_domain, server_ip):
                             log_success(f"DNS record updated successfully: {domain} -> {server_ip}")
@@ -984,8 +989,26 @@ cd "$ROOT2"
                             log_error("Failed to update DNS record")
                             return False
                     else:
-                        log_info("Continuing with existing DNS configuration...")
-                        return True
+                        # Manual deployment: ask for confirmation
+                        if confirm_action(f"Update DNS record to point to {server_ip}?"):
+                            log_info(f"Updating DNS A record: {domain} -> {server_ip}")
+                            if provider.update_subdomain(subdomain, base_domain, server_ip):
+                                log_success(f"DNS record updated successfully: {domain} -> {server_ip}")
+                                
+                                # Verify on authoritative nameservers
+                                log_info("Verifying DNS record on authoritative nameservers...")
+                                if self._verify_dns_on_authoritative(domain, server_ip):
+                                    log_info("DNS record verified on Digital Ocean nameservers")
+                                else:
+                                    log_warning("DNS record updated but not yet visible on nameservers (may take a few seconds)")
+                                
+                                return True
+                            else:
+                                log_error("Failed to update DNS record")
+                                return False
+                        else:
+                            log_info("Continuing with existing DNS configuration...")
+                            return True
             else:
                 # Domain doesn't exist, auto-create it
                 log_info(f"No DNS record found for {domain}")
