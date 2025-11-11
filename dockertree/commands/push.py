@@ -154,6 +154,20 @@ class PushManager:
             log_info(f"Exporting package for branch: {branch_name}")
             log_info(f"Output directory: {output_dir}")
             log_info("Package will include code and be compressed for faster transfer")
+            log_info("This includes: environment files, volume backups, and code archive")
+            
+            # Check if worktree exists before export
+            from ..core.git_manager import GitManager
+            git_manager = GitManager(project_root=self.project_root, validate=False)
+            if not git_manager.validate_worktree_exists(branch_name):
+                log_error(f"Worktree for branch '{branch_name}' does not exist")
+                log_info("Available worktrees:")
+                worktrees = git_manager.list_worktrees()
+                for wt in worktrees:
+                    log_info(f"  - {wt}")
+                return False
+            
+            log_info("Worktree validated, proceeding with export...")
             export_result = self.package_manager.export_package(
                 branch_name=branch_name,
                 output_dir=output_dir,
@@ -172,7 +186,16 @@ class PushManager:
                 return False
             
             package_size_mb = package_path.stat().st_size / 1024 / 1024
-            log_info(f"Package size: {package_size_mb:.2f} MB")
+            log_success(f"Package size: {package_size_mb:.2f} MB")
+            
+            # Log package metadata if available
+            metadata = export_result.get("metadata", {})
+            if metadata:
+                log_info("Package metadata:")
+                log_info(f"  - Branch: {metadata.get('branch_name', 'unknown')}")
+                log_info(f"  - Project: {metadata.get('project_name', 'unknown')}")
+                log_info(f"  - Includes code: {metadata.get('include_code', False)}")
+                log_info(f"  - Volumes skipped: {metadata.get('skip_volumes', False)}")
             
             # Ensure remote directory exists
             remote_dir = self._infer_remote_directory(remote_path)
@@ -800,7 +823,7 @@ dockertree --version || true
 
     def _run_remote_import(self, username: str, server: str, remote_file: str, branch_name: str,
                            domain: Optional[str], ip: Optional[str]) -> None:
-        """Run remote import and start services via SSH using a robust here-doc script."""
+        """Run remote import and start services via SSH using a robust here-doc script with enhanced logging."""
         try:
             log_info("Composing remote import script...")
             script = self._compose_remote_script(
@@ -813,32 +836,105 @@ dockertree --version || true
             cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
             log_info("Executing remote import and startup script...")
             log_info("This will: import package, start proxy, and bring up the worktree environment")
-            result = subprocess.run(cmd, input=script, text=True, capture_output=True, check=False)
+            log_info("Streaming output in real-time...")
             
-            if result.returncode != 0:
-                log_warning("Remote import script returned non-zero exit code")
-                if result.stdout:
-                    log_info("Remote import output:")
-                    for line in result.stdout.splitlines():
-                        log_info(f"  {line}")
-                if result.stderr:
-                    log_warning("Remote import errors:")
-                    for line in result.stderr.splitlines():
-                        log_warning(f"  {line}")
+            # Use real-time streaming for better visibility
+            if is_verbose():
+                # Stream output in real-time for verbose mode
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1  # Line buffered
+                )
+                
+                # Write script to stdin and close
+                process.stdin.write(script)
+                process.stdin.close()
+                
+                # Use threading to read from both stdout and stderr concurrently
+                stdout_lines = []
+                stderr_lines = []
+                stdout_done = threading.Event()
+                stderr_done = threading.Event()
+                
+                def read_stdout():
+                    """Read stdout lines and log them in real-time."""
+                    try:
+                        for line in iter(process.stdout.readline, ''):
+                            if line:
+                                line = line.rstrip()
+                                stdout_lines.append(line)
+                                log_info(f"[REMOTE] {line}")
+                    finally:
+                        stdout_done.set()
+                
+                def read_stderr():
+                    """Read stderr lines and log them in real-time."""
+                    try:
+                        for line in iter(process.stderr.readline, ''):
+                            if line:
+                                line = line.rstrip()
+                                stderr_lines.append(line)
+                                log_error(f"[REMOTE] {line}")
+                    finally:
+                        stderr_done.set()
+                
+                # Start threads to read from both streams
+                stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+                stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+                stdout_thread.start()
+                stderr_thread.start()
+                
+                # Wait for process to complete
+                process.wait()
+                
+                # Wait for both threads to finish reading
+                stdout_done.wait(timeout=5)
+                stderr_done.wait(timeout=5)
+                
+                if process.returncode != 0:
+                    log_error("Remote import script returned non-zero exit code")
+                    if stderr_lines:
+                        log_error("Remote import errors:")
+                        for line in stderr_lines:
+                            log_error(f"  {line}")
+                    return
+                
+                log_success("Remote import script completed successfully")
             else:
-                log_info("Remote import script completed")
-                if result.stdout:
-                    for line in result.stdout.splitlines():
-                        log_info(f"  {line}")
+                # Non-verbose mode: use buffered approach but still show output
+                result = subprocess.run(cmd, input=script, text=True, capture_output=True, check=False)
+                
+                if result.returncode != 0:
+                    log_error("Remote import script returned non-zero exit code")
+                    if result.stdout:
+                        log_info("Remote import output:")
+                        for line in result.stdout.splitlines():
+                            log_info(f"  {line}")
+                    if result.stderr:
+                        log_error("Remote import errors:")
+                        for line in result.stderr.splitlines():
+                            log_error(f"  {line}")
+                else:
+                    log_success("Remote import script completed successfully")
+                    if result.stdout:
+                        log_info("Remote import output:")
+                        for line in result.stdout.splitlines():
+                            log_info(f"  {line}")
         except Exception as e:
-            log_warning(f"Remote import failed: {e}")
+            log_error(f"Remote import failed: {e}")
+            import traceback
+            log_error(f"Traceback: {traceback.format_exc()}")
 
     def _compose_remote_script(self, remote_file: str, branch_name: str, domain: Optional[str], ip: Optional[str]) -> str:
         """Compose a robust remote bash script for importing and starting services.
 
         The script sets strict mode, ensures git identity, resolves the dockertree binary,
         detects existing project vs standalone, runs import with proper flags and quoting,
-        then starts proxy and brings up the branch.
+        then starts proxy and brings up the branch. Includes comprehensive logging and verification.
         """
         # Build import flags with proper quoting
         import_flags_list = []
@@ -859,48 +955,301 @@ dockertree --version || true
         script = f"""
 set -euo pipefail
 
+# Logging helper function
+log() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+}}
+
+log_success() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*" >&2
+}}
+
+log_error() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
+}}
+
+log "=== Starting remote import process ==="
+log "Package file: {remote_file}"
+log "Branch name: {branch_name}"
+
 # Ensure git identity exists to avoid commit failures on fresh servers
-if ! git config --global user.email >/dev/null 2>&1; then git config --global user.email 'dockertree@local'; fi
-if ! git config --global user.name >/dev/null 2>&1; then git config --global user.name 'Dockertree'; fi
+log "Configuring git identity..."
+if ! git config --global user.email >/dev/null 2>&1; then 
+  git config --global user.email 'dockertree@local'
+  log "Set git user.email to dockertree@local"
+fi
+if ! git config --global user.name >/dev/null 2>&1; then 
+  git config --global user.name 'Dockertree'
+  log "Set git user.name to Dockertree"
+fi
 
 # Determine dockertree binary (prefer venv install)
+log "Locating dockertree binary..."
 if [ -x /opt/dockertree-venv/bin/dockertree ]; then
   DTBIN=/opt/dockertree-venv/bin/dockertree
+  log "Using dockertree from /opt/dockertree-venv/bin/dockertree"
 elif command -v dockertree >/dev/null 2>&1; then
   DTBIN="$(command -v dockertree)"
+  log "Using dockertree from PATH: $DTBIN"
 else
   DTBIN=dockertree
+  log "Using dockertree from PATH (fallback)"
 fi
+
+# Verify dockertree works
+if ! "$DTBIN" --version >/dev/null 2>&1; then
+  log_error "dockertree binary not working: $DTBIN"
+  exit 1
+fi
+log_success "dockertree binary verified: $($DTBIN --version 2>&1 | head -1)"
 
 PKG_FILE='{remote_file}'
 BRANCH_NAME='{branch_name}'
 
+# Verify package file exists
+log "Verifying package file exists..."
+if [ ! -f "$PKG_FILE" ]; then
+  log_error "Package file not found: $PKG_FILE"
+  exit 1
+fi
+PKG_SIZE=$(du -h "$PKG_FILE" | cut -f1)
+log_success "Package file found: $PKG_FILE ($PKG_SIZE)"
+
 # Find an existing dockertree project by locating .dockertree/config.yml
-HIT="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit || true)"
+log "Detecting existing dockertree project..."
+HIT="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit 2>/dev/null || true)"
 if [ -n "$HIT" ]; then
   ROOT="$(dirname "$(dirname "$HIT")")"
+  log "Found existing project at: $ROOT"
   cd "$ROOT"
+  log "Running import in normal mode (existing project)..."
   "$DTBIN" packages import "$PKG_FILE" {import_flags_usage} --non-interactive
+  IMPORT_MODE="normal"
 else
   ROOT="/root"
+  log "No existing project found, using standalone mode"
   cd "$ROOT"
+  log "Running import in standalone mode (new project)..."
   "$DTBIN" packages import "$PKG_FILE" {import_flags_usage} --standalone --non-interactive
+  IMPORT_MODE="standalone"
 fi
 
-# Determine ROOT again after import in case project was created
-HIT2="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit || true)"
-if [ -n "$HIT2" ]; then
-  ROOT2="$(dirname "$(dirname "$HIT2")")"
-else
-  ROOT2="/root"
+# Verify import succeeded by checking for project directory
+log "Verifying import completed successfully..."
+HIT2="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit 2>/dev/null || true)"
+if [ -z "$HIT2" ]; then
+  log_error "Import failed: project directory not found after import"
+  exit 1
 fi
+ROOT2="$(dirname "$(dirname "$HIT2")")"
+log_success "Import completed, project located at: $ROOT2"
 cd "$ROOT2"
 
+# Verify volumes were restored
+log "Verifying volumes were restored..."
+log "Looking for volumes matching branch pattern: *${{BRANCH_NAME}}_*"
+
+# Get project name from config if available
+PROJECT_NAME=""
+if [ -f "$ROOT2/.dockertree/config.yml" ]; then
+  PROJECT_NAME=$(grep -E "^project_name:" "$ROOT2/.dockertree/config.yml" 2>/dev/null | sed 's/.*project_name:[[:space:]]*//' | tr -d '"' | tr -d "'" || echo "")
+  if [ -n "$PROJECT_NAME" ]; then
+    # Sanitize project name (replace underscores with hyphens, lowercase)
+    PROJECT_NAME=$(echo "$PROJECT_NAME" | sed 's/_/-/g' | tr '[:upper:]' '[:lower:]')
+    log "Detected project name: $PROJECT_NAME"
+  fi
+fi
+
+# Try to find volumes using docker volume ls (more robust than guessing names)
+VOLUMES_FOUND=0
+VOLUMES_MISSING=0
+
+for vol_type in postgres_data redis_data media_files; do
+  # Try exact match first if we have project name
+  if [ -n "$PROJECT_NAME" ]; then
+    VOL_NAME="${{PROJECT_NAME}}-${{BRANCH_NAME}}_${{vol_type}}"
+    if docker volume inspect "$VOL_NAME" >/dev/null 2>&1; then
+      VOL_SIZE=$(docker volume inspect "$VOL_NAME" --format '{{{{.Mountpoint}}}}' | xargs du -sh 2>/dev/null | cut -f1 || echo "unknown")
+      log_success "Volume found: $VOL_NAME (size: $VOL_SIZE)"
+      VOLUMES_FOUND=$((VOLUMES_FOUND + 1))
+      continue
+    fi
+  fi
+  
+  # Fallback: search for volumes matching pattern
+  FOUND_VOL=$(docker volume ls --format "{{{{.Name}}}}" | grep -E ".*${{BRANCH_NAME}}_${{vol_type}}$" | head -1 || true)
+  if [ -n "$FOUND_VOL" ]; then
+    VOL_SIZE=$(docker volume inspect "$FOUND_VOL" --format '{{{{.Mountpoint}}}}' | xargs du -sh 2>/dev/null | cut -f1 || echo "unknown")
+    VOL_SIZE_BYTES=$(docker volume inspect "$FOUND_VOL" --format '{{{{.Mountpoint}}}}' | xargs du -sb 2>/dev/null | cut -f1 || echo "0")
+    
+    # Check if this is the expected volume name
+    if [ -n "$PROJECT_NAME" ]; then
+      EXPECTED_VOL="${{PROJECT_NAME}}-${{BRANCH_NAME}}_${{vol_type}}"
+      if [ "$FOUND_VOL" != "$EXPECTED_VOL" ]; then
+        log_error "Volume name mismatch!"
+        log_error "  Expected: $EXPECTED_VOL"
+        log_error "  Found: $FOUND_VOL"
+        log_error "  This may indicate volume restoration failed and a new empty volume was created"
+      fi
+    fi
+    
+    # Check if volume is suspiciously small (likely empty)
+    if [ "$VOL_SIZE_BYTES" -lt 10000 ] && [ "$VOL_SIZE_BYTES" -gt 0 ]; then
+      log_error "WARNING: Volume $FOUND_VOL appears empty (size: $VOL_SIZE, bytes: $VOL_SIZE_BYTES)"
+      log_error "This likely indicates volume restoration failed - database will be empty"
+    else
+      log_success "Volume found: $FOUND_VOL (size: $VOL_SIZE)"
+    fi
+    VOLUMES_FOUND=$((VOLUMES_FOUND + 1))
+  else
+    log_error "Volume missing: pattern *${{BRANCH_NAME}}_${{vol_type}}*"
+    VOLUMES_MISSING=$((VOLUMES_MISSING + 1))
+  fi
+done
+
+if [ $VOLUMES_MISSING -gt 0 ]; then
+  log_error "Warning: $VOLUMES_MISSING volume(s) missing after import"
+  log "This may indicate volume restoration failed"
+  log "Listing all volumes for debugging:"
+  docker volume ls --format "table {{{{.Name}}}}\\t{{{{.Driver}}}}\\t{{{{.Scope}}}}" | grep -E "(NAME|${{BRANCH_NAME}})" || true
+else
+  log_success "All volumes verified: $VOLUMES_FOUND volume(s) found"
+fi
+
 # Start proxy (ignore non-interactive flag if unsupported)
-"$DTBIN" start-proxy --non-interactive >/dev/null 2>&1 || "$DTBIN" start-proxy || true
+log "Starting global Caddy proxy..."
+if "$DTBIN" start-proxy --non-interactive >/dev/null 2>&1; then
+  log_success "Proxy started successfully"
+elif "$DTBIN" start-proxy >/dev/null 2>&1; then
+  log_success "Proxy started successfully (without --non-interactive)"
+else
+  log_error "Failed to start proxy, but continuing..."
+fi
 
 # Bring up the environment for the branch
-"$DTBIN" "$BRANCH_NAME" up -d
+log "Bringing up worktree environment for branch: $BRANCH_NAME"
+log "This may take a few minutes if containers need to be pulled or built..."
+
+# Run with timeout and capture output
+TIMEOUT=300  # 5 minutes timeout
+UP_OUTPUT=$(mktemp)
+UP_ERROR=$(mktemp)
+
+# Check if timeout command is available
+if command -v timeout >/dev/null 2>&1; then
+  log "Running with $TIMEOUT second timeout..."
+  if timeout $TIMEOUT "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
+    UP_EXIT_CODE=0
+  else
+    UP_EXIT_CODE=$?
+    if [ $UP_EXIT_CODE -eq 124 ]; then
+      log_error "Command timed out after $TIMEOUT seconds"
+      log "This may indicate containers are stuck or waiting for dependencies"
+    else
+      log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+    fi
+  fi
+else
+  log "Timeout command not available, running without timeout..."
+  if "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
+    UP_EXIT_CODE=0
+  else
+    UP_EXIT_CODE=$?
+    log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+  fi
+fi
+
+# Show output
+if [ -s "$UP_OUTPUT" ]; then
+  log "Command output:"
+  while IFS= read -r line; do
+    log "  $line"
+  done < "$UP_OUTPUT"
+fi
+
+if [ -s "$UP_ERROR" ]; then
+  log "Command errors:"
+  while IFS= read -r line; do
+    log_error "  $line"
+  done < "$UP_ERROR"
+fi
+
+rm -f "$UP_OUTPUT" "$UP_ERROR"
+
+if [ $UP_EXIT_CODE -eq 0 ]; then
+  log_success "Worktree environment started successfully"
+fi
+
+# Wait a moment for containers to initialize
+log "Waiting for containers to initialize..."
+sleep 5
+
+# Final verification: check if containers are running
+log "Verifying containers are running..."
+CONTAINERS_RUNNING=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+CONTAINERS_TOTAL=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+
+log "Container status: $CONTAINERS_RUNNING running out of $CONTAINERS_TOTAL total"
+
+if [ "$CONTAINERS_TOTAL" -gt 0 ]; then
+  log "Container details:"
+  docker ps -a --filter "name=${{BRANCH_NAME}}" --format "table {{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.State}}}}" >&2
+  
+  # Check for unhealthy or exited containers
+  UNHEALTHY=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --filter "status=exited" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+  if [ "$UNHEALTHY" -gt 0 ]; then
+    log_error "Found $UNHEALTHY exited container(s), showing logs..."
+    for container in $(docker ps -a --filter "name=${{BRANCH_NAME}}" --filter "status=exited" --format "{{{{.Names}}}}" 2>/dev/null); do
+      log_error "Logs for $container:"
+      docker logs --tail 50 "$container" 2>&1 | head -20 | while IFS= read -r line; do
+        log_error "  $line"
+      done
+    done
+  fi
+  
+  # Check for restarting containers
+  RESTARTING=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --filter "status=restarting" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+  if [ "$RESTARTING" -gt 0 ]; then
+    log_error "Found $RESTARTING container(s) in restart loop, showing recent logs..."
+    for container in $(docker ps -a --filter "name=${{BRANCH_NAME}}" --filter "status=restarting" --format "{{{{.Names}}}}" 2>/dev/null); do
+      log_error "Recent logs for $container:"
+      docker logs --tail 30 "$container" 2>&1 | head -15 | while IFS= read -r line; do
+        log_error "  $line"
+      done
+    done
+  fi
+else
+  log_error "No containers found for branch $BRANCH_NAME"
+  log "This may indicate the worktree was not created correctly"
+fi
+
+# Check volume sizes again to verify they have data
+log "Re-checking volume sizes to verify data was restored..."
+for vol_type in postgres_data redis_data media_files; do
+  if [ -n "$PROJECT_NAME" ]; then
+    VOL_NAME="${{PROJECT_NAME}}-${{BRANCH_NAME}}_${{vol_type}}"
+    if docker volume inspect "$VOL_NAME" >/dev/null 2>&1; then
+      VOL_SIZE=$(docker volume inspect "$VOL_NAME" --format '{{{{.Mountpoint}}}}' | xargs du -sh 2>/dev/null | cut -f1 || echo "unknown")
+      VOL_SIZE_BYTES=$(docker volume inspect "$VOL_NAME" --format '{{{{.Mountpoint}}}}' | xargs du -sb 2>/dev/null | cut -f1 || echo "0")
+      # 4KB = 4096 bytes, anything close to this is likely empty
+      if [ "$VOL_SIZE_BYTES" -lt 10000 ] && [ "$VOL_SIZE_BYTES" -gt 0 ]; then
+        log_error "WARNING: Volume $VOL_NAME appears empty (size: $VOL_SIZE, bytes: $VOL_SIZE_BYTES)"
+        log "This may indicate volume restoration failed - database may not have data"
+      else
+        log "Volume $VOL_NAME size: $VOL_SIZE"
+      fi
+    fi
+  fi
+done
+
+if [ "$CONTAINERS_RUNNING" -gt 0 ]; then
+  log_success "$CONTAINERS_RUNNING container(s) running for branch $BRANCH_NAME"
+else
+  log_error "No containers are running - deployment may have failed"
+  log "Check container logs above for details"
+fi
+
+log_success "=== Remote import process completed ==="
 """
         return script
     

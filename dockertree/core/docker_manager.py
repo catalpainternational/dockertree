@@ -336,49 +336,207 @@ class DockerManager:
             return None
     
     def restore_volumes(self, branch_name: str, backup_file: Path) -> bool:
-        """Restore worktree volumes from a backup file."""
+        """Restore worktree volumes from a backup file with enhanced logging."""
         if not backup_file.exists():
             log_error(f"Backup file {backup_file} not found")
             return False
         
-        log_info(f"Restoring volumes for {branch_name} from {backup_file}")
+        backup_size = backup_file.stat().st_size / (1024 * 1024)  # Size in MB
+        log_info(f"Restoring volumes for {branch_name} from {backup_file} ({backup_size:.2f} MB)")
         
         volume_names = get_volume_names(branch_name)
         restore_temp_dir = backup_file.parent / "restore_temp"
         
         try:
             # Extract backup
+            log_info(f"Extracting backup archive to temporary directory...")
             restore_temp_dir.mkdir(exist_ok=True)
-            subprocess.run([
+            extract_result = subprocess.run([
                 "tar", "xzf", str(backup_file), "-C", str(restore_temp_dir)
-            ], check=True, capture_output=True)
+            ], check=True, capture_output=True, text=True)
+            
+            if extract_result.stderr:
+                log_info(f"Extraction output: {extract_result.stderr}")
+            
+            log_success("Backup archive extracted successfully")
+            
+            # List available backups
+            available_backups = list(restore_temp_dir.glob("*.tar.gz"))
+            log_info(f"Found {len(available_backups)} volume backup(s) in archive")
+            for backup in available_backups:
+                backup_size_mb = backup.stat().st_size / (1024 * 1024)
+                log_info(f"  - {backup.name} ({backup_size_mb:.2f} MB)")
+            
+            # Create mapping of backup files to volume types
+            # Backup files may have different project names, so we need to match by volume type suffix
+            # Volume types map to suffixes: postgres -> postgres_data, redis -> redis_data, media -> media_files
+            volume_type_suffixes = {
+                "postgres": "postgres_data",
+                "redis": "redis_data", 
+                "media": "media_files"
+            }
+            backup_map = {}
+            for backup_file in available_backups:
+                backup_name = backup_file.stem  # Remove .tar.gz
+                for volume_type, volume_name in volume_names.items():
+                    # Check if this backup matches the expected volume type by suffix
+                    expected_suffix = f"_{volume_type_suffixes.get(volume_type, volume_type)}"
+                    if backup_name.endswith(expected_suffix):
+                        if volume_type not in backup_map:
+                            backup_map[volume_type] = backup_file
+                            log_info(f"Mapped backup {backup_file.name} to volume type {volume_type} (expected suffix: {expected_suffix})")
+                            break
             
             # Restore each volume
+            restored_count = 0
+            skipped_count = 0
+            failed_count = 0
+            
             for volume_type, volume_name in volume_names.items():
+                # Try exact match first
                 volume_backup = restore_temp_dir / f"{volume_name}.tar.gz"
+                
+                # If exact match doesn't exist, try mapped backup
+                if not volume_backup.exists() and volume_type in backup_map:
+                    volume_backup = backup_map[volume_type]
+                    log_info(f"Using mapped backup file: {volume_backup.name} for volume {volume_name}")
+                
                 if volume_backup.exists():
-                    log_info(f"Restoring volume: {volume_name}")
+                    backup_size_mb = volume_backup.stat().st_size / (1024 * 1024)
+                    log_info(f"Restoring volume: {volume_name} ({volume_type}, {backup_size_mb:.2f} MB)")
+                    
+                    # Check if volume already exists
+                    if validate_volume_exists(volume_name):
+                        # Check if volume is empty (less than 10KB)
+                        try:
+                            vol_size_check = subprocess.run([
+                                "docker", "run", "--rm",
+                                "-v", f"{volume_name}:/data",
+                                "alpine", "sh", "-c", "du -sb /data 2>/dev/null | cut -f1 || echo 0"
+                            ], check=False, capture_output=True, text=True, timeout=5)
+                            vol_size_bytes = int(vol_size_check.stdout.strip() or "0")
+                            
+                            if vol_size_bytes < 10000:  # Less than 10KB is likely empty
+                                log_warning(f"Volume {volume_name} exists but appears empty ({vol_size_bytes} bytes)")
+                                log_info("Removing empty volume to allow restoration...")
+                                containers = get_containers_using_volume(volume_name)
+                                if containers:
+                                    log_warning(f"Volume {volume_name} is in use by containers: {', '.join(containers)}")
+                                    log_warning("Stopping containers to allow volume removal...")
+                                    # Try to stop containers using this volume
+                                    for container in containers:
+                                        try:
+                                            subprocess.run(["docker", "stop", container], 
+                                                          check=False, capture_output=True, timeout=10)
+                                            log_info(f"Stopped container: {container}")
+                                        except Exception as e:
+                                            log_warning(f"Could not stop container {container}: {e}")
+                                    
+                                    # Re-check if volume is still in use
+                                    containers = get_containers_using_volume(volume_name)
+                                    if containers:
+                                        log_warning(f"Volume {volume_name} still in use, skipping restoration")
+                                        skipped_count += 1
+                                        continue
+                                
+                                # Remove empty volume
+                                try:
+                                    subprocess.run(["docker", "volume", "rm", volume_name], 
+                                                  check=True, capture_output=True, timeout=10)
+                                    log_success(f"Removed empty volume: {volume_name}")
+                                except subprocess.CalledProcessError as e:
+                                    log_error(f"Failed to remove volume {volume_name}: {e}")
+                                    if e.stderr:
+                                        log_error(f"Error: {e.stderr}")
+                                    skipped_count += 1
+                                    continue
+                            else:
+                                log_warning(f"Volume {volume_name} already exists with data ({vol_size_bytes} bytes)")
+                                # Still try to restore if user wants, but warn
+                                containers = get_containers_using_volume(volume_name)
+                                if containers:
+                                    log_warning(f"Volume {volume_name} is in use by containers: {', '.join(containers)}")
+                                    log_warning("Skipping restoration of this volume")
+                                    skipped_count += 1
+                                    continue
+                        except Exception as e:
+                            log_warning(f"Could not check volume size: {e}, proceeding with restoration")
                     
                     # Create volume
-                    self._create_volume(volume_name)
+                    log_info(f"Creating volume: {volume_name}")
+                    if not self._create_volume(volume_name):
+                        log_error(f"Failed to create volume: {volume_name}")
+                        failed_count += 1
+                        continue
+                    log_success(f"Volume created: {volume_name}")
                     
                     # Restore data
-                    subprocess.run([
+                    log_info(f"Restoring data to volume {volume_name}...")
+                    restore_result = subprocess.run([
                         "docker", "run", "--rm",
                         "-v", f"{volume_name}:/data",
                         "-v", f"{restore_temp_dir.absolute()}:/backup",
                         "alpine", "tar", "xzf", f"/backup/{volume_name}.tar.gz", "-C", "/data"
-                    ], check=True, capture_output=True)
+                    ], check=True, capture_output=True, text=True)
+                    
+                    if restore_result.stderr:
+                        # tar may output warnings to stderr that are not errors
+                        if "Removing leading" in restore_result.stderr:
+                            log_info(f"tar output: {restore_result.stderr.strip()}")
+                    
+                    # Verify volume has data
+                    try:
+                        verify_result = subprocess.run([
+                            "docker", "run", "--rm",
+                            "-v", f"{volume_name}:/data",
+                            "alpine", "sh", "-c", "du -sh /data | cut -f1"
+                        ], check=True, capture_output=True, text=True, timeout=10)
+                        volume_data_size = verify_result.stdout.strip()
+                        log_success(f"Volume {volume_name} restored successfully (data size: {volume_data_size})")
+                        restored_count += 1
+                    except subprocess.TimeoutExpired:
+                        log_warning(f"Timeout verifying volume {volume_name}, but restoration may have succeeded")
+                        restored_count += 1
+                    except subprocess.CalledProcessError as e:
+                        log_error(f"Failed to verify volume {volume_name}: {e}")
+                        failed_count += 1
                 else:
                     log_warning(f"Volume backup {volume_name}.tar.gz not found in backup")
+                    skipped_count += 1
+            
+            # Summary
+            log_info(f"Volume restoration summary:")
+            log_info(f"  - Restored: {restored_count}")
+            log_info(f"  - Skipped: {skipped_count}")
+            log_info(f"  - Failed: {failed_count}")
+            
+            if failed_count > 0:
+                log_error(f"Failed to restore {failed_count} volume(s)")
+                # Cleanup
+                if restore_temp_dir.exists():
+                    shutil.rmtree(restore_temp_dir)
+                return False
             
             # Cleanup
+            log_info("Cleaning up temporary extraction directory...")
             shutil.rmtree(restore_temp_dir)
-            log_success(f"Volumes restored for {branch_name}")
+            log_success(f"Volumes restored for {branch_name} ({restored_count} volume(s))")
             return True
             
         except subprocess.CalledProcessError as e:
             log_error(f"Failed to restore volumes: {e}")
+            if e.stdout:
+                log_error(f"Command stdout: {e.stdout}")
+            if e.stderr:
+                log_error(f"Command stderr: {e.stderr}")
+            # Cleanup
+            if restore_temp_dir.exists():
+                shutil.rmtree(restore_temp_dir)
+            return False
+        except Exception as e:
+            log_error(f"Unexpected error during volume restoration: {e}")
+            import traceback
+            log_error(f"Traceback: {traceback.format_exc()}")
             # Cleanup
             if restore_temp_dir.exists():
                 shutil.rmtree(restore_temp_dir)
