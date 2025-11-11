@@ -376,8 +376,10 @@ class DockerManager:
                 "media": "media_files"
             }
             backup_map = {}
+            log_info(f"Creating backup file mapping for {len(available_backups)} backup file(s)...")
             for backup_file in available_backups:
                 backup_name = backup_file.stem  # Remove .tar.gz
+                log_info(f"Processing backup file: {backup_file.name}")
                 for volume_type, volume_name in volume_names.items():
                     # Check if this backup matches the expected volume type by suffix
                     expected_suffix = f"_{volume_type_suffixes.get(volume_type, volume_type)}"
@@ -386,6 +388,11 @@ class DockerManager:
                             backup_map[volume_type] = backup_file
                             log_info(f"Mapped backup {backup_file.name} to volume type {volume_type} (expected suffix: {expected_suffix})")
                             break
+            
+            if backup_map:
+                log_info(f"Successfully mapped {len(backup_map)} backup file(s) to volume types")
+            else:
+                log_warning("No backup files could be mapped to volume types - this may indicate a naming mismatch")
             
             # Restore each volume
             restored_count = 0
@@ -404,6 +411,9 @@ class DockerManager:
                 if volume_backup.exists():
                     backup_size_mb = volume_backup.stat().st_size / (1024 * 1024)
                     log_info(f"Restoring volume: {volume_name} ({volume_type}, {backup_size_mb:.2f} MB)")
+                    
+                    # Store the actual backup filename for use in tar command
+                    backup_filename = volume_backup.name
                     
                     # Check if volume already exists
                     if validate_volume_exists(volume_name):
@@ -470,13 +480,13 @@ class DockerManager:
                         continue
                     log_success(f"Volume created: {volume_name}")
                     
-                    # Restore data
-                    log_info(f"Restoring data to volume {volume_name}...")
+                    # Restore data using the actual backup filename (may differ from volume_name if project names differ)
+                    log_info(f"Restoring data to volume {volume_name} from backup {backup_filename}...")
                     restore_result = subprocess.run([
                         "docker", "run", "--rm",
                         "-v", f"{volume_name}:/data",
                         "-v", f"{restore_temp_dir.absolute()}:/backup",
-                        "alpine", "tar", "xzf", f"/backup/{volume_name}.tar.gz", "-C", "/data"
+                        "alpine", "tar", "xzf", f"/backup/{backup_filename}", "-C", "/data"
                     ], check=True, capture_output=True, text=True)
                     
                     if restore_result.stderr:
@@ -501,7 +511,13 @@ class DockerManager:
                         log_error(f"Failed to verify volume {volume_name}: {e}")
                         failed_count += 1
                 else:
-                    log_warning(f"Volume backup {volume_name}.tar.gz not found in backup")
+                    log_warning(f"Volume backup for {volume_name} not found in backup archive")
+                    log_warning(f"  Expected filename: {volume_name}.tar.gz")
+                    if backup_map:
+                        log_warning(f"  Available mapped backups: {', '.join(b.name for b in backup_map.values())}")
+                    else:
+                        log_warning(f"  No backup files were mapped to volume types")
+                    log_warning(f"  Available backup files in archive: {', '.join(b.name for b in available_backups)}")
                     skipped_count += 1
             
             # Summary
@@ -517,10 +533,21 @@ class DockerManager:
                     shutil.rmtree(restore_temp_dir)
                 return False
             
+            # Warn if no volumes were restored but backups were expected
+            if restored_count == 0 and len(available_backups) > 0:
+                log_warning(f"No volumes were restored despite {len(available_backups)} backup file(s) being found")
+                log_warning("This may indicate a volume name mismatch between source and target projects")
+                log_warning("Volumes will be created empty when containers start")
+            
             # Cleanup
             log_info("Cleaning up temporary extraction directory...")
             shutil.rmtree(restore_temp_dir)
-            log_success(f"Volumes restored for {branch_name} ({restored_count} volume(s))")
+            
+            if restored_count > 0:
+                log_success(f"Volumes restored for {branch_name} ({restored_count} volume(s))")
+            else:
+                log_warning(f"No volumes were restored for {branch_name} (backup may be empty or names don't match)")
+            
             return True
             
         except subprocess.CalledProcessError as e:
@@ -805,6 +832,8 @@ class DockerManager:
         env["PROJECT_ROOT"] = str(worktree_path)
         env["COMPOSE_PROJECT_ROOT"] = str(worktree_path)
         env["PWD"] = str(worktree_path)
+        # Set COMPOSE_PROJECT_NAME to ensure Docker Compose uses correct project name for volumes
+        env["COMPOSE_PROJECT_NAME"] = compose_project_name
         
         log_info(f"Running docker compose command for worktree '{branch_name}':")
         log_info(f"  Working directory: {worktree_path}")
