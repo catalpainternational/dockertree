@@ -641,4 +641,52 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
         
         log_warning(f"Timeout waiting for droplet {droplet_id} to be ready")
         return False
+    
+    def list_sizes(self) -> List[Dict[str, Any]]:
+        """List available droplet sizes from DigitalOcean API.
+        
+        Returns:
+            List of dictionaries with size information:
+            - slug: Size slug (e.g., 's-1vcpu-1gb')
+            - memory: Memory in MB
+            - vcpus: Number of vCPUs
+            - disk: Disk size in GB
+            - price_monthly: Monthly price in USD
+            - price_hourly: Hourly price in USD
+            - available: Whether size is available
+        """
+        response = self._make_request('GET', '/sizes')
+        if not response:
+            return []
+        
+        try:
+            data = response.json()
+            sizes_data = data.get('sizes', [])
+            
+            sizes = []
+            for size_data in sizes_data:
+                # Extract price information
+                price_monthly = None
+                price_hourly = None
+                if 'price_monthly' in size_data:
+                    price_monthly = size_data['price_monthly']
+                if 'price_hourly' in size_data:
+                    price_hourly = size_data['price_hourly']
+                
+                size_info = {
+                    'slug': size_data.get('slug', 'unknown'),
+                    'memory': size_data.get('memory', 0),
+                    'vcpus': size_data.get('vcpus', 0),
+                    'disk': size_data.get('disk', 0),
+                    'price_monthly': price_monthly,
+                    'price_hourly': price_hourly,
+                    'available': size_data.get('available', False),
+                    'regions': size_data.get('regions', [])
+                }
+                sizes.append(size_info)
+            
+            return sizes
+        except (KeyError, ValueError) as e:
+            log_warning(f"Error parsing sizes response: {e}")
+            return []
 

@@ -660,4 +660,135 @@ class DropletCommands:
             else:
                 log_error(f"Error getting droplet info: {e}")
             return False
+    
+    def list_sizes(self, api_token: Optional[str] = None, json: bool = False, csv: bool = False) -> bool:
+        """List available droplet sizes.
+        
+        Args:
+            api_token: Digital Ocean API token
+            json: Output as JSON
+            csv: Output as CSV
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Resolve API token
+            token = DropletManager.resolve_droplet_token(api_token)
+            if not token:
+                if json:
+                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                else:
+                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                return False
+            
+            # Create provider
+            provider = DropletManager.create_provider('digitalocean', token)
+            if not provider:
+                if json:
+                    JSONOutput.print_error("Failed to create droplet provider")
+                else:
+                    log_error("Failed to create droplet provider")
+                return False
+            
+            # List sizes
+            sizes = provider.list_sizes()
+            
+            if not sizes:
+                if json:
+                    JSONOutput.print_error("No sizes found or failed to retrieve sizes")
+                else:
+                    log_error("No sizes found or failed to retrieve sizes")
+                return False
+            
+            # Filter to only available sizes and sort by price
+            available_sizes = [s for s in sizes if s.get('available', False)]
+            available_sizes.sort(key=lambda x: (x.get('price_monthly') or 0, x.get('memory', 0)))
+            
+            if csv:
+                # Output as CSV
+                import csv
+                import sys
+                writer = csv.writer(sys.stdout)
+                # Write header
+                writer.writerow(["Slug", "Memory (MB)", "vCPUs", "Disk (GB)", "Price/Month", "Price/Hour"])
+                # Write rows
+                for s in available_sizes:
+                    price_monthly = f"${s.get('price_monthly', 0):.2f}" if s.get('price_monthly') else "N/A"
+                    price_hourly = f"${s.get('price_hourly', 0):.6f}" if s.get('price_hourly') else "N/A"
+                    writer.writerow([
+                        s.get('slug', ''),
+                        s.get('memory', 0),
+                        s.get('vcpus', 0),
+                        s.get('disk', 0),
+                        price_monthly,
+                        price_hourly
+                    ])
+                return True
+            elif json:
+                result = {
+                    "success": True,
+                    "sizes": available_sizes
+                }
+                JSONOutput.print_json(result)
+            else:
+                if not available_sizes:
+                    print_plain("No available sizes found")
+                    return True
+                
+                # Create a formatted table
+                console = Console()
+                table = Table(
+                    title=f"Available Droplet Sizes ({len(available_sizes)})",
+                    show_header=True,
+                    header_style="bold",
+                    box=None,
+                    padding=(0, 1)
+                )
+                
+                table.add_column("Slug", style="cyan", no_wrap=True, min_width=15)
+                table.add_column("Memory", style="green", min_width=10, justify="right")
+                table.add_column("vCPUs", style="yellow", min_width=6, justify="right")
+                table.add_column("Disk", style="blue", min_width=8, justify="right")
+                table.add_column("Price/Month", style="magenta", min_width=12, justify="right")
+                table.add_column("Price/Hour", style="white", min_width=12, justify="right")
+                
+                for size in available_sizes:
+                    # Format memory
+                    memory_mb = size.get('memory', 0)
+                    if memory_mb >= 1024:
+                        memory_str = f"{memory_mb / 1024:.1f} GB"
+                    else:
+                        memory_str = f"{memory_mb} MB"
+                    
+                    # Format disk
+                    disk_gb = size.get('disk', 0)
+                    disk_str = f"{disk_gb} GB"
+                    
+                    # Format prices
+                    price_monthly = size.get('price_monthly')
+                    price_monthly_str = f"${price_monthly:.2f}" if price_monthly else "N/A"
+                    
+                    price_hourly = size.get('price_hourly')
+                    price_hourly_str = f"${price_hourly:.6f}" if price_hourly else "N/A"
+                    
+                    table.add_row(
+                        size.get('slug', 'unknown'),
+                        memory_str,
+                        str(size.get('vcpus', 0)),
+                        disk_str,
+                        price_monthly_str,
+                        price_hourly_str
+                    )
+                
+                console.print(table)
+            
+            return True
+            
+        except Exception as e:
+            if json:
+                JSONOutput.print_error(f"Error listing sizes: {e}")
+            else:
+                log_error(f"Error listing sizes: {e}")
+            return False
 

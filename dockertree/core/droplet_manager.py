@@ -101,6 +101,16 @@ class DropletProvider(ABC):
             True if droplet is ready, False if timeout
         """
         pass
+    
+    def list_sizes(self) -> List[Dict[str, Any]]:
+        """List available droplet sizes.
+        
+        Returns:
+            List of dictionaries with size information (slug, memory, vcpus, disk, price_monthly, price_hourly)
+        """
+        # Default implementation returns empty list
+        # Providers should override this method
+        return []
 
 
 class DropletManager:

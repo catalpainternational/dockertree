@@ -5,6 +5,7 @@ This module provides colored output and logging functionality that matches
 the bash script's output format.
 """
 
+from datetime import datetime
 from typing import Any, Optional
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -50,7 +51,8 @@ def is_verbose() -> bool:
 def log_info(message: str) -> None:
     """Log an info message (only shown in verbose mode)."""
     if _verbose_mode:
-        console.print(f"[{Colors.BLUE}][INFO][/{Colors.BLUE}] {message}")
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        console.print(f"[{timestamp}] [{Colors.BLUE}][INFO][/{Colors.BLUE}] {message}")
 
 def log_success(message: str) -> None:
     """Log a success message."""
@@ -60,7 +62,8 @@ def log_success(message: str) -> None:
 def log_warning(message: str) -> None:
     """Log a warning message (only shown in verbose mode)."""
     if _verbose_mode:
-        console.print(f"[{Colors.YELLOW}][WARNING][/{Colors.YELLOW}] {message}")
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        console.print(f"[{timestamp}] [{Colors.YELLOW}][WARNING][/{Colors.YELLOW}] {message}")
 
 def log_error(message: str) -> None:
     """Log an error message."""

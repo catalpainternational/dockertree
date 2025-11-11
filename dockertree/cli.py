@@ -896,7 +896,7 @@ def droplets():
 @droplets.command('create')
 @click.argument('name')
 @click.option('--region', help='Droplet region (default: nyc1 or from DIGITALOCEAN_REGION env var)')
-@click.option('--size', help='Droplet size (default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var)')
+@click.option('--size', help='Droplet size slug (e.g., s-1vcpu-1gb, s-2vcpu-4gb). Use "dockertree droplets sizes" to list all available sizes. Default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var')
 @click.option('--image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
 @click.option('--ssh-keys', multiple=True, help='SSH key IDs or fingerprints (can be specified multiple times)')
 @click.option('--tags', multiple=True, help='Tags for the droplet (can be specified multiple times)')
@@ -978,6 +978,40 @@ def droplets_list(api_token: Optional[str], output_json: bool, output_csv: bool)
             JSONOutput.print_error(f"Error listing droplets: {e}")
         else:
             error_exit(f"Error listing droplets: {e}")
+
+
+@droplets.command('sizes')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
+@click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
+@add_verbose_option
+def droplets_sizes(api_token: Optional[str], output_json: bool, output_csv: bool):
+    """List available DigitalOcean droplet sizes.
+
+    Displays all available droplet sizes with their specifications including
+    memory, vCPUs, disk space, and pricing information.
+
+    Examples:
+
+        dockertree droplets sizes
+
+        dockertree droplets sizes --as-json
+        dockertree droplets sizes --as-csv
+    """
+    try:
+        check_prerequisites_no_git()  # Don't require git for droplet operations
+        droplet_commands = DropletCommands()
+        success = droplet_commands.list_sizes(api_token=api_token, json=output_json, csv=output_csv)
+        if not success:
+            if output_json or output_csv:
+                JSONOutput.print_error("Failed to list droplet sizes")
+            else:
+                error_exit("Failed to list droplet sizes")
+    except Exception as e:
+        if output_json or output_csv:
+            JSONOutput.print_error(f"Error listing droplet sizes: {e}")
+        else:
+            error_exit(f"Error listing droplet sizes: {e}")
 
 
 @droplets.command('destroy')
@@ -1532,7 +1566,7 @@ def validate_package(package_file: str, json: bool):
 @click.option('--create-droplet', is_flag=True, default=False, help='Create new DigitalOcean droplet before pushing')
 @click.option('--droplet-name', help='Name for new droplet (default: branch name)')
 @click.option('--droplet-region', help='Droplet region (default: nyc1 or from DIGITALOCEAN_REGION env var)')
-@click.option('--droplet-size', help='Droplet size (default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var)')
+@click.option('--droplet-size', help='Droplet size slug (e.g., s-1vcpu-1gb, s-2vcpu-4gb). Use "dockertree droplets sizes" to list all available sizes. Default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var')
 @click.option('--droplet-image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
 @click.option('--droplet-ssh-keys', type=str, help='SSH key names for droplet (comma-separated, e.g., anders,peter)')
 @add_json_option
