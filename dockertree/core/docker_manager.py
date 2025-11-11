@@ -597,6 +597,9 @@ class DockerManager:
         env["PROJECT_ROOT"] = str(working_dir)  # Absolute path to worktree or project root
         env["COMPOSE_PROJECT_ROOT"] = str(working_dir)
         env["PWD"] = str(working_dir)
+        # Set COMPOSE_PROJECT_NAME to ensure Docker Compose uses correct project name for volumes
+        if project_name:
+            env["COMPOSE_PROJECT_NAME"] = project_name
         
         # Debug logging for path resolution
         log_info(f"Docker Compose execution context:")

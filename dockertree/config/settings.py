@@ -126,7 +126,7 @@ def get_project_config() -> Dict[str, Any]:
 def get_default_config() -> Dict[str, Any]:
     """Default configuration for projects without setup"""
     return {
-        "project_name": Path.cwd().name,
+        "project_name": get_project_root().name,
         "caddy_network": "dockertree_caddy_proxy",
         "worktree_dir": "worktrees",
         "services": {
@@ -144,7 +144,7 @@ def get_default_config() -> Dict[str, Any]:
 def get_project_name() -> str:
     """Get project name from config or fallback to directory name"""
     config = get_project_config()
-    return config.get("project_name", Path.cwd().name)
+    return config.get("project_name", get_project_root().name)
 
 def sanitize_project_name(name: str) -> str:
     """Sanitize project name for use in Docker resource names.
