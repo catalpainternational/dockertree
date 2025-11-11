@@ -369,7 +369,9 @@ class PushManager:
         return username, server, remote_path
     
     def _scp_transfer(self, package_path: Path, scp_target: str) -> bool:
-        """Transfer package to remote server via SCP.
+        """Transfer package to remote server via rsync (faster) or SCP (fallback).
+        
+        Uses rsync with compression for faster transfers, falls back to SCP if rsync unavailable.
         
         Args:
             package_path: Path to package file
@@ -387,8 +389,63 @@ class PushManager:
             remote_file_path = f"{scp_target}/{package_path.name}" if not scp_target.endswith('/') else f"{scp_target}{package_path.name}"
             log_info(f"Remote file path: {remote_file_path}")
             
-            # Run SCP command
-            cmd = ["scp", str(package_path), remote_file_path]
+            # Try rsync first (faster with compression and progress)
+            if subprocess.run(["which", "rsync"], capture_output=True).returncode == 0:
+                log_info("Using rsync for faster transfer with compression...")
+                package_size_mb = package_path.stat().st_size / 1024 / 1024
+                log_info(f"Transferring {package_size_mb:.2f} MB package (this may take a while)...")
+                
+                # rsync with compression, progress, and partial transfer support
+                cmd = [
+                    "rsync",
+                    "-avz",  # archive, verbose, compress
+                    "--progress",  # show progress
+                    "--partial",  # keep partial transfers
+                    "--inplace",  # update in-place for faster completion
+                    str(package_path),
+                    remote_file_path
+                ]
+                log_info(f"Executing rsync command: {' '.join(cmd)}")
+                
+                # Use Popen for real-time progress output
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1
+                )
+                
+                # Stream output for progress
+                for line in iter(process.stdout.readline, ''):
+                    if line:
+                        line = line.rstrip()
+                        # Show progress lines
+                        if '%' in line or 'speedup' in line.lower():
+                            log_info(f"  {line}")
+                
+                process.wait()
+                
+                if process.returncode != 0:
+                    log_error(f"rsync transfer failed with exit code {process.returncode}")
+                    log_info("Falling back to SCP...")
+                    # Fall through to SCP fallback
+                else:
+                    log_success(f"Package transferred successfully via rsync")
+                    log_info(f"Transfer completed: {package_path.name} -> {remote_file_path}")
+                    return True
+            
+            # Fallback to SCP with compression
+            log_info("Using SCP with compression for transfer...")
+            package_size_mb = package_path.stat().st_size / 1024 / 1024
+            log_info(f"Transferring {package_size_mb:.2f} MB package (this may take a while)...")
+            
+            cmd = [
+                "scp",
+                "-C",  # Enable compression
+                str(package_path),
+                remote_file_path
+            ]
             log_info(f"Executing SCP command: {' '.join(cmd)}")
             log_info("Transfer in progress (this may take a while for large packages)...")
             
@@ -419,11 +476,12 @@ class PushManager:
             log_info(f"Transfer completed: {package_path.name} -> {remote_file_path}")
             return True
             
-        except FileNotFoundError:
-            log_error("SCP command not found. Please ensure OpenSSH is installed.")
+        except FileNotFoundError as e:
+            cmd_name = "rsync" if "rsync" in str(e) else "scp"
+            log_error(f"{cmd_name} command not found. Please ensure OpenSSH (and optionally rsync) is installed.")
             return False
         except Exception as e:
-            log_error(f"Unexpected error during SCP transfer: {e}")
+            log_error(f"Unexpected error during transfer: {e}")
             return False
 
     def _ensure_remote_dir(self, username: str, server: str, remote_dir: str) -> None:
@@ -553,48 +611,93 @@ else
   exit 1
 fi
 
-# Retry function for apt operations with exponential backoff
+# Function to wait for apt lock release (max 60s)
+wait_for_apt_lock() {
+  if [ "$USE_APT" != "true" ]; then
+    return 0
+  fi
+  
+  local max_wait=60
+  local waited=0
+  local check_interval=2
+  
+  # Check if unattended-upgrades is running
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet unattended-upgrades 2>/dev/null; then
+      echo "[PREP] unattended-upgrades is running, waiting up to ${max_wait}s for it to complete..." >&2
+      while [ $waited -lt $max_wait ]; do
+        if ! systemctl is-active --quiet unattended-upgrades 2>/dev/null; then
+          echo "[PREP] unattended-upgrades completed" >&2
+          break
+        fi
+        sleep $check_interval
+        waited=$((waited + check_interval))
+      done
+    fi
+  fi
+  
+  # Wait for apt locks to be released
+  while [ $waited -lt $max_wait ]; do
+    if lsof /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || [ -f /var/lib/apt/lists/lock ]; then
+      sleep $check_interval
+      waited=$((waited + check_interval))
+    else
+      break
+    fi
+  done
+  
+  if [ $waited -ge $max_wait ]; then
+    echo "[PREP] Warning: Apt lock still present after ${max_wait}s, proceeding anyway..." >&2
+  fi
+}
+
+# Retry function for apt operations with improved lock detection
 apt_retry() {
   local cmd="$1"
   local max_attempts=5
   local attempt=1
-  local wait_times=(5 10 20 40 60)
+  local wait_times=(2 5 10 20 30)  # Reduced wait times
   
   while [ $attempt -le $max_attempts ]; do
-    # Check for apt lock (only for apt-based systems)
-    if [ "$USE_APT" = "true" ]; then
-      if lsof /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || [ -f /var/lib/apt/lists/lock ]; then
-        if [ $attempt -lt $max_attempts ]; then
-          local wait_time=${wait_times[$((attempt-1))]}
-          echo "[PREP] Apt lock detected, waiting ${wait_time}s before retry (attempt ${attempt}/${max_attempts})..." >&2
-          sleep $wait_time
-          attempt=$((attempt+1))
-          continue
-        fi
-      fi
+    # Try to run the command first
+    if sh -lc "$cmd" 2>/dev/null; then
+      return 0
     fi
     
-    # Try to run the command
-    if sh -lc "$cmd"; then
-      return 0
-    else
-      if [ $attempt -lt $max_attempts ]; then
+    # Only check for locks on actual failures
+    if [ $attempt -lt $max_attempts ]; then
+      if [ "$USE_APT" = "true" ]; then
+        # Check if failure was due to lock
+        if lsof /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || [ -f /var/lib/apt/lists/lock ]; then
+          local wait_time=${wait_times[$((attempt-1))]}
+          echo "[PREP] Apt lock detected after command failure, waiting ${wait_time}s before retry (attempt ${attempt}/${max_attempts})..." >&2
+          sleep $wait_time
+        else
+          # No lock, but command failed - wait shorter time
+          local wait_time=${wait_times[$((attempt-1))]}
+          echo "[PREP] Command failed, waiting ${wait_time}s before retry (attempt ${attempt}/${max_attempts})..." >&2
+          sleep $wait_time
+        fi
+      else
+        # Non-apt system, just wait
         local wait_time=${wait_times[$((attempt-1))]}
         echo "[PREP] Command failed, waiting ${wait_time}s before retry (attempt ${attempt}/${max_attempts})..." >&2
         sleep $wait_time
-        attempt=$((attempt+1))
-      else
-        echo "[PREP] Command failed after ${max_attempts} attempts" >&2
-        return 1
       fi
+      attempt=$((attempt+1))
+    else
+      echo "[PREP] Command failed after ${max_attempts} attempts" >&2
+      return 1
     fi
   done
 }
 
-# Wait for droplet initialization (allow system updates to complete)
+# Wait for droplet initialization intelligently
 if [ "$USE_APT" = "true" ]; then
-  echo "[PREP] Waiting 30s for droplet initialization to complete..."
-  sleep 30
+  echo "[PREP] Checking droplet initialization status..."
+  # Wait for apt locks and unattended-upgrades if needed
+  wait_for_apt_lock
+  echo "[PREP] Droplet initialization check complete"
 fi
 
 echo "[PREP] Installing base tools (curl git)..."
@@ -654,26 +757,113 @@ elif command -v python3.13 >/dev/null 2>&1; then
   PYTHON_CMD="python3.13"
   echo "[PREP] Python 3.13 already installed"
 else
-  echo "[PREP] Installing Python 3.11 from deadsnakes PPA..."
-  if command -v apt-get >/dev/null 2>&1; then
-    apt_retry "$PKG_INSTALL software-properties-common" || true
-    add-apt-repository -y ppa:deadsnakes/ppa || true
-    apt_retry "$PKG_UPDATE" || true
-    apt_retry "$PKG_INSTALL python3.11 python3.11-venv python3.11-dev" || true
-    PYTHON_CMD="python3.11"
-  else
-    echo "[PREP] Warning: Cannot install Python 3.11+ on non-Debian/Ubuntu system" >&2
-    echo "[PREP] Attempting to use system Python 3.11+ if available..." >&2
-    # Try to find any Python 3.11+ in PATH
-    for py in python3.11 python3.12 python3.13; do
-      if command -v "$py" >/dev/null 2>&1; then
-        PYTHON_CMD="$py"
-        break
+  # Try installing Python with uv (fastest method)
+  echo "[PREP] Attempting to install Python 3.11 using uv..."
+  UV_INSTALLED=false
+  UV_CMD=""
+  
+  # Install uv if not available
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "[PREP] Installing uv..."
+    UV_INSTALL_OUTPUT=$(curl -LsSf https://astral.sh/uv/install.sh 2>&1 | sh 2>&1)
+    UV_INSTALL_EXIT=$?
+    
+    # Update PATH - uv installer may add to different locations
+    export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+    
+    # Check common uv installation locations
+    if [ -x "$HOME/.cargo/bin/uv" ]; then
+      UV_CMD="$HOME/.cargo/bin/uv"
+      UV_INSTALLED=true
+      echo "[PREP] uv installed successfully (found in ~/.cargo/bin)"
+    elif [ -x "$HOME/.local/bin/uv" ]; then
+      UV_CMD="$HOME/.local/bin/uv"
+      UV_INSTALLED=true
+      echo "[PREP] uv installed successfully (found in ~/.local/bin)"
+    elif command -v uv >/dev/null 2>&1; then
+      UV_CMD="uv"
+      UV_INSTALLED=true
+      echo "[PREP] uv installed successfully (found in PATH)"
+    else
+      echo "[PREP] uv installation may have failed (exit code: $UV_INSTALL_EXIT)"
+      if [ -n "$UV_INSTALL_OUTPUT" ]; then
+        echo "[PREP] uv installer output: $UV_INSTALL_OUTPUT" >&2
       fi
-    done
-    if [ -z "$PYTHON_CMD" ]; then
-      echo "[PREP] Error: Python 3.11+ not found and cannot be installed automatically" >&2
-      exit 1
+    fi
+  else
+    UV_CMD="uv"
+    UV_INSTALLED=true
+    echo "[PREP] uv already available"
+  fi
+  
+  # Try to install Python with uv
+  if [ "$UV_INSTALLED" = "true" ] && [ -n "$UV_CMD" ]; then
+    export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+    echo "[PREP] Installing Python 3.11 using uv..."
+    UV_PYTHON_OUTPUT=$("$UV_CMD" python install 3.11 2>&1)
+    UV_PYTHON_EXIT=$?
+    
+    if [ $UV_PYTHON_EXIT -eq 0 ]; then
+      # Find the installed Python - uv stores it in ~/.local/bin or ~/.uv/python
+      if [ -x "$HOME/.local/bin/python3.11" ]; then
+        PYTHON_CMD="$HOME/.local/bin/python3.11"
+        echo "[PREP] Python 3.11 installed successfully using uv (found in ~/.local/bin)"
+      else
+        # Try uv python find
+        UV_PYTHON=$("$UV_CMD" python find 3.11 2>/dev/null | head -1)
+        if [ -n "$UV_PYTHON" ] && [ -x "$UV_PYTHON" ]; then
+          PYTHON_CMD="$UV_PYTHON"
+          echo "[PREP] Python 3.11 installed successfully using uv (found via 'uv python find')"
+        else
+          # Search in common uv locations
+          if [ -d "$HOME/.uv/python" ]; then
+            UV_PYTHON_PATH=$(find "$HOME/.uv/python" -name "python3" -type f -executable 2>/dev/null | grep -E "3\.11" | head -1)
+            if [ -n "$UV_PYTHON_PATH" ] && [ -x "$UV_PYTHON_PATH" ]; then
+              PYTHON_CMD="$UV_PYTHON_PATH"
+              echo "[PREP] Python 3.11 installed successfully using uv (found in ~/.uv/python)"
+            fi
+          fi
+        fi
+      fi
+      
+      # If we still don't have Python, show error
+      if [ -z "$PYTHON_CMD" ]; then
+        echo "[PREP] Python 3.11 installed via uv but could not locate binary" >&2
+        if [ -n "$UV_PYTHON_OUTPUT" ]; then
+          echo "[PREP] uv python install output: $UV_PYTHON_OUTPUT" >&2
+        fi
+      fi
+    else
+      echo "[PREP] uv python install failed (exit code: $UV_PYTHON_EXIT)" >&2
+      if [ -n "$UV_PYTHON_OUTPUT" ]; then
+        echo "[PREP] uv python install output: $UV_PYTHON_OUTPUT" >&2
+      fi
+    fi
+  fi
+  
+  # Fallback to deadsnakes PPA if uv failed
+  if [ -z "$PYTHON_CMD" ]; then
+    echo "[PREP] uv installation failed or unavailable, falling back to deadsnakes PPA..."
+    if command -v apt-get >/dev/null 2>&1; then
+      apt_retry "$PKG_INSTALL software-properties-common" || true
+      add-apt-repository -y ppa:deadsnakes/ppa || true
+      apt_retry "$PKG_UPDATE" || true
+      apt_retry "$PKG_INSTALL python3.11 python3.11-venv python3.11-dev" || true
+      PYTHON_CMD="python3.11"
+    else
+      echo "[PREP] Warning: Cannot install Python 3.11+ on non-Debian/Ubuntu system" >&2
+      echo "[PREP] Attempting to use system Python 3.11+ if available..." >&2
+      # Try to find any Python 3.11+ in PATH
+      for py in python3.11 python3.12 python3.13; do
+        if command -v "$py" >/dev/null 2>&1; then
+          PYTHON_CMD="$py"
+          break
+        fi
+      done
+      if [ -z "$PYTHON_CMD" ]; then
+        echo "[PREP] Error: Python 3.11+ not found and cannot be installed automatically" >&2
+        exit 1
+      fi
     fi
   fi
 fi
@@ -1131,23 +1321,39 @@ log "Bringing up worktree environment for branch: $BRANCH_NAME"
 log "This may take a few minutes if containers need to be pulled or built..."
 
 # Run with timeout and capture output
-TIMEOUT=300  # 5 minutes timeout
+TIMEOUT=600  # 10 minutes timeout (increased for slower networks/containers)
 UP_OUTPUT=$(mktemp)
 UP_ERROR=$(mktemp)
 
 # Check if timeout command is available
 if command -v timeout >/dev/null 2>&1; then
   log "Running with $TIMEOUT second timeout..."
-  if timeout $TIMEOUT "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
-    UP_EXIT_CODE=0
-  else
-    UP_EXIT_CODE=$?
-    if [ $UP_EXIT_CODE -eq 124 ]; then
-      log_error "Command timed out after $TIMEOUT seconds"
-      log "This may indicate containers are stuck or waiting for dependencies"
-    else
-      log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+  # Run command with timeout in background and monitor progress
+  timeout $TIMEOUT "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR" &
+  UP_PID=$!
+  
+  # Show progress every 30 seconds
+  ELAPSED=0
+  while kill -0 $UP_PID 2>/dev/null && [ $ELAPSED -lt $TIMEOUT ]; do
+    sleep 30
+    ELAPSED=$((ELAPSED + 30))
+    log "Still starting containers... (${ELAPSED}s elapsed)"
+    # Show container status
+    RUNNING=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+    TOTAL=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+    if [ "$TOTAL" -gt 0 ]; then
+      log "  Containers: $RUNNING/$TOTAL running"
     fi
+  done
+  
+  wait $UP_PID
+  UP_EXIT_CODE=$?
+  
+  if [ $UP_EXIT_CODE -eq 124 ]; then
+    log_error "Command timed out after $TIMEOUT seconds"
+    log "This may indicate containers are stuck or waiting for dependencies"
+  elif [ $UP_EXIT_CODE -ne 0 ]; then
+    log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
   fi
 else
   log "Timeout command not available, running without timeout..."
