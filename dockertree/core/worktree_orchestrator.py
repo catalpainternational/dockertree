@@ -60,18 +60,27 @@ class WorktreeOrchestrator:
         self.env_manager = EnvironmentManager(project_root=self.project_root)
     
     def _get_project_name(self) -> str:
-        """Get project name from config using instance project_root."""
+        """Get project name from config using instance project_root.
+        
+        Ensures we use the correct project_root context from the orchestrator instance.
+        """
+        # If we have a project_root with config, use it directly
         from ..config.settings import DOCKERTREE_DIR
-        import yaml
         config_path = self.project_root / DOCKERTREE_DIR / "config.yml"
         if config_path.exists():
             try:
+                import yaml
                 with open(config_path) as f:
                     config = yaml.safe_load(f) or {}
-                    return config.get("project_name", self.project_root.name)
+                    project_name = config.get("project_name")
+                    if project_name:
+                        return project_name
             except Exception:
                 pass
-        return self.project_root.name
+        
+        # Fallback to project root directory name (sanitized)
+        from ..config.settings import sanitize_project_name
+        return sanitize_project_name(self.project_root.name)
     
     def _find_true_project_root(self) -> Optional[Path]:
         """Find the true project root, respecting fractal worktree configs."""

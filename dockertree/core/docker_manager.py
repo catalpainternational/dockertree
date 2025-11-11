@@ -804,8 +804,33 @@ class DockerManager:
             log_error(f"Environment file not found: {env_file}")
             return False
         
-        # Get project name
-        project_name = sanitize_project_name(get_project_name())
+        # Find project root from worktree path (search upward for .dockertree/config.yml)
+        # This ensures we get the correct project name even when command is run from wrong directory
+        project_root_from_worktree = worktree_path
+        from ..config.settings import DOCKERTREE_DIR
+        while project_root_from_worktree != project_root_from_worktree.parent:
+            config_path = project_root_from_worktree / DOCKERTREE_DIR / "config.yml"
+            if config_path.exists():
+                break
+            project_root_from_worktree = project_root_from_worktree.parent
+        
+        # Get project name from the project root we found
+        import yaml
+        project_name = None
+        config_path = project_root_from_worktree / DOCKERTREE_DIR / "config.yml"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+                    project_name = config.get("project_name")
+            except Exception:
+                pass
+        
+        # Fallback to project root directory name if config doesn't have project_name
+        if not project_name:
+            project_name = project_root_from_worktree.name
+        
+        project_name = sanitize_project_name(project_name)
         compose_project_name = f"{project_name}-{branch_name}"
         
         # Build docker compose command
