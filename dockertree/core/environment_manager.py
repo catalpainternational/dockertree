@@ -80,7 +80,7 @@ class EnvironmentManager:
         if domain:
             env_compose_content = self._generate_env_compose_with_domain(branch_name, domain)
         else:
-            env_compose_content = generate_env_compose_content(branch_name)
+            env_compose_content = self._generate_env_compose_content(branch_name)
             
         env_compose_path = get_env_compose_file_path(worktree_path)
         
@@ -106,7 +106,8 @@ class EnvironmentManager:
             branch_name: Branch name
             domain: Optional domain override (subdomain.domain.tld)
         """
-        from ..config.settings import get_project_name, sanitize_project_name, get_allowed_hosts_for_worktree, DEFAULT_ENV_VARS
+        from ..config.settings import DOCKERTREE_DIR, sanitize_project_name, get_allowed_hosts_for_worktree, DEFAULT_ENV_VARS
+        import yaml
         
         env_file = worktree_path / ".env"
         
@@ -114,8 +115,23 @@ class EnvironmentManager:
         if env_file.exists():
             return True
         
+        # Get project name from config in self.project_root (not current directory)
+        project_name = None
+        config_path = self.project_root / DOCKERTREE_DIR / "config.yml"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+                    project_name = config.get("project_name")
+            except Exception:
+                pass
+        
+        # Fallback to project root directory name if config doesn't have project_name
+        if not project_name:
+            project_name = self.project_root.name
+        
         # Create default environment content with project prefix
-        project_name = sanitize_project_name(get_project_name())
+        project_name = sanitize_project_name(project_name)
         compose_project_name = f"{project_name}-{branch_name}"
         
         # Use domain override if provided, otherwise use localhost
@@ -156,6 +172,41 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
         except Exception as e:
             log_warning(f"Failed to create default .env file: {e}")
             return False
+    
+    def _generate_env_compose_content(self, branch_name: str) -> str:
+        """Generate env.dockertree content for a worktree using self.project_root."""
+        from ..config.settings import DOCKERTREE_DIR, sanitize_project_name, get_allowed_hosts_for_worktree
+        import yaml
+        
+        # Get project name from config in self.project_root
+        project_name = None
+        config_path = self.project_root / DOCKERTREE_DIR / "config.yml"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+                    project_name = config.get("project_name")
+            except Exception:
+                pass
+        
+        # Fallback to project root directory name if config doesn't have project_name
+        if not project_name:
+            project_name = self.project_root.name
+        
+        project_name = sanitize_project_name(project_name)
+        compose_project_name = f"{project_name}-{branch_name}"
+        site_domain = f"{compose_project_name}.localhost"  # RFC-compliant hostname
+        allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
+        
+        return f"""# Dockertree environment configuration for {branch_name}
+COMPOSE_PROJECT_NAME={compose_project_name}
+PROJECT_ROOT={self.project_root}
+SITE_DOMAIN={site_domain}
+ALLOWED_HOSTS={allowed_hosts}
+DEBUG=True
+USE_X_FORWARDED_HOST=True
+CSRF_TRUSTED_ORIGINS=http://{site_domain}
+"""
     
     def get_worktree_volume_names(self, branch_name: str) -> Dict[str, str]:
         """Get worktree-specific volume names."""
@@ -372,10 +423,28 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
         Returns:
             Environment file content with domain overrides
         """
-        from ..config.settings import get_project_name, sanitize_project_name
+        from ..config.settings import DOCKERTREE_DIR, sanitize_project_name
         from ..utils.logging import log_warning
+        import yaml
+        
         project_root = self.project_root
-        project_name = sanitize_project_name(get_project_name())
+        
+        # Get project name from config in self.project_root (not current directory)
+        project_name = None
+        config_path = self.project_root / DOCKERTREE_DIR / "config.yml"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+                    project_name = config.get("project_name")
+            except Exception:
+                pass
+        
+        # Fallback to project root directory name if config doesn't have project_name
+        if not project_name:
+            project_name = self.project_root.name
+        
+        project_name = sanitize_project_name(project_name)
         compose_project_name = f"{project_name}-{branch_name}"
         
         # Construct URLs from domain

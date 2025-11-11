@@ -220,12 +220,32 @@ class DockerManager:
         Note: Only creates postgres, redis, and media volumes. Caddy volumes 
         are shared globally across all worktrees and should not be copied.
         """
-        volume_names = get_volume_names(branch_name)
-        
-        # Use project name from config if not provided
+        # Determine project name from self.project_root (not current directory)
         if project_name is None:
-            from ..config.settings import get_project_name
-            project_name = get_project_name()
+            # Get project name from config in self.project_root
+            from ..config.settings import DOCKERTREE_DIR, sanitize_project_name
+            import yaml
+            config_path = self.project_root / DOCKERTREE_DIR / "config.yml"
+            if config_path.exists():
+                try:
+                    with open(config_path) as f:
+                        config = yaml.safe_load(f) or {}
+                        project_name = config.get("project_name")
+                except Exception:
+                    pass
+            
+            # Fallback to project root directory name if config doesn't have project_name
+            if not project_name:
+                project_name = self.project_root.name
+            
+            project_name = sanitize_project_name(project_name)
+        
+        # Get volume names using the determined project name
+        volume_names = {
+            "postgres": f"{project_name}-{branch_name}_postgres_data",
+            "redis": f"{project_name}-{branch_name}_redis_data",
+            "media": f"{project_name}-{branch_name}_media_files",
+        }
         
         project_volumes = {
             "postgres": f"{project_name}_{volume_names['postgres'].split('_', 1)[1]}",
