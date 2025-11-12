@@ -1648,7 +1648,7 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
     docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" up -d db >/dev/null 2>&1 || true
     
     # Wait for PostgreSQL container to be running, healthy, and ready
-    PG_CONTAINER="$COMPOSE_PROJECT_NAME-db"
+    PG_CONTAINER="${{COMPOSE_PROJECT_NAME}}-db"
     log "Waiting for PostgreSQL container to be running..."
     
     CONTAINER_RUNNING=false
@@ -1657,11 +1657,11 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
     
     for i in $(seq 1 60); do
       # Check if container is running
-      if docker ps --filter "name=$PG_CONTAINER" --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
+      if docker ps --filter "name=${{{{PG_CONTAINER}}}}" --format '{{{{.Names}}}}' | grep -q "^${{{{PG_CONTAINER}}}}$"; then
         CONTAINER_RUNNING=true
         
         # Check container health status (if healthcheck is configured)
-        HEALTH_STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$PG_CONTAINER" 2>/dev/null || echo "none")
+        HEALTH_STATUS=$(docker inspect --format '{{{{.State.Health.Status}}}}' "${{{{PG_CONTAINER}}}}" 2>/dev/null || echo "none")
         if [ "$HEALTH_STATUS" = "healthy" ]; then
           CONTAINER_HEALTHY=true
           log "Container health check: healthy"
@@ -1677,8 +1677,8 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
         
         # Verify PostgreSQL is ready using pg_isready
         # Get PostgreSQL user from container environment (defaults to postgres)
-        PG_USER=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$PG_CONTAINER" 2>/dev/null | grep "^POSTGRES_USER=" | cut -d'=' -f2 || echo "postgres")
-        if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" >/dev/null 2>&1; then
+        PG_USER=$(docker inspect --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' "${{{{PG_CONTAINER}}}}" 2>/dev/null | grep "^POSTGRES_USER=" | cut -d'=' -f2 || echo "postgres")
+        if docker exec "${{{{PG_CONTAINER}}}}" pg_isready -U "$PG_USER" >/dev/null 2>&1; then
           # pg_isready is sufficient - it confirms PostgreSQL is accepting connections
           # Connection test with psql may require password, so we skip it if pg_isready passes
           PG_READY=true
@@ -1713,7 +1713,7 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
     # Verify we're ready before proceeding
     if [ "$PG_READY" != true ]; then
       log_error "PostgreSQL is not ready - cannot proceed with restore"
-      log_error "Please check container logs: docker logs $PG_CONTAINER"
+      log_error "Please check container logs: docker logs ${{{{PG_CONTAINER}}}}"
       exit 1
     fi
     
@@ -1725,10 +1725,10 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
     log_success "Volumes restored successfully"
     
     # Verify PostgreSQL data exists after restoration using psql
-    PG_CONTAINER="$COMPOSE_PROJECT_NAME-db"
-    if docker ps --filter "name=$PG_CONTAINER" --format '{{{{.Names}}}}' | grep -q "$PG_CONTAINER"; then
+    PG_CONTAINER="${{{{COMPOSE_PROJECT_NAME}}}}"-db
+    if docker ps --filter "name=${{{{PG_CONTAINER}}}}" --format '{{{{.Names}}}}' | grep -q "${{{{PG_CONTAINER}}}}"; then
       log "Verifying PostgreSQL database contents..."
-      DB_COUNT=$(docker exec "$PG_CONTAINER" psql -U postgres -tAc "SELECT COUNT(*) FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'postgres')" 2>/dev/null || echo "0")
+      DB_COUNT=$(docker exec "${{{{PG_CONTAINER}}}}" psql -U postgres -tAc "SELECT COUNT(*) FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'postgres')" 2>/dev/null || echo "0")
       if [ "$DB_COUNT" -gt 0 ]; then
         log_success "PostgreSQL database verified ($DB_COUNT database(s) found)"
       else
