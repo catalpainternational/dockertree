@@ -1517,6 +1517,8 @@ fi
 # Try to find volumes using docker volume ls (more robust than guessing names)
 VOLUMES_FOUND=0
 VOLUMES_MISSING=0
+NEED_VOLUME_RESTORE=false
+EMPTY_VOLUMES=0
 
 for vol_type in postgres_data redis_data media_files; do
   # Try exact match first if we have project name
@@ -1524,7 +1526,22 @@ for vol_type in postgres_data redis_data media_files; do
     VOL_NAME="${{PROJECT_NAME}}-${{BRANCH_NAME}}_${{vol_type}}"
     if docker volume inspect "$VOL_NAME" >/dev/null 2>&1; then
       VOL_SIZE=$(docker volume inspect "$VOL_NAME" --format '{{{{.Mountpoint}}}}' | xargs du -sh 2>/dev/null | cut -f1 || echo "unknown")
-      log_success "Volume found: $VOL_NAME (size: $VOL_SIZE)"
+      VOL_SIZE_BYTES=$(docker volume inspect "$VOL_NAME" --format '{{{{.Mountpoint}}}}' | xargs du -sb 2>/dev/null | cut -f1 || echo "0")
+      
+      # Check if volume is empty (PostgreSQL should be > 1MB if restored)
+      if [ "$vol_type" = "postgres_data" ]; then
+        MIN_SIZE=1048576  # 1MB
+      else
+        MIN_SIZE=10000  # 10KB
+      fi
+      
+      if [ "$VOL_SIZE_BYTES" -lt "$MIN_SIZE" ]; then
+        log_error "Volume $VOL_NAME appears empty (size: $VOL_SIZE_BYTES bytes, expected > $MIN_SIZE)"
+        NEED_VOLUME_RESTORE=true
+        EMPTY_VOLUMES=$((EMPTY_VOLUMES + 1))
+      else
+        log_success "Volume found: $VOL_NAME (size: $VOL_SIZE)"
+      fi
       VOLUMES_FOUND=$((VOLUMES_FOUND + 1))
       continue
     fi
@@ -1548,9 +1565,17 @@ for vol_type in postgres_data redis_data media_files; do
     fi
     
     # Check if volume is suspiciously small (likely empty)
-    if [ "$VOL_SIZE_BYTES" -lt 10000 ] && [ "$VOL_SIZE_BYTES" -gt 0 ]; then
+    if [ "$vol_type" = "postgres_data" ]; then
+      MIN_SIZE=1048576  # 1MB
+    else
+      MIN_SIZE=10000  # 10KB
+    fi
+    
+    if [ "$VOL_SIZE_BYTES" -lt "$MIN_SIZE" ]; then
       log_error "WARNING: Volume $FOUND_VOL appears empty (size: $VOL_SIZE, bytes: $VOL_SIZE_BYTES)"
       log_error "This likely indicates volume restoration failed - database will be empty"
+      NEED_VOLUME_RESTORE=true
+      EMPTY_VOLUMES=$((EMPTY_VOLUMES + 1))
     else
       log_success "Volume found: $FOUND_VOL (size: $VOL_SIZE)"
     fi
@@ -1566,8 +1591,41 @@ if [ $VOLUMES_MISSING -gt 0 ]; then
   log "This may indicate volume restoration failed"
   log "Listing all volumes for debugging:"
   docker volume ls --format "table {{{{.Name}}}}\\t{{{{.Driver}}}}\\t{{{{.Scope}}}}" | grep -E "(NAME|${{BRANCH_NAME}})" || true
+  NEED_VOLUME_RESTORE=true
+elif [ "$NEED_VOLUME_RESTORE" = true ]; then
+  log_error "Warning: $EMPTY_VOLUMES volume(s) appear empty after import"
+  log "Volume restoration may have failed or not completed"
 else
   log_success "All volumes verified: $VOLUMES_FOUND volume(s) found"
+fi
+
+# Restore volumes if needed (before starting containers)
+if [ "$NEED_VOLUME_RESTORE" = true ]; then
+  log "Volumes need restoration - ensuring containers are stopped first..."
+  
+  # Stop any running containers for this branch
+  COMPOSE_FILE="$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree/docker-compose.worktree.yml"
+  if [ -f "$COMPOSE_FILE" ]; then
+    log "Stopping any running containers before volume restoration..."
+    cd "$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree"
+    # Use the same project name format as dockertree uses (project-name-branch-name)
+    if [ -n "$PROJECT_NAME" ]; then
+      COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
+    else
+      COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
+    fi
+    docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" down >/dev/null 2>&1 || true
+    cd "$ROOT2"
+  fi
+  
+  log "Restoring volumes from package..."
+  if "$DTBIN" volumes restore "${{BRANCH_NAME}}" "$PKG_FILE"; then
+    log_success "Volumes restored successfully"
+    NEED_VOLUME_RESTORE=false
+  else
+    log_error "Volume restoration failed - containers will start with empty volumes"
+    log_error "Database will be empty - manual restoration may be required"
+  fi
 fi
 
 # Start proxy (ignore non-interactive flag if unsupported)
