@@ -342,19 +342,11 @@ class PackageManager:
                 self.env_manager.apply_ip_overrides(worktree_path, ip)
             
             # Restore volumes if requested
-            # IMPORTANT: Stop any running containers first to ensure volumes can be restored safely.
-            # Volume restoration works at the file level (extracting tar.gz directly into volumes),
-            # but we must stop containers first because:
-            # 1. PostgreSQL locks database files while running - overwriting them causes corruption
-            # 2. Database containers expect clean shutdowns - file-level restoration requires unmounted volumes
-            # 3. The restoration process extracts files directly into the volume (no database commands needed)
+            # restore_volumes() handles stopping containers safely before restore
             if restore_data:
                 volumes_backup = package_dir / "volumes" / f"backup_{metadata['branch_name']}.tar"
                 if volumes_backup.exists():
                     log_info(f"Restoring volumes for {target_branch}...")
-                    # Ensure containers are stopped before restoration (DRY: use shared function)
-                    self.docker_manager.ensure_containers_stopped_before_restore(target_branch, worktree_path)
-                    
                     if not self.docker_manager.restore_volumes(target_branch, volumes_backup):
                         log_warning("Failed to restore volumes")
                 else:
@@ -507,9 +499,7 @@ class PackageManager:
                         # Ensure containers are stopped before restoration (DRY: use shared function)
                         from ..core.docker_manager import DockerManager
                         docker_manager = DockerManager(project_root=target_directory)
-                        worktree_path = Path(target_directory) / "worktrees" / branch_name
-                        docker_manager.ensure_containers_stopped_before_restore(branch_name, worktree_path)
-                        
+                        # restore_volumes() handles stopping containers safely before restore
                         docker_manager.restore_volumes(branch_name, volumes_backup)
             
             log_success(f"Standalone import completed: {target_directory}")

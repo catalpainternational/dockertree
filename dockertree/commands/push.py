@@ -1629,130 +1629,12 @@ else
 fi
 
 # Restore volumes if needed
+# restore_volumes() handles stopping containers safely before restore
 if [ "$NEED_VOLUME_RESTORE" = true ]; then
   log "Volumes need restoration..."
-  
-  # For PostgreSQL, we need the container running for SQL restore
-  # Start PostgreSQL container first if it exists
-  COMPOSE_FILE="$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree/docker-compose.worktree.yml"
-  if [ -f "$COMPOSE_FILE" ]; then
-    cd "$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree"
-    # Use the same project name format as dockertree uses (project-name-branch-name)
-    if [ -n "$PROJECT_NAME" ]; then
-      COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
-    else
-      COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
-    fi
-    
-    # Set PROJECT_ROOT environment variable (required by docker-compose.worktree.yml)
-    export PROJECT_ROOT="$ROOT2"
-    
-    log "Starting PostgreSQL container for SQL restore..."
-    log "Using compose file: docker-compose.worktree.yml"
-    log "Using project name: $COMPOSE_PROJECT_NAME"
-    log "Using PROJECT_ROOT: $PROJECT_ROOT"
-    if docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" up -d db 2>&1; then
-      log_success "PostgreSQL container start command executed"
-    else
-      log_error "Failed to start PostgreSQL container - checking logs..."
-      docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" ps db 2>&1 || true
-      docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" logs db 2>&1 | tail -20 || true
-    fi
-    
-    # Wait for PostgreSQL container to be running, healthy, and ready
-    PG_CONTAINER="${{COMPOSE_PROJECT_NAME}}-db"
-    log "Waiting for PostgreSQL container to be running..."
-    log "Expected container name: $PG_CONTAINER"
-    log "Checking for containers matching pattern: *db*"
-    docker ps --filter "name=db" --format '{{{{.Names}}}}' | head -5 || true
-    
-    CONTAINER_RUNNING=false
-    CONTAINER_HEALTHY=""
-    PG_READY=false
-    
-    for i in $(seq 1 60); do
-      # Check if container is running (try multiple patterns)
-      if docker ps --filter "name=$PG_CONTAINER" --format '{{{{.Names}}}}' | grep -q "^$PG_CONTAINER$"; then
-        CONTAINER_RUNNING=true
-        
-        # Check container health status (if healthcheck is configured)
-        HEALTH_STATUS=$(docker inspect --format '{{{{.State.Health.Status}}}}' "$PG_CONTAINER" 2>/dev/null || echo "none")
-        if [ "$HEALTH_STATUS" = "healthy" ]; then
-          CONTAINER_HEALTHY=true
-          log "Container health check: healthy"
-        elif [ "$HEALTH_STATUS" = "unhealthy" ]; then
-          CONTAINER_HEALTHY=false
-          log_warning "Container health check: unhealthy (attempt $i/60)"
-        elif [ "$HEALTH_STATUS" = "starting" ]; then
-          log "Container health check: starting (attempt $i/60)"
-        else
-          # No healthcheck configured
-          CONTAINER_HEALTHY="none"
-        fi
-        
-        # Verify PostgreSQL is ready using pg_isready
-        # Get PostgreSQL user from container environment (defaults to postgres)
-        PG_USER=$(docker inspect --format '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' "$PG_CONTAINER" 2>/dev/null | grep "^POSTGRES_USER=" | cut -d'=' -f2 || echo "postgres")
-        if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" >/dev/null 2>&1; then
-          # pg_isready is sufficient - it confirms PostgreSQL is accepting connections
-          # Connection test with psql may require password, so we skip it if pg_isready passes
-          PG_READY=true
-          if [ "$CONTAINER_HEALTHY" = "false" ]; then
-            log_warning "PostgreSQL is ready but container healthcheck reports unhealthy"
-            log_warning "Proceeding anyway since pg_isready confirms PostgreSQL is accessible"
-          else
-            log_success "PostgreSQL is ready and healthy"
-          fi
-          break
-        else
-          log "PostgreSQL not ready yet (attempt $i/60)"
-        fi
-      else
-        log "Container not running yet (attempt $i/60)"
-      fi
-      
-      if [ $i -eq 60 ]; then
-        if [ "$CONTAINER_RUNNING" = false ]; then
-          log_error "PostgreSQL container did not start within 60 seconds"
-        elif [ "$CONTAINER_HEALTHY" = "false" ]; then
-          log_error "PostgreSQL container is running but healthcheck reports unhealthy"
-        else
-          log_error "PostgreSQL did not become ready in time (pg_isready failed)"
-        fi
-        log_error "Container may be starting slowly or there may be an issue"
-      else
-        sleep 1
-      fi
-    done
-    
-    # Verify we're ready before proceeding
-    if [ "$PG_READY" != true ]; then
-      log_error "PostgreSQL is not ready - cannot proceed with restore"
-      log_error "Please check container logs: docker logs $PG_CONTAINER"
-      exit 1
-    fi
-    
-    cd "$ROOT2"
-  fi
-  
   log "Restoring volumes from package..."
   if "$DTBIN" volumes restore "${{BRANCH_NAME}}" "$PKG_FILE"; then
     log_success "Volumes restored successfully"
-    
-    # Verify PostgreSQL data exists after restoration using psql
-    PG_CONTAINER="${{COMPOSE_PROJECT_NAME}}-db"
-    if docker ps --filter "name=$PG_CONTAINER" --format '{{{{.Names}}}}' | grep -q "$PG_CONTAINER"; then
-      log "Verifying PostgreSQL database contents..."
-      DB_COUNT=$(docker exec "$PG_CONTAINER" psql -U postgres -tAc "SELECT COUNT(*) FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'postgres')" 2>/dev/null || echo "0")
-      if [ "$DB_COUNT" -gt 0 ]; then
-        log_success "PostgreSQL database verified ($DB_COUNT database(s) found)"
-      else
-        log_warning "PostgreSQL database appears empty - restoration may have failed or database is new"
-      fi
-    else
-      log_warning "PostgreSQL container not running - cannot verify database contents"
-    fi
-    
     NEED_VOLUME_RESTORE=false
   else
     log_error "Volume restoration failed - containers will start with empty volumes"
@@ -1779,15 +1661,22 @@ if command -v timeout >/dev/null 2>&1; then
   
   # Show progress every 30 seconds
   ELAPSED=0
+  CONTAINERS_STARTED=false
   while kill -0 $UP_PID 2>/dev/null && [ $ELAPSED -lt $TIMEOUT ]; do
     sleep 30
     ELAPSED=$((ELAPSED + 30))
-    log "Still starting containers... (${{ELAPSED}}s elapsed)"
     # Show container status
     RUNNING=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
     TOTAL=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
     if [ "$TOTAL" -gt 0 ]; then
-      log "  Containers: $RUNNING/$TOTAL running"
+      log "Still starting containers... (${{ELAPSED}}s elapsed, $RUNNING/$TOTAL running)"
+      # If all containers are running, show success early
+      if [ "$RUNNING" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ] && [ "$CONTAINERS_STARTED" = false ]; then
+        log_success "All containers are now running!"
+        CONTAINERS_STARTED=true
+      fi
+    else
+      log "Still starting containers... (${{ELAPSED}}s elapsed)"
     fi
   done
   
@@ -1829,6 +1718,10 @@ rm -f "$UP_OUTPUT" "$UP_ERROR"
 
 if [ $UP_EXIT_CODE -eq 0 ]; then
   log_success "Worktree environment started successfully"
+elif [ "$CONTAINERS_STARTED" = true ]; then
+  log_success "Containers are running (command may have completed in background)"
+else
+  log_warning "Container startup command exited with code $UP_EXIT_CODE, but checking status..."
 fi
 
 # Wait a moment for containers to initialize

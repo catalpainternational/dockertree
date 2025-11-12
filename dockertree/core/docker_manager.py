@@ -253,293 +253,6 @@ class DockerManager:
             return container_name
         return None
     
-    def _ensure_postgres_container_running(self, container_name: str, branch_name: str) -> bool:
-        """Ensure PostgreSQL container is running and ready.
-        
-        Args:
-            container_name: Name of the PostgreSQL container
-            branch_name: Branch name for the worktree
-            
-        Returns:
-            True if container is running and ready, False otherwise
-        """
-        # Check if container is running
-        result = subprocess.run(
-            ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-        
-        is_running = result.stdout.strip() == container_name
-        
-        if is_running:
-            log_info(f"PostgreSQL container {container_name} is already running")
-        else:
-            log_info(f"Starting PostgreSQL container {container_name}...")
-            # Get worktree path from branch_name
-            from ..config.settings import get_worktree_paths
-            worktree_path, _ = get_worktree_paths(branch_name)
-            
-            # Try to find actual worktree path
-            from ..core.git_manager import GitManager
-            git_manager = GitManager(self.project_root)
-            actual_worktree_path = git_manager.find_worktree_path(branch_name)
-            if actual_worktree_path:
-                worktree_path = actual_worktree_path
-            
-            # Start container using docker compose
-            compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
-            if not compose_file.exists():
-                log_error(f"Compose file not found: {compose_file}")
-                return False
-            
-            from ..config.settings import get_project_name, sanitize_project_name
-            project_name = sanitize_project_name(get_project_name())
-            compose_project_name = f"{project_name}-{branch_name}"
-            
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(compose_file), "-p", compose_project_name, "up", "-d", "db"],
-                cwd=worktree_path / ".dockertree",
-                check=False,
-                capture_output=True,
-                timeout=60
-            )
-            
-            if result.returncode != 0:
-                log_error(f"Failed to start PostgreSQL container: {result.stderr.decode('utf-8', errors='ignore')}")
-                return False
-            
-            log_success(f"PostgreSQL container {container_name} started")
-        
-        # Wait for container to be running and healthy
-        log_info("Waiting for PostgreSQL container to be running...")
-        max_attempts = 60
-        container_running = False
-        container_healthy = None
-        
-        for attempt in range(max_attempts):
-            # Check if container is running
-            result = subprocess.run(
-                ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=5
-            )
-            
-            if result.stdout.strip() == container_name:
-                container_running = True
-                
-                # Check container health status (if healthcheck is configured)
-                health_result = subprocess.run(
-                    ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_name],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=5
-                )
-                
-                if health_result.returncode == 0:
-                    health_status = health_result.stdout.strip()
-                    if health_status == "healthy":
-                        container_healthy = True
-                        log_info("Container health check: healthy")
-                    elif health_status == "unhealthy":
-                        container_healthy = False
-                        log_warning(f"Container health check: unhealthy (attempt {attempt + 1}/{max_attempts})")
-                    elif health_status == "starting":
-                        log_info(f"Container health check: starting (attempt {attempt + 1}/{max_attempts})")
-                    else:
-                        # No healthcheck configured or status is "none"
-                        container_healthy = None
-                        log_info("No healthcheck configured, checking PostgreSQL readiness directly")
-                
-                # Verify PostgreSQL is ready using pg_isready
-                # pg_isready doesn't require password, but we'll use the correct user
-                auth_env = self._get_postgres_auth_env(container_name, branch_name)
-                pg_isready_cmd = f"pg_isready -U {auth_env['user']}"
-                pg_result = subprocess.run(
-                    ["docker", "exec", container_name, "sh", "-c", pg_isready_cmd],
-                    capture_output=True,
-                    check=False,
-                    timeout=5
-                )
-                
-                if pg_result.returncode == 0:
-                    # If healthcheck exists and is unhealthy, warn but continue if pg_isready passes
-                    if container_healthy is False:
-                        log_warning("PostgreSQL is ready but container healthcheck reports unhealthy")
-                        log_warning("Proceeding anyway since pg_isready confirms PostgreSQL is accessible")
-                    
-                    # pg_isready is sufficient - it confirms PostgreSQL is accepting connections
-                    # Connection test with psql may require password and isn't necessary
-                    log_success("PostgreSQL is ready and healthy")
-                    return True
-                else:
-                    log_info(f"PostgreSQL not ready yet (attempt {attempt + 1}/{max_attempts})")
-            
-            if attempt < max_attempts - 1:
-                import time
-                time.sleep(1)
-        
-        # Final status report
-        if not container_running:
-            log_error("PostgreSQL container did not start within timeout period")
-        elif container_healthy is False:
-            log_error("PostgreSQL container is running but healthcheck reports unhealthy")
-        else:
-            log_error("PostgreSQL did not become ready in time (pg_isready failed)")
-        
-        return False
-    
-    def _backup_postgres_with_dump(self, container_name: str, backup_path: Path) -> bool:
-        """Use pg_dumpall to create PostgreSQL backup.
-        
-        Args:
-            container_name: Name of the PostgreSQL container
-            backup_path: Path where backup SQL file should be saved
-            
-        Returns:
-            True if backup succeeded, False otherwise
-        """
-        log_info(f"Creating PostgreSQL backup using pg_dumpall from container {container_name}...")
-        
-        try:
-            # Build pg_dumpall command with proper authentication
-            # Try to extract branch_name from container name
-            branch_name = None
-            if '-' in container_name:
-                parts = container_name.split('-')
-                if len(parts) >= 2:
-                    branch_name = parts[-2] if parts[-1] == 'db' else parts[-1]
-            
-            auth_env = self._get_postgres_auth_env(container_name, branch_name)
-            dump_cmd = self._build_postgres_command(
-                container_name,
-                f"pg_dumpall -U {auth_env['user']} -c",
-                use_password=True,
-                branch_name=branch_name
-            )
-            
-            result = subprocess.run(
-                ["docker", "exec", container_name, "sh", "-c", dump_cmd],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                timeout=300  # 5 minute timeout
-            )
-            
-            if result.returncode != 0:
-                # Check if it's an authentication error
-                if "password" in result.stderr.lower() or "authentication" in result.stderr.lower():
-                    log_error(f"pg_dumpall authentication failed: {result.stderr}")
-                    log_error("PostgreSQL may require password authentication. Check POSTGRES_PASSWORD environment variable.")
-                else:
-                    log_error(f"pg_dumpall failed: {result.stderr}")
-                return False
-            
-            # Write SQL dump to file
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(backup_path, 'w') as f:
-                f.write(result.stdout)
-            
-            # Compress the SQL file
-            import gzip
-            with open(backup_path, 'rb') as f_in:
-                with gzip.open(f"{backup_path}.gz", 'wb') as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            
-            # Remove uncompressed file
-            backup_path.unlink()
-            
-            backup_size_mb = Path(f"{backup_path}.gz").stat().st_size / (1024 * 1024)
-            log_success(f"PostgreSQL backup created: {backup_path.name}.gz ({backup_size_mb:.2f} MB)")
-            return True
-            
-        except subprocess.TimeoutExpired:
-            log_error("pg_dumpall timed out after 5 minutes")
-            return False
-        except Exception as e:
-            log_error(f"Failed to create PostgreSQL backup: {e}")
-            return False
-    
-    def _restore_postgres_with_psql(self, container_name: str, sql_file: Path) -> bool:
-        """Use psql to restore PostgreSQL backup.
-        
-        Args:
-            container_name: Name of the PostgreSQL container
-            sql_file: Path to SQL dump file (can be .sql or .sql.gz)
-            
-        Returns:
-            True if restore succeeded, False otherwise
-        """
-        log_info(f"Restoring PostgreSQL backup using psql to container {container_name}...")
-        
-        try:
-            # Handle compressed files
-            if sql_file.suffix == '.gz':
-                import gzip
-                import tempfile
-                # Decompress to temporary file
-                with gzip.open(sql_file, 'rt') as f_in:
-                    with tempfile.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f_out:
-                        temp_sql_file = Path(f_out.name)
-                        shutil.copyfileobj(f_in, f_out)
-            else:
-                temp_sql_file = sql_file
-            
-            # Restore using psql with proper authentication
-            # Get branch_name from container name if possible
-            branch_name = None
-            if '-' in container_name:
-                parts = container_name.split('-')
-                if len(parts) >= 2:
-                    branch_name = parts[-2] if parts[-1] == 'db' else parts[-1]
-            
-            auth_env = self._get_postgres_auth_env(container_name, branch_name)
-            psql_cmd = self._build_postgres_command(
-                container_name,
-                f"psql -U {auth_env['user']}",
-                use_password=True,
-                branch_name=branch_name
-            )
-            
-            # Build the full docker exec command
-            # We need to handle stdin properly, so we'll use shell redirection
-            with open(temp_sql_file, 'r') as f:
-                sql_content = f.read()
-            
-            # Use sh -c to execute the command with stdin redirection
-            restore_cmd = f"{psql_cmd} < /dev/stdin"
-            result = subprocess.run(
-                ["docker", "exec", "-i", container_name, "sh", "-c", restore_cmd],
-                input=sql_content,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                timeout=600  # 10 minute timeout
-            )
-            
-            # Clean up temporary file if we created one
-            if sql_file.suffix == '.gz' and temp_sql_file.exists():
-                temp_sql_file.unlink()
-            
-            if result.returncode != 0:
-                log_error(f"psql restore failed: {result.stderr}")
-                return False
-            
-            log_success("PostgreSQL backup restored successfully")
-            return True
-            
-        except subprocess.TimeoutExpired:
-            log_error("psql restore timed out after 10 minutes")
-            return False
-        except Exception as e:
-            log_error(f"Failed to restore PostgreSQL backup: {e}")
-            return False
-    
     def copy_postgres_volume_safely(self, source_volume: str, target_volume: str, source_project_name: str) -> bool:
         """Safely copy PostgreSQL volume using pg_dump when database is running."""
         log_info("Detecting source database status...")
@@ -767,15 +480,27 @@ class DockerManager:
         return success
     
     def backup_volumes(self, branch_name: str, backup_dir: Path) -> Optional[Path]:
-        """Backup worktree volumes to a tar file.
+        """Backup worktree volumes to a tar file using file-level copy for all volumes.
         
-        For PostgreSQL volumes, uses pg_dumpall to create SQL dump.
-        For other volumes (redis, media), uses file-level backup.
+        Stops containers safely before backup, then restarts them if they were running.
+        All volumes (including PostgreSQL) are backed up using file-level copy.
         """
         backup_file = backup_dir / f"backup_{branch_name}.tar"
         volume_names = get_volume_names(branch_name)
         
         log_info(f"Backing up volumes for {branch_name} to {backup_file}")
+        
+        # Check if worktree is running before backup
+        was_running = self._is_worktree_running(branch_name)
+        if was_running:
+            log_info(f"Worktree containers are running, stopping them safely before backup...")
+            from ..core.worktree_orchestrator import WorktreeOrchestrator
+            orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+            stop_result = orchestrator.stop_worktree(branch_name)
+            if not stop_result.get("success"):
+                log_warning("Failed to stop containers, but continuing with backup")
+            else:
+                log_success("Containers stopped successfully")
         
         # Create backup directory
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -783,7 +508,7 @@ class DockerManager:
         temp_backup_dir.mkdir(exist_ok=True)
         
         try:
-            # Backup each volume
+            # Backup each volume using file-level copy (all volumes, including PostgreSQL)
             for volume_type, volume_name in volume_names.items():
                 if not validate_volume_exists(volume_name):
                     log_warning(f"Volume {volume_name} not found, skipping")
@@ -791,35 +516,22 @@ class DockerManager:
                 
                 log_info(f"Backing up volume: {volume_name} ({volume_type})")
                 
-                # For PostgreSQL volumes, use pg_dumpall
-                if volume_type == "postgres":
-                    # Get PostgreSQL container name
-                    container_name = self._get_postgres_container_name(branch_name)
-                    if not container_name:
-                        log_warning(f"PostgreSQL container not found for {branch_name}, skipping PostgreSQL backup")
-                        continue
-                    
-                    # Ensure container is running
-                    if not self._ensure_postgres_container_running(container_name, branch_name):
-                        log_error(f"Failed to start PostgreSQL container {container_name}, skipping backup")
-                        continue
-                    
-                    # Create SQL dump backup
-                    sql_backup_path = temp_backup_dir / f"{volume_name}.sql"
-                    if self._backup_postgres_with_dump(container_name, sql_backup_path):
-                        log_success(f"PostgreSQL backup created: {volume_name}.sql.gz")
-                    else:
-                        log_error(f"Failed to create PostgreSQL backup for {volume_name}")
-                else:
-                    # For non-PostgreSQL volumes (redis, media), use file-level backup
-                    volume_backup = temp_backup_dir / f"{volume_name}.tar.gz"
-                    
+                # Use file-level backup for all volumes
+                volume_backup = temp_backup_dir / f"{volume_name}.tar.gz"
+                
+                try:
                     subprocess.run([
                         "docker", "run", "--rm",
                         "-v", f"{volume_name}:/data",
                         "-v", f"{temp_backup_dir.absolute()}:/backup",
                         "alpine", "tar", "czf", f"/backup/{volume_name}.tar.gz", "-C", "/data", "."
-                    ], check=True, capture_output=True)
+                    ], check=True, capture_output=True, text=True)
+                    log_success(f"Volume backup created: {volume_name}.tar.gz")
+                except subprocess.CalledProcessError as e:
+                    log_error(f"Failed to backup volume {volume_name}: {e}")
+                    if e.stderr:
+                        log_error(f"Error details: {e.stderr}")
+                    continue
             
             # Create combined backup
             subprocess.run([
@@ -830,6 +542,24 @@ class DockerManager:
             shutil.rmtree(temp_backup_dir)
             
             log_success(f"Backup created: {backup_file}")
+            
+            # Restart containers if they were running before
+            if was_running:
+                log_info("Restarting worktree containers in background...")
+                from ..core.worktree_orchestrator import WorktreeOrchestrator
+                orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+                import threading
+                
+                def start_in_background():
+                    start_result = orchestrator.start_worktree(branch_name)
+                    if start_result.get("success"):
+                        log_success("Containers restarted successfully")
+                    else:
+                        log_warning(f"Failed to restart containers: {start_result.get('error', 'Unknown error')}")
+                
+                thread = threading.Thread(target=start_in_background, daemon=True)
+                thread.start()
+            
             return backup_file
             
         except subprocess.CalledProcessError as e:
@@ -837,6 +567,17 @@ class DockerManager:
             # Cleanup temp directory
             if temp_backup_dir.exists():
                 shutil.rmtree(temp_backup_dir)
+            
+            # Try to restart containers if they were running
+            if was_running:
+                log_info("Attempting to restart containers after backup failure...")
+                try:
+                    from ..core.worktree_orchestrator import WorktreeOrchestrator
+                    orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+                    orchestrator.start_worktree(branch_name)
+                except Exception as restart_error:
+                    log_error(f"Failed to restart containers: {restart_error}")
+            
             return None
     
     def ensure_containers_stopped_before_restore(self, branch_name: str, worktree_path: Path) -> bool:
@@ -906,7 +647,10 @@ class DockerManager:
             return False
     
     def restore_volumes(self, branch_name: str, backup_file: Path) -> bool:
-        """Restore worktree volumes from a backup file with enhanced logging.
+        """Restore worktree volumes from a backup file using file-level restore for all volumes.
+        
+        Stops containers safely before restore, then restarts them if they were running.
+        All volumes (including PostgreSQL) are restored using file-level copy.
         
         Args:
             branch_name: Branch name for the worktree
@@ -920,6 +664,18 @@ class DockerManager:
         
         backup_size = backup_file.stat().st_size / (1024 * 1024)  # Size in MB
         log_info(f"Restoring volumes for {branch_name} from {backup_file} ({backup_size:.2f} MB)")
+        
+        # Check if worktree is running before restore
+        was_running = self._is_worktree_running(branch_name)
+        if was_running:
+            log_info(f"Worktree containers are running, stopping them safely before restore...")
+            from ..core.worktree_orchestrator import WorktreeOrchestrator
+            orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+            stop_result = orchestrator.stop_worktree(branch_name)
+            if not stop_result.get("success"):
+                log_warning("Failed to stop containers, but continuing with restore")
+            else:
+                log_success("Containers stopped successfully")
         
         volume_names = get_volume_names(branch_name)
         restore_temp_dir = backup_file.parent / "restore_temp"
@@ -976,11 +732,10 @@ class DockerManager:
             
             log_success("Backup archive extracted successfully")
             
-            # List available backups (both .sql.gz and .tar.gz formats)
-            available_sql_backups = list(restore_temp_dir.glob("*.sql.gz"))
+            # List available backups (only .tar.gz format for file-level restore)
             available_tar_backups = list(restore_temp_dir.glob("*.tar.gz"))
-            log_info(f"Found {len(available_sql_backups)} SQL backup(s) and {len(available_tar_backups)} file backup(s) in archive")
-            for backup in available_sql_backups + available_tar_backups:
+            log_info(f"Found {len(available_tar_backups)} file backup(s) in archive")
+            for backup in available_tar_backups:
                 backup_size_mb = backup.stat().st_size / (1024 * 1024)
                 log_info(f"  - {backup.name} ({backup_size_mb:.2f} MB)")
             
@@ -992,35 +747,25 @@ class DockerManager:
                 "redis": "redis_data", 
                 "media": "media_files"
             }
-            backup_map_sql = {}
             backup_map_tar = {}
             log_info(f"Creating backup file mapping...")
-            for backup_file in available_sql_backups + available_tar_backups:
-                # Remove extension (.sql.gz or .tar.gz)
-                if backup_file.suffix == '.gz' and backup_file.stem.endswith('.sql'):
-                    backup_name = backup_file.stem[:-4]  # Remove .sql
-                else:
-                    backup_name = backup_file.stem  # Remove .tar.gz
+            for backup_file in available_tar_backups:
+                # Remove extension (.tar.gz)
+                backup_name = backup_file.stem  # Remove .tar.gz
                 
                 log_info(f"Processing backup file: {backup_file.name}")
                 for volume_type, volume_name in volume_names.items():
                     # Check if this backup matches the expected volume type by suffix
                     expected_suffix = f"_{volume_type_suffixes.get(volume_type, volume_type)}"
                     if backup_name.endswith(expected_suffix):
-                        if backup_file.suffix == '.gz' and backup_file.stem.endswith('.sql'):
-                            # SQL backup
-                            if volume_type not in backup_map_sql:
-                                backup_map_sql[volume_type] = backup_file
-                                log_info(f"Mapped SQL backup {backup_file.name} to volume type {volume_type}")
-                        else:
-                            # File-level backup
-                            if volume_type not in backup_map_tar:
-                                backup_map_tar[volume_type] = backup_file
-                                log_info(f"Mapped file backup {backup_file.name} to volume type {volume_type}")
+                        # File-level backup
+                        if volume_type not in backup_map_tar:
+                            backup_map_tar[volume_type] = backup_file
+                            log_info(f"Mapped file backup {backup_file.name} to volume type {volume_type}")
                         break
             
-            if backup_map_sql or backup_map_tar:
-                log_info(f"Successfully mapped {len(backup_map_sql)} SQL backup(s) and {len(backup_map_tar)} file backup(s) to volume types")
+            if backup_map_tar:
+                log_info(f"Successfully mapped {len(backup_map_tar)} file backup(s) to volume types")
             else:
                 log_warning("No backup files could be mapped to volume types - this may indicate a naming mismatch")
             
@@ -1030,56 +775,26 @@ class DockerManager:
             failed_count = 0
             
             for volume_type, volume_name in volume_names.items():
-                # Try to find SQL backup first (new format for PostgreSQL)
-                sql_backup = None
-                if volume_type == "postgres":
-                    # Try exact match first
-                    sql_backup = restore_temp_dir / f"{volume_name}.sql.gz"
-                    if not sql_backup.exists() and volume_type in backup_map_sql:
-                        sql_backup = backup_map_sql[volume_type]
-                        log_info(f"Using mapped SQL backup file: {sql_backup.name} for volume {volume_name}")
-                
-                # Try to find file-level backup (for backward compatibility or non-PostgreSQL)
+                # Try to find file-level backup
                 tar_backup = None
-                if not sql_backup or not sql_backup.exists():
-                    # Try exact match first
-                    tar_backup = restore_temp_dir / f"{volume_name}.tar.gz"
-                    if not tar_backup.exists() and volume_type in backup_map_tar:
-                        tar_backup = backup_map_tar[volume_type]
-                        log_info(f"Using mapped file backup: {tar_backup.name} for volume {volume_name}")
+                # Try exact match first
+                tar_backup = restore_temp_dir / f"{volume_name}.tar.gz"
+                if not tar_backup.exists() and volume_type in backup_map_tar:
+                    tar_backup = backup_map_tar[volume_type]
+                    log_info(f"Using mapped file backup: {tar_backup.name} for volume {volume_name}")
                 
-                # Determine which backup to use
-                if volume_type == "postgres" and sql_backup and sql_backup.exists():
-                    # Use SQL restore for PostgreSQL (new format)
-                    backup_to_use = sql_backup
-                    use_sql_restore = True
-                elif tar_backup and tar_backup.exists():
-                    # Use file-level restore (backward compatibility or non-PostgreSQL)
+                # Use file-level restore for all volumes
+                if tar_backup and tar_backup.exists():
                     backup_to_use = tar_backup
-                    use_sql_restore = False
                 else:
                     log_warning(f"Volume backup for {volume_name} not found in backup archive")
-                    log_warning(f"  Expected filename: {volume_name}.sql.gz or {volume_name}.tar.gz")
+                    log_warning(f"  Expected filename: {volume_name}.tar.gz")
                     skipped_count += 1
                     continue
                 
                 if backup_to_use.exists():
                     backup_size_mb = backup_to_use.stat().st_size / (1024 * 1024)
                     log_info(f"Restoring volume: {volume_name} ({volume_type}, {backup_size_mb:.2f} MB)")
-                    
-                    # For PostgreSQL SQL restore, ensure container is running
-                    if use_sql_restore:
-                        container_name = self._get_postgres_container_name(branch_name)
-                        if not container_name:
-                            log_error(f"PostgreSQL container not found for {branch_name}, skipping restore")
-                            failed_count += 1
-                            continue
-                        
-                        # Ensure container is running
-                        if not self._ensure_postgres_container_running(container_name, branch_name):
-                            log_error(f"Failed to start PostgreSQL container {container_name}, skipping restore")
-                            failed_count += 1
-                            continue
                     
                     # Check if volume already exists
                     if validate_volume_exists(volume_name):
@@ -1174,33 +889,24 @@ class DockerManager:
                                     skipped_count += 1
                                     continue
                     
-                    # Restore data based on backup type
-                    if use_sql_restore:
-                        # PostgreSQL SQL restore
-                        if self._restore_postgres_with_psql(container_name, backup_to_use):
-                            log_success(f"PostgreSQL volume {volume_name} restored successfully")
-                            restored_count += 1
-                        else:
-                            log_error(f"Failed to restore PostgreSQL volume {volume_name}")
-                            failed_count += 1
-                    else:
-                        # File-level restore (for backward compatibility or non-PostgreSQL)
-                        # Create volume first
-                        log_info(f"Creating volume: {volume_name}")
-                        if not self._create_volume(volume_name):
-                            log_error(f"Failed to create volume: {volume_name}")
-                            failed_count += 1
-                            continue
-                        log_success(f"Volume created: {volume_name}")
-                        
-                        # Restore data using tar
-                        log_info(f"Restoring data to volume {volume_name} from backup {backup_to_use.name}...")
+                    # File-level restore for all volumes
+                    # Create volume first
+                    log_info(f"Creating volume: {volume_name}")
+                    if not self._create_volume(volume_name):
+                        log_error(f"Failed to create volume: {volume_name}")
+                        failed_count += 1
+                        continue
+                    log_success(f"Volume created: {volume_name}")
+                    
+                    # Restore data using tar
+                    log_info(f"Restoring data to volume {volume_name} from backup {backup_to_use.name}...")
+                    try:
                         restore_result = subprocess.run([
                             "docker", "run", "--rm",
                             "-v", f"{volume_name}:/data",
                             "-v", f"{restore_temp_dir.absolute()}:/backup",
-                            "alpine", "tar", "xzf", f"/backup/{backup_to_use.name}", "-C", "/data"
-                        ], check=True, capture_output=True, text=True)
+                            "alpine", "sh", "-c", "cd /data && rm -rf * .[^.]* 2>/dev/null || true && tar xzf /backup/{backup_to_use.name}"
+                        ], check=True, capture_output=True, text=True, timeout=300)
                         
                         if restore_result.stderr:
                             # tar may output warnings to stderr that are not errors
@@ -1223,18 +929,11 @@ class DockerManager:
                         except subprocess.CalledProcessError as e:
                             log_error(f"Failed to verify volume {volume_name}: {e}")
                             failed_count += 1
-                else:
-                    log_warning(f"Volume backup for {volume_name} not found in backup archive")
-                    log_warning(f"  Expected filename: {volume_name}.sql.gz or {volume_name}.tar.gz")
-                    if backup_map_sql or backup_map_tar:
-                        sql_names = [b.name for b in backup_map_sql.values()]
-                        tar_names = [b.name for b in backup_map_tar.values()]
-                        log_warning(f"  Available mapped backups: SQL: {', '.join(sql_names)}, File: {', '.join(tar_names)}")
-                    else:
-                        log_warning(f"  No backup files were mapped to volume types")
-                    all_backups = [b.name for b in available_sql_backups + available_tar_backups]
-                    log_warning(f"  Available backup files in archive: {', '.join(all_backups)}")
-                    skipped_count += 1
+                    except subprocess.CalledProcessError as e:
+                        log_error(f"Failed to restore volume {volume_name}: {e}")
+                        if e.stderr:
+                            log_error(f"Error details: {e.stderr}")
+                        failed_count += 1
             
             # Summary
             log_info(f"Volume restoration summary:")
@@ -1250,7 +949,7 @@ class DockerManager:
                 return False
             
             # Warn if no volumes were restored but backups were expected
-            total_backups = len(available_sql_backups) + len(available_tar_backups)
+            total_backups = len(available_tar_backups)
             if restored_count == 0 and total_backups > 0:
                 log_warning(f"No volumes were restored despite {total_backups} backup file(s) being found")
                 log_warning("This may indicate a volume name mismatch between source and target projects")
@@ -1265,6 +964,23 @@ class DockerManager:
             else:
                 log_warning(f"No volumes were restored for {branch_name} (backup may be empty or names don't match)")
             
+            # Restart containers if they were running before
+            if was_running:
+                log_info("Restarting worktree containers in background...")
+                from ..core.worktree_orchestrator import WorktreeOrchestrator
+                orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+                import threading
+                
+                def start_in_background():
+                    start_result = orchestrator.start_worktree(branch_name)
+                    if start_result.get("success"):
+                        log_success("Containers restarted successfully")
+                    else:
+                        log_warning(f"Failed to restart containers: {start_result.get('error', 'Unknown error')}")
+                
+                thread = threading.Thread(target=start_in_background, daemon=True)
+                thread.start()
+            
             return True
             
         except subprocess.CalledProcessError as e:
@@ -1276,6 +992,17 @@ class DockerManager:
             # Cleanup
             if restore_temp_dir.exists():
                 shutil.rmtree(restore_temp_dir)
+            
+            # Try to restart containers if they were running
+            if was_running:
+                log_info("Attempting to restart containers after restore failure...")
+                try:
+                    from ..core.worktree_orchestrator import WorktreeOrchestrator
+                    orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+                    orchestrator.start_worktree(branch_name)
+                except Exception as restart_error:
+                    log_error(f"Failed to restart containers: {restart_error}")
+            
             return False
         except Exception as e:
             log_error(f"Unexpected error during volume restoration: {e}")
@@ -1284,6 +1011,17 @@ class DockerManager:
             # Cleanup
             if restore_temp_dir.exists():
                 shutil.rmtree(restore_temp_dir)
+            
+            # Try to restart containers if they were running
+            if was_running:
+                log_info("Attempting to restart containers after restore failure...")
+                try:
+                    from ..core.worktree_orchestrator import WorktreeOrchestrator
+                    orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+                    orchestrator.start_worktree(branch_name)
+                except Exception as restart_error:
+                    log_error(f"Failed to restart containers: {restart_error}")
+            
             return False
     
     def run_compose_command(self, 
@@ -1663,6 +1401,39 @@ class DockerManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def _is_worktree_running(self, branch_name: str) -> bool:
+        """Check if worktree containers are currently running.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            True if any containers are running, False otherwise
+        """
+        try:
+            from ..config.settings import get_project_name, sanitize_project_name
+            
+            project_name = sanitize_project_name(get_project_name())
+            compose_project_name = f"{project_name}-{branch_name}"
+            
+            # Get running containers for this project
+            result = subprocess.run([
+                "docker", "ps", 
+                "--filter", f"label=com.docker.compose.project={compose_project_name}",
+                "--format", "{{.Names}}"
+            ], capture_output=True, text=True, check=False)
+            
+            # If Docker is not running, return False
+            if result.returncode != 0:
+                return False
+            
+            # Check if any containers are running
+            running_containers = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
+            return len(running_containers) > 0
+        except Exception as e:
+            log_warning(f"Failed to check if worktree is running: {e}")
+            return False
+    
     async def get_worktree_containers(self, branch_name: str) -> List[Dict[str, Any]]:
         """Get container status for a worktree asynchronously."""
         try:
