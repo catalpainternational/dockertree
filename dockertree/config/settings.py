@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 # Version information
-VERSION = "0.9.3"
+VERSION = "0.9.4"
 AUTHOR = "Dockertree Contributors"
 
 # Default project configuration (used if .dockertree/config.yml doesn't exist)

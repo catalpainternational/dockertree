@@ -190,7 +190,7 @@ Examples:
     dockertree list
 
 For more information, use: dockertree <command> --help''')
-cli = click.version_option(version="0.9.3", prog_name="dockertree")(cli)
+cli = click.version_option(version="0.9.4", prog_name="dockertree")(cli)
 
 # Add global verbose option
 def verbose_callback(ctx, param, value):
