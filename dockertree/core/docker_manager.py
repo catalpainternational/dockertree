@@ -899,13 +899,14 @@ class DockerManager:
                     log_success(f"Volume created: {volume_name}")
                     
                     # Restore data using tar
-                    log_info(f"Restoring data to volume {volume_name} from backup {backup_to_use.name}...")
+                    backup_filename = backup_to_use.name
+                    log_info(f"Restoring data to volume {volume_name} from backup {backup_filename}...")
                     try:
                         restore_result = subprocess.run([
                             "docker", "run", "--rm",
                             "-v", f"{volume_name}:/data",
                             "-v", f"{restore_temp_dir.absolute()}:/backup",
-                            "alpine", "sh", "-c", "cd /data && rm -rf * .[^.]* 2>/dev/null || true && tar xzf /backup/{backup_to_use.name}"
+                            "alpine", "sh", "-c", f"cd /data && rm -rf * .[^.]* 2>/dev/null || true && tar xzf /backup/{backup_filename}"
                         ], check=True, capture_output=True, text=True, timeout=300)
                         
                         if restore_result.stderr:
