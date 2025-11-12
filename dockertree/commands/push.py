@@ -1499,6 +1499,31 @@ ROOT2="$(dirname "$(dirname "$HIT2")")"
 log_success "Import completed, project located at: $ROOT2"
 cd "$ROOT2"
 
+# Domain/IP overrides are already applied to env files and Docker Compose labels during import
+# The apply_domain_overrides function updates both .env, env.dockertree, and docker-compose.worktree.yml
+# Verify Docker Compose file exists (labels should already be updated)
+WORKTREE_PATH="$ROOT2/worktrees/${{BRANCH_NAME}}"
+COMPOSE_FILE="$WORKTREE_PATH/.dockertree/docker-compose.worktree.yml"
+if [ -f "$COMPOSE_FILE" ]; then
+  log "Docker Compose file found, Caddy labels should be configured"
+else
+  log_warning "Docker Compose file not found: $COMPOSE_FILE"
+fi
+
+# Start Caddy proxy BEFORE containers start
+# This ensures Caddy is ready to route when containers register
+log "Starting global Caddy proxy..."
+if "$DTBIN" start-proxy --non-interactive >/dev/null 2>&1; then
+  log_success "Proxy started successfully"
+elif "$DTBIN" start-proxy >/dev/null 2>&1; then
+  log_success "Proxy started successfully (without --non-interactive)"
+else
+  log_error "Failed to start proxy, but continuing..."
+fi
+
+# Give Caddy a moment to initialize
+sleep 2
+
 # Verify volumes were restored
 log "Verifying volumes were restored..."
 log "Looking for volumes matching branch pattern: *${{BRANCH_NAME}}_*"
@@ -1599,14 +1624,14 @@ else
   log_success "All volumes verified: $VOLUMES_FOUND volume(s) found"
 fi
 
-# Restore volumes if needed (before starting containers)
+# Restore volumes if needed
 if [ "$NEED_VOLUME_RESTORE" = true ]; then
-  log "Volumes need restoration - ensuring containers are stopped first..."
+  log "Volumes need restoration..."
   
-  # Stop any running containers for this branch
+  # For PostgreSQL, we need the container running for SQL restore
+  # Start PostgreSQL container first if it exists
   COMPOSE_FILE="$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree/docker-compose.worktree.yml"
   if [ -f "$COMPOSE_FILE" ]; then
-    log "Stopping any running containers before volume restoration..."
     cd "$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree"
     # Use the same project name format as dockertree uses (project-name-branch-name)
     if [ -n "$PROJECT_NAME" ]; then
@@ -1614,7 +1639,25 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
     else
       COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
     fi
-    docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" down >/dev/null 2>&1 || true
+    
+    log "Starting PostgreSQL container for SQL restore..."
+    docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" up -d db >/dev/null 2>&1 || true
+    
+    # Wait for PostgreSQL to be ready
+    PG_CONTAINER="$COMPOSE_PROJECT_NAME-db"
+    log "Waiting for PostgreSQL to be ready..."
+    for i in $(seq 1 30); do
+      if docker exec "$PG_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; then
+        log_success "PostgreSQL is ready"
+        break
+      fi
+      if [ $i -eq 30 ]; then
+        log_error "PostgreSQL did not become ready in time"
+      else
+        sleep 1
+      fi
+    done
+    
     cd "$ROOT2"
   fi
   
@@ -1622,18 +1665,18 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
   if "$DTBIN" volumes restore "${{BRANCH_NAME}}" "$PKG_FILE"; then
     log_success "Volumes restored successfully"
     
-    # Verify PostgreSQL data exists after restoration
-    PG_VOL_NAME="${{PROJECT_NAME}}-${{BRANCH_NAME}}_postgres_data"
-    if docker volume inspect "$PG_VOL_NAME" >/dev/null 2>&1; then
-      PG_DATA=$(docker volume inspect "$PG_VOL_NAME" --format '{{{{.Mountpoint}}}}')
-      if [ -f "$PG_DATA/PG_VERSION" ]; then
-        PG_VER=$(sudo cat "$PG_DATA/PG_VERSION" 2>/dev/null || echo "unknown")
-        PG_SIZE=$(sudo du -sh "$PG_DATA" 2>/dev/null | cut -f1 || echo "unknown")
-        log_success "PostgreSQL data verified (version $PG_VER, size: $PG_SIZE)"
+    # Verify PostgreSQL data exists after restoration using psql
+    PG_CONTAINER="$COMPOSE_PROJECT_NAME-db"
+    if docker ps --filter "name=$PG_CONTAINER" --format '{{{{.Names}}}}' | grep -q "$PG_CONTAINER"; then
+      log "Verifying PostgreSQL database contents..."
+      DB_COUNT=$(docker exec "$PG_CONTAINER" psql -U postgres -tAc "SELECT COUNT(*) FROM pg_database WHERE datname NOT IN ('template0', 'template1', 'postgres')" 2>/dev/null || echo "0")
+      if [ "$DB_COUNT" -gt 0 ]; then
+        log_success "PostgreSQL database verified ($DB_COUNT database(s) found)"
       else
-        log_error "PostgreSQL data directory missing PG_VERSION - restoration may have failed"
-        log_error "Database will be empty - manual restoration may be required"
+        log_warning "PostgreSQL database appears empty - restoration may have failed or database is new"
       fi
+    else
+      log_warning "PostgreSQL container not running - cannot verify database contents"
     fi
     
     NEED_VOLUME_RESTORE=false
@@ -1643,17 +1686,8 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
   fi
 fi
 
-# Start proxy (ignore non-interactive flag if unsupported)
-log "Starting global Caddy proxy..."
-if "$DTBIN" start-proxy --non-interactive >/dev/null 2>&1; then
-  log_success "Proxy started successfully"
-elif "$DTBIN" start-proxy >/dev/null 2>&1; then
-  log_success "Proxy started successfully (without --non-interactive)"
-else
-  log_error "Failed to start proxy, but continuing..."
-fi
-
 # Bring up the environment for the branch
+# (Caddy proxy is already started above)
 log "Bringing up worktree environment for branch: $BRANCH_NAME"
 log "This may take a few minutes if containers need to be pulled or built..."
 

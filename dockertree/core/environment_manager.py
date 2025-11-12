@@ -681,8 +681,11 @@ CADDY_EMAIL={caddy_email}
                                             log_info(f"Updated Caddy label for {service_name}: {domain}")
                         
                         if updated:
-                            compose_file.write_text(yaml.dump(compose_data, default_flow_style=False, sort_keys=False))
+                            # Write YAML with proper formatting
+                            yaml_content = yaml.dump(compose_data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+                            compose_file.write_text(yaml_content)
                             log_info(f"Updated docker-compose.worktree.yml with domain: {domain}")
+                            log_info(f"Caddy will route {domain} to containers when they start")
                 except Exception as e:
                     log_warning(f"Failed to update docker-compose.worktree.yml: {e}")
             
