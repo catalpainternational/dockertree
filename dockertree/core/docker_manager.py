@@ -110,6 +110,124 @@ class DockerManager:
         """Check if a volume is a PostgreSQL data volume."""
         return 'postgres' in volume_name.lower() and 'data' in volume_name.lower()
     
+    def _get_postgres_auth_env(self, container_name: str, branch_name: Optional[str] = None) -> Dict[str, str]:
+        """Get PostgreSQL authentication environment variables.
+        
+        This method tries multiple sources in order:
+        1. Container environment variables (POSTGRES_USER, POSTGRES_PASSWORD)
+        2. Worktree env.dockertree file
+        3. Project root env.dockertree file
+        4. System environment variables
+        
+        Args:
+            container_name: Name of the PostgreSQL container
+            branch_name: Optional branch name to check worktree env files
+            
+        Returns:
+            Dictionary with 'user' and 'password' keys
+        """
+        import os
+        
+        # First, try to get from container environment
+        try:
+            env_result = subprocess.run(
+                ["docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", container_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=10
+            )
+            
+            postgres_user = None
+            postgres_password = None
+            
+            if env_result.returncode == 0:
+                for line in env_result.stdout.split('\n'):
+                    if line.startswith('POSTGRES_USER='):
+                        postgres_user = line.split('=', 1)[1]
+                    elif line.startswith('POSTGRES_PASSWORD='):
+                        postgres_password = line.split('=', 1)[1]
+        except Exception as e:
+            log_warning(f"Failed to extract PostgreSQL auth from container {container_name}: {e}")
+        
+        # If not found in container, try environment files
+        if not postgres_user or not postgres_password:
+            from ..utils.env_loader import get_env_compose_file_path, load_env_file
+            from ..config.settings import get_worktree_paths, get_project_root
+            
+            env_vars = {}
+            
+            # Try worktree env file first
+            if branch_name:
+                worktree_path, _ = get_worktree_paths(branch_name)
+                env_file = get_env_compose_file_path(worktree_path)
+                if env_file.exists():
+                    env_vars.update(load_env_file(env_file))
+            
+            # Fallback to project root env file
+            if not env_vars.get('POSTGRES_USER'):
+                project_root = get_project_root()
+                root_env_file = project_root / ".dockertree" / "env.dockertree"
+                if root_env_file.exists():
+                    env_vars.update(load_env_file(root_env_file))
+            
+            # Use values from env files if found
+            if not postgres_user:
+                postgres_user = env_vars.get('POSTGRES_USER') or os.getenv('POSTGRES_USER')
+            if not postgres_password:
+                postgres_password = env_vars.get('POSTGRES_PASSWORD') or os.getenv('POSTGRES_PASSWORD')
+        
+        # Final fallback: use defaults only if absolutely necessary
+        # This should rarely happen if environment is properly configured
+        if not postgres_user:
+            postgres_user = "postgres"  # PostgreSQL default user
+            log_warning("POSTGRES_USER not found, using default 'postgres'")
+        if not postgres_password:
+            postgres_password = ""
+            log_warning("POSTGRES_PASSWORD not found, using empty password (trust auth)")
+        
+        return {
+            'user': postgres_user,
+            'password': postgres_password
+        }
+    
+    def _build_postgres_command(self, container_name: str, base_cmd: str, 
+                                use_password: bool = True, branch_name: Optional[str] = None) -> str:
+        """Build a PostgreSQL command with proper authentication.
+        
+        This method creates a command string that handles PostgreSQL authentication
+        by trying multiple strategies:
+        1. Use PGPASSWORD if password is available
+        2. Try trust authentication (no password)
+        3. Try peer authentication (for local connections)
+        
+        Args:
+            container_name: Name of the PostgreSQL container
+            base_cmd: Base PostgreSQL command (e.g., "psql -U postgres -c 'SELECT 1'")
+            use_password: Whether to attempt password authentication
+            branch_name: Optional branch name to help locate environment files
+            
+        Returns:
+            Command string with authentication handling
+        """
+        auth_env = self._get_postgres_auth_env(container_name, branch_name)
+        user = auth_env['user']
+        password = auth_env['password']
+        
+        # Replace user in command if needed
+        if '-U ' in base_cmd:
+            base_cmd = base_cmd.replace('-U postgres', f"-U {user}")
+            base_cmd = base_cmd.replace('-U postgres ', f"-U {user} ")
+        
+        if use_password and password:
+            # Use PGPASSWORD environment variable
+            return f"PGPASSWORD='{password}' {base_cmd}"
+        else:
+            # Try without password (trust auth) - most PostgreSQL Docker images use this
+            # If that fails, try with empty password as fallback
+            return f"{base_cmd} || PGPASSWORD='' {base_cmd}"
+    
     def _get_postgres_container_name(self, branch_name: str) -> Optional[str]:
         """Get PostgreSQL container name for a branch.
         
@@ -194,26 +312,85 @@ class DockerManager:
             
             log_success(f"PostgreSQL container {container_name} started")
         
-        # Wait for PostgreSQL to be ready
-        log_info("Waiting for PostgreSQL to be ready...")
-        max_attempts = 30
+        # Wait for container to be running and healthy
+        log_info("Waiting for PostgreSQL container to be running...")
+        max_attempts = 60
+        container_running = False
+        container_healthy = None
+        
         for attempt in range(max_attempts):
+            # Check if container is running
             result = subprocess.run(
-                ["docker", "exec", container_name, "pg_isready", "-U", "postgres"],
+                ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}"],
                 capture_output=True,
+                text=True,
                 check=False,
                 timeout=5
             )
             
-            if result.returncode == 0:
-                log_success("PostgreSQL is ready")
-                return True
+            if result.stdout.strip() == container_name:
+                container_running = True
+                
+                # Check container health status (if healthcheck is configured)
+                health_result = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.State.Health.Status}}", container_name],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5
+                )
+                
+                if health_result.returncode == 0:
+                    health_status = health_result.stdout.strip()
+                    if health_status == "healthy":
+                        container_healthy = True
+                        log_info("Container health check: healthy")
+                    elif health_status == "unhealthy":
+                        container_healthy = False
+                        log_warning(f"Container health check: unhealthy (attempt {attempt + 1}/{max_attempts})")
+                    elif health_status == "starting":
+                        log_info(f"Container health check: starting (attempt {attempt + 1}/{max_attempts})")
+                    else:
+                        # No healthcheck configured or status is "none"
+                        container_healthy = None
+                        log_info("No healthcheck configured, checking PostgreSQL readiness directly")
+                
+                # Verify PostgreSQL is ready using pg_isready
+                # pg_isready doesn't require password, but we'll use the correct user
+                auth_env = self._get_postgres_auth_env(container_name, branch_name)
+                pg_isready_cmd = f"pg_isready -U {auth_env['user']}"
+                pg_result = subprocess.run(
+                    ["docker", "exec", container_name, "sh", "-c", pg_isready_cmd],
+                    capture_output=True,
+                    check=False,
+                    timeout=5
+                )
+                
+                if pg_result.returncode == 0:
+                    # If healthcheck exists and is unhealthy, warn but continue if pg_isready passes
+                    if container_healthy is False:
+                        log_warning("PostgreSQL is ready but container healthcheck reports unhealthy")
+                        log_warning("Proceeding anyway since pg_isready confirms PostgreSQL is accessible")
+                    
+                    # pg_isready is sufficient - it confirms PostgreSQL is accepting connections
+                    # Connection test with psql may require password and isn't necessary
+                    log_success("PostgreSQL is ready and healthy")
+                    return True
+                else:
+                    log_info(f"PostgreSQL not ready yet (attempt {attempt + 1}/{max_attempts})")
             
             if attempt < max_attempts - 1:
                 import time
                 time.sleep(1)
         
-        log_error("PostgreSQL container did not become ready in time")
+        # Final status report
+        if not container_running:
+            log_error("PostgreSQL container did not start within timeout period")
+        elif container_healthy is False:
+            log_error("PostgreSQL container is running but healthcheck reports unhealthy")
+        else:
+            log_error("PostgreSQL did not become ready in time (pg_isready failed)")
+        
         return False
     
     def _backup_postgres_with_dump(self, container_name: str, backup_path: Path) -> bool:
@@ -229,9 +406,24 @@ class DockerManager:
         log_info(f"Creating PostgreSQL backup using pg_dumpall from container {container_name}...")
         
         try:
-            # Create SQL dump using pg_dumpall
+            # Build pg_dumpall command with proper authentication
+            # Try to extract branch_name from container name
+            branch_name = None
+            if '-' in container_name:
+                parts = container_name.split('-')
+                if len(parts) >= 2:
+                    branch_name = parts[-2] if parts[-1] == 'db' else parts[-1]
+            
+            auth_env = self._get_postgres_auth_env(container_name, branch_name)
+            dump_cmd = self._build_postgres_command(
+                container_name,
+                f"pg_dumpall -U {auth_env['user']} -c",
+                use_password=True,
+                branch_name=branch_name
+            )
+            
             result = subprocess.run(
-                ["docker", "exec", container_name, "pg_dumpall", "-U", "postgres", "-c"],
+                ["docker", "exec", container_name, "sh", "-c", dump_cmd],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -240,7 +432,12 @@ class DockerManager:
             )
             
             if result.returncode != 0:
-                log_error(f"pg_dumpall failed: {result.stderr}")
+                # Check if it's an authentication error
+                if "password" in result.stderr.lower() or "authentication" in result.stderr.lower():
+                    log_error(f"pg_dumpall authentication failed: {result.stderr}")
+                    log_error("PostgreSQL may require password authentication. Check POSTGRES_PASSWORD environment variable.")
+                else:
+                    log_error(f"pg_dumpall failed: {result.stderr}")
                 return False
             
             # Write SQL dump to file
@@ -293,16 +490,37 @@ class DockerManager:
             else:
                 temp_sql_file = sql_file
             
-            # Restore using psql
+            # Restore using psql with proper authentication
+            # Get branch_name from container name if possible
+            branch_name = None
+            if '-' in container_name:
+                parts = container_name.split('-')
+                if len(parts) >= 2:
+                    branch_name = parts[-2] if parts[-1] == 'db' else parts[-1]
+            
+            auth_env = self._get_postgres_auth_env(container_name, branch_name)
+            psql_cmd = self._build_postgres_command(
+                container_name,
+                f"psql -U {auth_env['user']}",
+                use_password=True,
+                branch_name=branch_name
+            )
+            
+            # Build the full docker exec command
+            # We need to handle stdin properly, so we'll use shell redirection
             with open(temp_sql_file, 'r') as f:
-                result = subprocess.run(
-                    ["docker", "exec", "-i", container_name, "psql", "-U", "postgres"],
-                    stdin=f,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                    timeout=600  # 10 minute timeout
-                )
+                sql_content = f.read()
+            
+            # Use sh -c to execute the command with stdin redirection
+            restore_cmd = f"{psql_cmd} < /dev/stdin"
+            result = subprocess.run(
+                ["docker", "exec", "-i", container_name, "sh", "-c", restore_cmd],
+                input=sql_content,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=600  # 10 minute timeout
+            )
             
             # Clean up temporary file if we created one
             if sql_file.suffix == '.gz' and temp_sql_file.exists():
@@ -357,13 +575,29 @@ class DockerManager:
             
             # Export database using pg_dumpall from the running container
             log_info("Creating database backup...")
-            export_cmd = [
-                "docker", "exec", postgres_container,
-                "pg_dumpall", "-U", "postgres", "-c"
-            ]
+            # Try to extract branch_name from container name
+            branch_name = None
+            if '-' in postgres_container:
+                parts = postgres_container.split('-')
+                if len(parts) >= 2:
+                    branch_name = parts[-2] if parts[-1] == 'db' else parts[-1]
+            
+            auth_env = self._get_postgres_auth_env(postgres_container, branch_name)
+            dump_cmd = self._build_postgres_command(
+                postgres_container,
+                f"pg_dumpall -U {auth_env['user']} -c",
+                use_password=True,
+                branch_name=branch_name
+            )
             
             with open(backup_path, 'w') as f:
-                result = subprocess.run(export_cmd, stdout=f, stderr=subprocess.PIPE, text=True)
+                result = subprocess.run(
+                    ["docker", "exec", postgres_container, "sh", "-c", dump_cmd],
+                    stdout=f,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False
+                )
                 if result.returncode != 0:
                     log_error(f"pg_dumpall failed: {result.stderr}")
                     return False

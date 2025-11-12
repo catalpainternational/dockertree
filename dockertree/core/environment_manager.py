@@ -5,6 +5,7 @@ This module provides environment file generation, volume naming, and
 configuration management for worktree environments.
 """
 
+import os
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -12,7 +13,8 @@ from ..config.settings import (
     generate_env_compose_content, 
     get_volume_names,
     DEFAULT_ENV_VARS,
-    get_project_root
+    get_project_root,
+    get_worktree_paths
 )
 from ..utils.logging import log_info, log_success, log_warning
 from ..utils.path_utils import (
@@ -146,9 +148,12 @@ class EnvironmentManager:
 # This file was automatically created by dockertree
 
 # Database configuration
-POSTGRES_USER=biuser
-POSTGRES_PASSWORD=bipassword
-POSTGRES_DB=database
+# IMPORTANT: Set these values to match your PostgreSQL container configuration
+# These values must match POSTGRES_USER, POSTGRES_PASSWORD, and POSTGRES_DB
+# in your docker-compose.yml file
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_DB=
 
 # Django configuration
 DEBUG=True
@@ -321,12 +326,46 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
         from ..config.settings import get_allowed_hosts_for_worktree
         return get_allowed_hosts_for_worktree(branch_name)
     
-    def get_database_url(self, branch_name: str, 
-                        postgres_user: str = "biuser",
-                        postgres_password: str = "bipassword",
-                        postgres_db: str = "database") -> str:
-        """Get the database URL for a worktree."""
+    def get_database_url(self, branch_name: str) -> str:
+        """Get the database URL for a worktree.
+        
+        Reads POSTGRES_USER, POSTGRES_PASSWORD, and POSTGRES_DB from environment variables.
+        These should be set in .dockertree/env.dockertree or .env files.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            Database URL in format: postgres://user:password@host:port/database
+        """
         from ..config.settings import get_project_name, sanitize_project_name
+        from ..utils.env_loader import get_env_compose_file_path, load_env_file
+        
+        # Get environment variables from worktree's env.dockertree file
+        worktree_path, _ = get_worktree_paths(branch_name)
+        env_file = get_env_compose_file_path(worktree_path)
+        env_vars = load_env_file(env_file) if env_file.exists() else {}
+        
+        # Fallback to project root env.dockertree if worktree doesn't have one
+        if not env_vars.get('POSTGRES_USER'):
+            project_root = get_project_root()
+            root_env_file = project_root / ".dockertree" / "env.dockertree"
+            if root_env_file.exists():
+                root_env = load_env_file(root_env_file)
+                env_vars.update(root_env)
+        
+        # Get PostgreSQL credentials from environment variables
+        postgres_user = env_vars.get('POSTGRES_USER') or os.getenv('POSTGRES_USER')
+        postgres_password = env_vars.get('POSTGRES_PASSWORD') or os.getenv('POSTGRES_PASSWORD')
+        postgres_db = env_vars.get('POSTGRES_DB') or os.getenv('POSTGRES_DB')
+        
+        if not postgres_user or not postgres_password or not postgres_db:
+            raise ValueError(
+                "PostgreSQL credentials not found in environment variables. "
+                "Please set POSTGRES_USER, POSTGRES_PASSWORD, and POSTGRES_DB in "
+                ".dockertree/env.dockertree or .env file."
+            )
+        
         project_name = sanitize_project_name(get_project_name())
         compose_project_name = f"{project_name}-{branch_name}"
         return f"postgres://{postgres_user}:{postgres_password}@{compose_project_name}-db:5432/{postgres_db}"

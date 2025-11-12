@@ -1422,6 +1422,10 @@ log_error() {{
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
 }}
 
+log_warning() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2
+}}
+
 log "=== Starting remote import process ==="
 log "Package file: {remote_file}"
 log "Branch name: {branch_name}"
@@ -1643,20 +1647,75 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
     log "Starting PostgreSQL container for SQL restore..."
     docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" up -d db >/dev/null 2>&1 || true
     
-    # Wait for PostgreSQL to be ready
+    # Wait for PostgreSQL container to be running, healthy, and ready
     PG_CONTAINER="$COMPOSE_PROJECT_NAME-db"
-    log "Waiting for PostgreSQL to be ready..."
-    for i in $(seq 1 30); do
-      if docker exec "$PG_CONTAINER" pg_isready -U postgres >/dev/null 2>&1; then
-        log_success "PostgreSQL is ready"
-        break
+    log "Waiting for PostgreSQL container to be running..."
+    
+    CONTAINER_RUNNING=false
+    CONTAINER_HEALTHY=""
+    PG_READY=false
+    
+    for i in $(seq 1 60); do
+      # Check if container is running
+      if docker ps --filter "name=$PG_CONTAINER" --format '{{.Names}}' | grep -q "^${PG_CONTAINER}$"; then
+        CONTAINER_RUNNING=true
+        
+        # Check container health status (if healthcheck is configured)
+        HEALTH_STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$PG_CONTAINER" 2>/dev/null || echo "none")
+        if [ "$HEALTH_STATUS" = "healthy" ]; then
+          CONTAINER_HEALTHY=true
+          log "Container health check: healthy"
+        elif [ "$HEALTH_STATUS" = "unhealthy" ]; then
+          CONTAINER_HEALTHY=false
+          log_warning "Container health check: unhealthy (attempt $i/60)"
+        elif [ "$HEALTH_STATUS" = "starting" ]; then
+          log "Container health check: starting (attempt $i/60)"
+        else
+          # No healthcheck configured
+          CONTAINER_HEALTHY="none"
+        fi
+        
+        # Verify PostgreSQL is ready using pg_isready
+        # Get PostgreSQL user from container environment (defaults to postgres)
+        PG_USER=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$PG_CONTAINER" 2>/dev/null | grep "^POSTGRES_USER=" | cut -d'=' -f2 || echo "postgres")
+        if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" >/dev/null 2>&1; then
+          # pg_isready is sufficient - it confirms PostgreSQL is accepting connections
+          # Connection test with psql may require password, so we skip it if pg_isready passes
+          PG_READY=true
+          if [ "$CONTAINER_HEALTHY" = "false" ]; then
+            log_warning "PostgreSQL is ready but container healthcheck reports unhealthy"
+            log_warning "Proceeding anyway since pg_isready confirms PostgreSQL is accessible"
+          else
+            log_success "PostgreSQL is ready and healthy"
+          fi
+          break
+        else
+          log "PostgreSQL not ready yet (attempt $i/60)"
+        fi
+      else
+        log "Container not running yet (attempt $i/60)"
       fi
-      if [ $i -eq 30 ]; then
-        log_error "PostgreSQL did not become ready in time"
+      
+      if [ $i -eq 60 ]; then
+        if [ "$CONTAINER_RUNNING" = false ]; then
+          log_error "PostgreSQL container did not start within 60 seconds"
+        elif [ "$CONTAINER_HEALTHY" = "false" ]; then
+          log_error "PostgreSQL container is running but healthcheck reports unhealthy"
+        else
+          log_error "PostgreSQL did not become ready in time (pg_isready failed)"
+        fi
+        log_error "Container may be starting slowly or there may be an issue"
       else
         sleep 1
       fi
     done
+    
+    # Verify we're ready before proceeding
+    if [ "$PG_READY" != true ]; then
+      log_error "PostgreSQL is not ready - cannot proceed with restore"
+      log_error "Please check container logs: docker logs $PG_CONTAINER"
+      exit 1
+    fi
     
     cd "$ROOT2"
   fi
