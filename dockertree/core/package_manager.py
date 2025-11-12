@@ -352,20 +352,8 @@ class PackageManager:
                 volumes_backup = package_dir / "volumes" / f"backup_{metadata['branch_name']}.tar"
                 if volumes_backup.exists():
                     log_info(f"Restoring volumes for {target_branch}...")
-                    # Stop containers if they're running (they may have been started during worktree creation)
-                    compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
-                    if compose_file.exists():
-                        log_info("Stopping any running containers before volume restoration...")
-                        try:
-                            subprocess.run(
-                                ["docker", "compose", "-f", str(compose_file), "down"],
-                                cwd=worktree_path / ".dockertree",
-                                check=False,
-                                capture_output=True,
-                                timeout=60
-                            )
-                        except Exception as e:
-                            log_warning(f"Could not stop containers before restore: {e}")
+                    # Ensure containers are stopped before restoration (DRY: use shared function)
+                    self.docker_manager.ensure_containers_stopped_before_restore(target_branch, worktree_path)
                     
                     if not self.docker_manager.restore_volumes(target_branch, volumes_backup):
                         log_warning("Failed to restore volumes")
@@ -516,23 +504,11 @@ class PackageManager:
                     volumes_backup = package_dir / "volumes" / f"backup_{branch_name}.tar"
                     if volumes_backup.exists():
                         log_info(f"Restoring volumes...")
-                        # Stop containers if they're running (they may have been started during worktree creation)
+                        # Ensure containers are stopped before restoration (DRY: use shared function)
                         from ..core.docker_manager import DockerManager
                         docker_manager = DockerManager(project_root=target_directory)
                         worktree_path = Path(target_directory) / "worktrees" / branch_name
-                        compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
-                        if compose_file.exists():
-                            log_info("Stopping any running containers before volume restoration...")
-                            try:
-                                subprocess.run(
-                                    ["docker", "compose", "-f", str(compose_file), "down"],
-                                    cwd=worktree_path / ".dockertree",
-                                    check=False,
-                                    capture_output=True,
-                                    timeout=60
-                                )
-                            except Exception as e:
-                                log_warning(f"Could not stop containers before restore: {e}")
+                        docker_manager.ensure_containers_stopped_before_restore(branch_name, worktree_path)
                         
                         docker_manager.restore_volumes(branch_name, volumes_backup)
             

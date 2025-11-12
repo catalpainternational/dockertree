@@ -257,7 +257,9 @@ class DockerManager:
         all_volumes_exist = all(validate_volume_exists(vol_name) for vol_name in volume_names.values())
         
         if all_volumes_exist and not force_copy:
-            log_info(f"Worktree volumes already exist for {branch_name}, skipping copy")
+            # Volumes already exist - do NOT overwrite them (non-destructive)
+            # This is critical: volumes may contain restored data from backups
+            log_info(f"Worktree volumes already exist for {branch_name}, skipping creation (non-destructive)")
             return True
         
         # Determine appropriate log message
@@ -355,8 +357,81 @@ class DockerManager:
                 shutil.rmtree(temp_backup_dir)
             return None
     
+    def ensure_containers_stopped_before_restore(self, branch_name: str, worktree_path: Path) -> bool:
+        """Ensure containers are stopped before volume restoration.
+        
+        This is critical because PostgreSQL locks database files while running,
+        and file-level restoration requires unmounted volumes.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            worktree_path: Path to the worktree directory
+            
+        Returns:
+            True if containers are stopped (or were not running), False on error
+        """
+        compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
+        if not compose_file.exists():
+            # No compose file means no containers to stop
+            return True
+        
+        log_info("Ensuring containers are stopped before volume restoration...")
+        try:
+            from ..config.settings import sanitize_project_name
+            import yaml
+            
+            # Get project name from config file in worktree's project root
+            # Worktree path structure: <project_root>/worktrees/<branch_name>
+            # So project root is worktree_path.parent.parent
+            project_root = worktree_path.parent.parent
+            config_file = project_root / ".dockertree" / "config.yml"
+            
+            if config_file.exists():
+                with open(config_file) as f:
+                    config = yaml.safe_load(f) or {}
+                    project_name = config.get("project_name", project_root.name)
+            else:
+                # Fallback to directory name
+                project_name = project_root.name
+            
+            project_name = sanitize_project_name(project_name)
+            compose_project_name = f"{project_name}-{branch_name}"
+            
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(compose_file), "-p", compose_project_name, "down"],
+                cwd=worktree_path / ".dockertree",
+                check=False,
+                capture_output=True,
+                timeout=60
+            )
+            
+            if result.returncode == 0:
+                log_success("Containers stopped successfully")
+            else:
+                # Check if containers were already stopped
+                if "No such service" in result.stderr.decode('utf-8', errors='ignore') or \
+                   "not found" in result.stderr.decode('utf-8', errors='ignore').lower():
+                    log_info("No running containers found (already stopped)")
+                else:
+                    log_warning(f"Could not stop containers: {result.stderr.decode('utf-8', errors='ignore')}")
+            
+            return True
+        except subprocess.TimeoutExpired:
+            log_warning("Timeout stopping containers, but continuing with restoration")
+            return True
+        except Exception as e:
+            log_warning(f"Could not stop containers before restore: {e}")
+            return False
+    
     def restore_volumes(self, branch_name: str, backup_file: Path) -> bool:
-        """Restore worktree volumes from a backup file with enhanced logging."""
+        """Restore worktree volumes from a backup file with enhanced logging.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            backup_file: Path to backup file. Can be either:
+                - A package file (.dockertree-package.tar.gz) containing nested backup_test.tar
+                - A direct backup file (backup_test.tar) containing volume backups
+        """
         if not backup_file.exists():
             log_error(f"Backup file {backup_file} not found")
             return False
@@ -371,12 +446,51 @@ class DockerManager:
             # Extract backup
             log_info(f"Extracting backup archive to temporary directory...")
             restore_temp_dir.mkdir(exist_ok=True)
-            extract_result = subprocess.run([
-                "tar", "xzf", str(backup_file), "-C", str(restore_temp_dir)
-            ], check=True, capture_output=True, text=True)
             
-            if extract_result.stderr:
-                log_info(f"Extraction output: {extract_result.stderr}")
+            # Check if this is a package file (.dockertree-package.tar.gz) or a direct backup file
+            is_package_file = backup_file.name.endswith('.dockertree-package.tar.gz')
+            
+            if is_package_file:
+                # Extract the package file to get the nested backup_test.tar
+                log_info("Detected package file, extracting to find nested backup archive...")
+                extract_result = subprocess.run([
+                    "tar", "xzf", str(backup_file), "-C", str(restore_temp_dir)
+                ], check=True, capture_output=True, text=True)
+                
+                if extract_result.stderr:
+                    log_info(f"Extraction output: {extract_result.stderr}")
+                
+                # Find the nested backup_test.tar file
+                nested_backup_tar = None
+                for pattern in [f"**/backup_{branch_name}.tar", "**/backup_*.tar"]:
+                    matches = list(restore_temp_dir.glob(pattern))
+                    if matches:
+                        nested_backup_tar = matches[0]
+                        break
+                
+                if nested_backup_tar and nested_backup_tar.exists():
+                    log_info(f"Found nested backup archive: {nested_backup_tar.name}")
+                    # Extract the nested tar to get the actual volume backup files
+                    nested_extract_result = subprocess.run([
+                        "tar", "xzf", str(nested_backup_tar), "-C", str(restore_temp_dir)
+                    ], check=True, capture_output=True, text=True)
+                    
+                    if nested_extract_result.stderr:
+                        log_info(f"Nested extraction output: {nested_extract_result.stderr}")
+                    
+                    log_success("Nested backup archive extracted successfully")
+                else:
+                    log_warning("No nested backup archive found in package file")
+                    # Try to find volume backups directly in extracted package
+            else:
+                # Direct backup file - extract it directly
+                log_info("Detected direct backup file, extracting...")
+                extract_result = subprocess.run([
+                    "tar", "xzf", str(backup_file), "-C", str(restore_temp_dir)
+                ], check=True, capture_output=True, text=True)
+                
+                if extract_result.stderr:
+                    log_info(f"Extraction output: {extract_result.stderr}")
             
             log_success("Backup archive extracted successfully")
             
@@ -437,60 +551,96 @@ class DockerManager:
                     
                     # Check if volume already exists
                     if validate_volume_exists(volume_name):
-                        # Check if volume is empty (less than 10KB)
-                        try:
-                            vol_size_check = subprocess.run([
-                                "docker", "run", "--rm",
-                                "-v", f"{volume_name}:/data",
-                                "alpine", "sh", "-c", "du -sb /data 2>/dev/null | cut -f1 || echo 0"
-                            ], check=False, capture_output=True, text=True, timeout=5)
-                            vol_size_bytes = int(vol_size_check.stdout.strip() or "0")
-                            
-                            if vol_size_bytes < 10000:  # Less than 10KB is likely empty
-                                log_warning(f"Volume {volume_name} exists but appears empty ({vol_size_bytes} bytes)")
-                                log_info("Removing empty volume to allow restoration...")
+                        # For PostgreSQL volumes, check if it only contains empty initialization
+                        # (PostgreSQL creates empty database on first start, which we want to overwrite)
+                        should_remove_volume = False
+                        
+                        if volume_type == "postgres":
+                            # Check if PostgreSQL volume only has initialization files (empty database)
+                            try:
+                                pg_check = subprocess.run([
+                                    "docker", "run", "--rm",
+                                    "-v", f"{volume_name}:/data",
+                                    "alpine", "sh", "-c", "test -f /data/PG_VERSION && test -d /data/base && find /data/base -mindepth 2 -type f 2>/dev/null | head -1 | grep -q . && echo 'has_data' || echo 'empty_init'"
+                                ], check=False, capture_output=True, text=True, timeout=5)
+                                
+                                if pg_check.stdout.strip() == "empty_init":
+                                    log_warning(f"PostgreSQL volume {volume_name} exists but only contains empty initialization")
+                                    log_info("Will remove empty volume to allow restoration of actual data...")
+                                    should_remove_volume = True
+                            except Exception as e:
+                                log_warning(f"Could not check PostgreSQL volume contents: {e}")
+                        
+                        # Check volume size for other volume types
+                        if not should_remove_volume:
+                            try:
+                                vol_size_check = subprocess.run([
+                                    "docker", "run", "--rm",
+                                    "-v", f"{volume_name}:/data",
+                                    "alpine", "sh", "-c", "du -sb /data 2>/dev/null | cut -f1 || echo 0"
+                                ], check=False, capture_output=True, text=True, timeout=5)
+                                vol_size_bytes = int(vol_size_check.stdout.strip() or "0")
+                                
+                                if vol_size_bytes < 10000:  # Less than 10KB is likely empty
+                                    log_warning(f"Volume {volume_name} exists but appears empty ({vol_size_bytes} bytes)")
+                                    should_remove_volume = True
+                            except Exception as e:
+                                log_warning(f"Could not check volume size: {e}")
+                        
+                        # Remove volume if it's empty or only has empty initialization
+                        if should_remove_volume:
+                            log_info("Removing empty/initialized volume to allow restoration...")
+                            containers = get_containers_using_volume(volume_name)
+                            if containers:
+                                log_warning(f"Volume {volume_name} is in use by containers: {', '.join(containers)}")
+                                log_warning("Stopping containers to allow volume removal...")
+                                # Try to stop containers using this volume
+                                for container in containers:
+                                    try:
+                                        subprocess.run(["docker", "stop", container], 
+                                                      check=False, capture_output=True, timeout=10)
+                                        log_info(f"Stopped container: {container}")
+                                    except Exception as e:
+                                        log_warning(f"Could not stop container {container}: {e}")
+                                
+                                # Re-check if volume is still in use
                                 containers = get_containers_using_volume(volume_name)
                                 if containers:
-                                    log_warning(f"Volume {volume_name} is in use by containers: {', '.join(containers)}")
-                                    log_warning("Stopping containers to allow volume removal...")
-                                    # Try to stop containers using this volume
-                                    for container in containers:
-                                        try:
-                                            subprocess.run(["docker", "stop", container], 
-                                                          check=False, capture_output=True, timeout=10)
-                                            log_info(f"Stopped container: {container}")
-                                        except Exception as e:
-                                            log_warning(f"Could not stop container {container}: {e}")
-                                    
-                                    # Re-check if volume is still in use
-                                    containers = get_containers_using_volume(volume_name)
-                                    if containers:
-                                        log_warning(f"Volume {volume_name} still in use, skipping restoration")
-                                        skipped_count += 1
-                                        continue
-                                
-                                # Remove empty volume
+                                    log_warning(f"Volume {volume_name} still in use, skipping restoration")
+                                    skipped_count += 1
+                                    continue
+                            
+                            # Remove empty/initialized volume
+                            try:
+                                subprocess.run(["docker", "volume", "rm", volume_name], 
+                                              check=True, capture_output=True, timeout=10)
+                                log_success(f"Removed empty/initialized volume: {volume_name}")
+                            except subprocess.CalledProcessError as e:
+                                log_error(f"Failed to remove volume {volume_name}: {e}")
+                                if e.stderr:
+                                    log_error(f"Error: {e.stderr}")
+                                skipped_count += 1
+                                continue
+                        else:
+                            # Volume has actual data - check if containers are using it
+                            containers = get_containers_using_volume(volume_name)
+                            if containers:
+                                log_warning(f"Volume {volume_name} already exists with data and is in use by containers")
+                                log_warning("Skipping restoration of this volume to avoid data loss")
+                                skipped_count += 1
+                                continue
+                            else:
+                                # Volume has data but no containers - safe to overwrite
+                                log_info(f"Volume {volume_name} exists with data but no containers are using it")
+                                log_info("Removing existing volume to restore from backup...")
                                 try:
                                     subprocess.run(["docker", "volume", "rm", volume_name], 
                                                   check=True, capture_output=True, timeout=10)
-                                    log_success(f"Removed empty volume: {volume_name}")
+                                    log_success(f"Removed existing volume: {volume_name}")
                                 except subprocess.CalledProcessError as e:
                                     log_error(f"Failed to remove volume {volume_name}: {e}")
-                                    if e.stderr:
-                                        log_error(f"Error: {e.stderr}")
                                     skipped_count += 1
                                     continue
-                            else:
-                                log_warning(f"Volume {volume_name} already exists with data ({vol_size_bytes} bytes)")
-                                # Still try to restore if user wants, but warn
-                                containers = get_containers_using_volume(volume_name)
-                                if containers:
-                                    log_warning(f"Volume {volume_name} is in use by containers: {', '.join(containers)}")
-                                    log_warning("Skipping restoration of this volume")
-                                    skipped_count += 1
-                                    continue
-                        except Exception as e:
-                            log_warning(f"Could not check volume size: {e}, proceeding with restoration")
                     
                     # Create volume
                     log_info(f"Creating volume: {volume_name}")
