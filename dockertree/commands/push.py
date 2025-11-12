@@ -312,7 +312,7 @@ class PushManager:
             print_plain(f"      ssh {username}@{server}")
             print_plain(f"   ")
             print_plain(f"   2. Import the package:")
-            print_plain(f"      dockertree packages import {remote_path}/{package_path.name} --standalone")
+            print_plain(f"      dockertree packages import {remote_package_path} --standalone")
             print_plain(f"   ")
             print_plain(f"   3. Start the services:")
             print_plain(f"      cd <project-directory>")
@@ -1024,7 +1024,56 @@ fi
 echo "[PREP] Setting up dockertree in dedicated venv..."
 VENV_DIR=/opt/dockertree-venv
 mkdir -p "$VENV_DIR"
-$PYTHON_CMD -m venv "$VENV_DIR"
+
+# Check if uv is available (preferred method for venv creation)
+# Note: When Python is installed via uv, it's marked as "externally-managed" (PEP 668)
+# which prevents python -m venv from using ensurepip. Using uv venv handles this correctly.
+if command -v uv >/dev/null 2>&1; then
+  # Use uv venv which handles pip installation properly, especially for uv-installed Python
+  echo "[PREP] Using uv venv (uv is available)..."
+  uv venv "$VENV_DIR" --python "$PYTHON_CMD" || {
+    echo "[PREP] uv venv failed, falling back to standard venv..." >&2
+    # Fallback to standard venv
+    $PYTHON_CMD -m venv "$VENV_DIR" || {
+      echo "[PREP] Standard venv failed, trying --without-pip..." >&2
+      # If venv fails (e.g., externally-managed), try without pip
+      $PYTHON_CMD -m venv --without-pip "$VENV_DIR" || {
+        echo "[PREP] venv creation failed" >&2
+        exit 1
+      }
+      # Install pip using get-pip.py
+      curl -sSL https://bootstrap.pypa.io/get-pip.py | "$VENV_DIR/bin/python" || {
+        echo "[PREP] pip installation failed" >&2
+        exit 1
+      }
+    }
+  }
+else
+  # Try standard venv first
+  $PYTHON_CMD -m venv "$VENV_DIR" || {
+    echo "[PREP] Standard venv failed, trying --without-pip..." >&2
+    # If venv fails (e.g., externally-managed), try without pip
+    $PYTHON_CMD -m venv --without-pip "$VENV_DIR" || {
+      echo "[PREP] venv creation failed" >&2
+      exit 1
+    }
+    # Install pip using get-pip.py
+    curl -sSL https://bootstrap.pypa.io/get-pip.py | "$VENV_DIR/bin/python" || {
+      echo "[PREP] pip installation failed" >&2
+      exit 1
+    }
+  }
+fi
+
+# Ensure pip is available
+if [ ! -f "$VENV_DIR/bin/pip" ]; then
+  echo "[PREP] pip not found in venv, installing..." >&2
+  curl -sSL https://bootstrap.pypa.io/get-pip.py | "$VENV_DIR/bin/python" || {
+    echo "[PREP] pip installation failed" >&2
+    exit 1
+  }
+fi
+
 "$VENV_DIR/bin/pip" install --upgrade pip wheel
 "$VENV_DIR/bin/pip" install --upgrade git+https://github.com/catalpainternational/dockertree.git || {
   echo "[PREP] venv install failed, trying pipx/system pip as fallback" >&2
@@ -1212,12 +1261,23 @@ dockertree --version || true
                 stdout_thread.start()
                 stderr_thread.start()
                 
-                # Wait for process to complete
-                process.wait()
+                # Wait for process to complete with timeout (30 minutes max for import + startup)
+                import time
+                start_time = time.time()
+                timeout_seconds = 1800  # 30 minutes
+                
+                while process.poll() is None:
+                    elapsed = time.time() - start_time
+                    if elapsed > timeout_seconds:
+                        log_error(f"Remote import script timed out after {timeout_seconds}s")
+                        process.kill()
+                        process.wait()
+                        return
+                    time.sleep(1)
                 
                 # Wait for both threads to finish reading
-                stdout_done.wait(timeout=5)
-                stderr_done.wait(timeout=5)
+                stdout_done.wait(timeout=10)
+                stderr_done.wait(timeout=10)
                 
                 if process.returncode != 0:
                     log_error("Remote import script returned non-zero exit code")
@@ -1229,8 +1289,78 @@ dockertree --version || true
                 
                 log_success("Remote import script completed successfully")
             else:
-                # Non-verbose mode: use buffered approach but still show output
-                result = subprocess.run(cmd, input=script, text=True, capture_output=True, check=False)
+                # Non-verbose mode: stream output but show key messages
+                # Use Popen with timeout to prevent hanging
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Combine stderr into stdout
+                    text=True,
+                    bufsize=1  # Line buffered
+                )
+                
+                # Write script and close stdin
+                process.stdin.write(script)
+                process.stdin.close()
+                
+                # Stream output with timeout using threading
+                import time
+                start_time = time.time()
+                timeout_seconds = 1800  # 30 minutes
+                output_lines = []
+                output_lock = threading.Lock()
+                read_complete = threading.Event()
+                
+                def read_output():
+                    """Read output lines."""
+                    try:
+                        for line in iter(process.stdout.readline, ''):
+                            if line:
+                                line = line.rstrip()
+                                with output_lock:
+                                    output_lines.append(line)
+                                # Show important messages even in non-verbose mode
+                                if any(keyword in line.lower() for keyword in ['error', 'failed', 'success', 'starting', 'completed', 'timeout', 'import']):
+                                    if '[REMOTE]' in line or 'ERROR' in line or 'SUCCESS' in line or 'import' in line.lower():
+                                        log_info(f"[REMOTE] {line}")
+                    finally:
+                        read_complete.set()
+                
+                # Start reading thread
+                read_thread = threading.Thread(target=read_output, daemon=True)
+                read_thread.start()
+                
+                # Wait for process with timeout and show progress
+                last_progress_time = start_time
+                while process.poll() is None:
+                    elapsed = time.time() - start_time
+                    if elapsed > timeout_seconds:
+                        log_error(f"Remote import script timed out after {timeout_seconds}s")
+                        process.kill()
+                        process.wait()
+                        return
+                    
+                    # Show progress every 30 seconds
+                    if time.time() - last_progress_time > 30:
+                        elapsed_min = int(elapsed / 60)
+                        elapsed_sec = int(elapsed % 60)
+                        log_info(f"[REMOTE] Still running... ({elapsed_min}m {elapsed_sec}s elapsed)")
+                        last_progress_time = time.time()
+                    
+                    time.sleep(1)
+                
+                # Wait for output reading to complete
+                read_complete.wait(timeout=10)
+                
+                # Create result object
+                with output_lock:
+                    stdout_text = '\n'.join(output_lines)
+                result = type('Result', (), {
+                    'returncode': process.returncode,
+                    'stdout': stdout_text,
+                    'stderr': ''
+                })()
                 
                 if result.returncode != 0:
                     log_error("Remote import script returned non-zero exit code")
