@@ -10,6 +10,44 @@ from typing import List
 from .logging import log_info, log_warning
 
 
+def _prompt_with_default(message: str, default: str = "Y", eof_message: str = "Cannot prompt for confirmation (no stdin available). Use --force to skip confirmation.") -> bool:
+    """Internal helper for prompting user with default value.
+    
+    Args:
+        message: The prompt message to display (should include [Y/n] or similar)
+        default: Default value ('Y' or 'N')
+        eof_message: Message to show when stdin is not available
+        
+    Returns:
+        True if user confirms (or default is 'Y' and user presses Enter), False otherwise
+    """
+    try:
+        # Add space only if message doesn't end with colon or space
+        prompt = message if (message.endswith(':') or message.endswith(': ')) else f"{message} "
+        response = input(prompt).strip().lower()
+        
+        # Handle empty response (Enter key) - use default
+        if not response:
+            return default.upper() == 'Y'
+        
+        # Handle explicit responses
+        if response in ['y', 'yes']:
+            return True
+        elif response in ['n', 'no']:
+            return False
+        else:
+            log_warning("Invalid response. Please enter 'y' for yes or 'n' for no.")
+            return _prompt_with_default(message, default, eof_message)  # Retry
+            
+    except KeyboardInterrupt:
+        log_info("\nOperation cancelled by user")
+        return False
+    except EOFError:
+        # Handle case where stdin is not available (e.g., in automated scripts)
+        log_warning(eof_message)
+        return False
+
+
 def confirm_deletion(branches: List[str], operation: str = "delete") -> bool:
     """Prompt user for confirmation when deleting multiple branches/worktrees.
     
@@ -31,34 +69,12 @@ def confirm_deletion(branches: List[str], operation: str = "delete") -> bool:
     
     # Create operation-specific message
     if operation == "delete":
-        message = f"Delete {count} branch(es) and their worktrees?"
+        message = f"Delete {count} branch(es) and their worktrees? [Y/n]:"
     else:  # remove
-        message = f"Remove {count} worktree(s) (keep branches)?"
+        message = f"Remove {count} worktree(s) (keep branches)? [Y/n]:"
     
     # Prompt for confirmation with default 'Y'
-    try:
-        response = input(f"{message} [Y/n]: ").strip().lower()
-        
-        # Handle empty response (Enter key) as 'yes'
-        if not response:
-            return True
-        
-        # Handle explicit responses
-        if response in ['y', 'yes']:
-            return True
-        elif response in ['n', 'no']:
-            return False
-        else:
-            log_warning("Invalid response. Please enter 'y' for yes or 'n' for no.")
-            return confirm_deletion(branches, operation)  # Retry
-            
-    except KeyboardInterrupt:
-        log_info("\nOperation cancelled by user")
-        return False
-    except EOFError:
-        # Handle case where stdin is not available (e.g., in automated scripts)
-        log_warning("Cannot prompt for confirmation (no stdin available). Use --force to skip confirmation.")
-        return False
+    return _prompt_with_default(message, default="Y", eof_message="Cannot prompt for confirmation (no stdin available). Use --force to skip confirmation.")
 
 
 def confirm_batch_operation(branches: List[str], operation: str = "delete") -> bool:
@@ -89,63 +105,23 @@ def confirm_use_existing_worktree(branch_name: str) -> bool:
     log_warning(f"Branch/worktree '{branch_name}' already exists.")
     
     # Prompt for confirmation with default 'Y'
-    try:
-        response = input(f"Use existing worktree? [Y/n]: ").strip().lower()
-        
-        # Handle empty response (Enter key) as 'yes'
-        if not response:
-            return True
-        
-        # Handle explicit responses
-        if response in ['y', 'yes']:
-            return True
-        elif response in ['n', 'no']:
-            return False
-        else:
-            log_warning("Invalid response. Please enter 'y' for yes or 'n' for no.")
-            return confirm_use_existing_worktree(branch_name)  # Retry
-            
-    except KeyboardInterrupt:
-        log_info("\nOperation cancelled by user")
-        return False
-    except EOFError:
-        # Handle case where stdin is not available (e.g., in automated scripts)
-        log_warning("Cannot prompt for confirmation (no stdin available). Use --force to skip confirmation.")
-        return False
+    return _prompt_with_default("Use existing worktree? [Y/n]:", default="Y", eof_message="Cannot prompt for confirmation (no stdin available). Use --force to skip confirmation.")
 
 
 def confirm_action(message: str) -> bool:
     """Prompt user for confirmation of a generic action.
     
     Args:
-        message: The confirmation message to display
+        message: The confirmation message to display (should include [Y/n] or similar)
         
     Returns:
         True if user confirms, False if user cancels
     """
-    try:
-        response = input(f"{message} [Y/n]: ").strip().lower()
-        
-        # Handle empty response (Enter key) as 'yes'
-        if not response:
-            return True
-        
-        # Handle explicit responses
-        if response in ['y', 'yes']:
-            return True
-        elif response in ['n', 'no']:
-            return False
-        else:
-            log_warning("Invalid response. Please enter 'y' for yes or 'n' for no.")
-            return confirm_action(message)  # Retry
-            
-    except KeyboardInterrupt:
-        log_info("\nOperation cancelled by user")
-        return False
-    except EOFError:
-        # Handle case where stdin is not available (e.g., in automated scripts)
-        log_warning("Cannot prompt for confirmation (no stdin available).")
-        return False
+    # Ensure message has prompt format if not already included
+    if "[Y/n]" not in message and "[y/N]" not in message:
+        message = f"{message} [Y/n]:"
+    
+    return _prompt_with_default(message, default="Y", eof_message="Cannot prompt for confirmation (no stdin available).")
 
 
 def confirm_by_typing_name(expected_name: str, message: str) -> bool:

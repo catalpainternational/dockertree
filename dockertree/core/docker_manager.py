@@ -1025,6 +1025,73 @@ class DockerManager:
             
             return False
     
+    def _build_compose_base_command(self) -> List[str]:
+        """Build the base docker compose command array.
+        
+        Returns:
+            List containing the docker compose command (either ["docker", "compose"] or ["docker-compose"])
+        """
+        if self.compose_cmd == "docker compose":
+            return ["docker", "compose"]
+        else:
+            return [self.compose_cmd]
+    
+    def _resolve_working_directory(self, working_dir: Optional[Path]) -> Path:
+        """Resolve and normalize working directory for docker compose commands.
+        
+        Args:
+            working_dir: Optional working directory. If None, uses project_root.
+            
+        Returns:
+            Resolved absolute Path to working directory
+        """
+        if working_dir is None:
+            working_dir = self.project_root
+        
+        # Convert to absolute path to ensure Docker resolves it correctly
+        if isinstance(working_dir, Path):
+            return working_dir.resolve()
+        else:
+            return Path(working_dir).resolve()
+    
+    def _prepare_compose_environment(self, working_dir: Path, project_name: Optional[str] = None) -> Dict[str, str]:
+        """Prepare environment variables for docker compose commands.
+        
+        Args:
+            working_dir: Resolved working directory path
+            project_name: Optional project name to set COMPOSE_PROJECT_NAME
+            
+        Returns:
+            Dictionary of environment variables (copy of os.environ with additions)
+        """
+        import os
+        env = os.environ.copy()
+        env["PROJECT_ROOT"] = str(working_dir)  # Absolute path to worktree or project root
+        env["COMPOSE_PROJECT_ROOT"] = str(working_dir)
+        env["PWD"] = str(working_dir)
+        
+        # Set COMPOSE_PROJECT_NAME to ensure Docker Compose uses correct project name for volumes
+        if project_name:
+            env["COMPOSE_PROJECT_NAME"] = project_name
+        
+        return env
+    
+    def _handle_compose_error(self, e: subprocess.CalledProcessError, context: str = "") -> None:
+        """Handle errors from docker compose commands with consistent logging.
+        
+        Args:
+            e: CalledProcessError from subprocess.run
+            context: Optional context message to include in error log
+        """
+        error_msg = f"Docker compose command failed: {e}"
+        if context:
+            error_msg = f"{context} - {error_msg}"
+        log_error(error_msg)
+        if e.stdout:
+            log_error(f"STDOUT: {e.stdout}")
+        if e.stderr:
+            log_error(f"STDERR: {e.stderr}")
+    
     def run_compose_command(self, 
                           compose_file: Path, 
                           command: List[str], 
@@ -1042,18 +1109,11 @@ class DockerManager:
             working_dir: Optional working directory
             extra_flags: Optional list of additional flags to append to the command
         """
-        # Handle docker compose v2 vs v1 command format
-        if self.compose_cmd == "docker compose":
-            cmd = ["docker", "compose"]
-        else:
-            cmd = [self.compose_cmd]
+        # Build base command
+        cmd = self._build_compose_base_command()
         
-        # Use working_dir if provided, otherwise fall back to project root
-        if working_dir is None:
-            working_dir = self.project_root
-        
-        # Convert to absolute path to ensure Docker resolves it correctly
-        working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
+        # Resolve working directory
+        working_dir = self._resolve_working_directory(working_dir)
 
         # Explicitly load .env from the working directory first, if it exists
         main_env_file = working_dir / ".env"
@@ -1074,15 +1134,8 @@ class DockerManager:
         if extra_flags:
             cmd.extend(extra_flags)
         
-        # Set environment variables for build context
-        import os
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(working_dir)  # Absolute path to worktree or project root
-        env["COMPOSE_PROJECT_ROOT"] = str(working_dir)
-        env["PWD"] = str(working_dir)
-        # Set COMPOSE_PROJECT_NAME to ensure Docker Compose uses correct project name for volumes
-        if project_name:
-            env["COMPOSE_PROJECT_NAME"] = project_name
+        # Prepare environment variables
+        env = self._prepare_compose_environment(working_dir, project_name)
         
         # Debug logging for path resolution
         log_info(f"Docker Compose execution context:")
@@ -1095,11 +1148,7 @@ class DockerManager:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=working_dir, env=env)
             return True
         except subprocess.CalledProcessError as e:
-            log_error(f"Docker compose command failed: {e}")
-            if e.stdout:
-                log_error(f"STDOUT: {e.stdout}")
-            if e.stderr:
-                log_error(f"STDERR: {e.stderr}")
+            self._handle_compose_error(e)
             return False
 
     def run_compose_command_with_profile(self, compose_file: Path, compose_override: Path,
@@ -1107,11 +1156,8 @@ class DockerManager:
                                        project_name: Optional[str] = None,
                                        working_dir: Optional[Path] = None) -> bool:
         """Run a docker compose command with override file and dockertree profile."""
-        # Handle docker compose v2 vs v1 command format
-        if self.compose_cmd == "docker compose":
-            cmd = ["docker", "compose"]
-        else:
-            cmd = [self.compose_cmd]
+        # Build base command
+        cmd = self._build_compose_base_command()
 
         if env_file and env_file.exists():
             cmd.extend(["--env-file", str(env_file)])
@@ -1125,21 +1171,11 @@ class DockerManager:
         cmd.extend(["--profile", "dockertree"])
         cmd.extend(command)
 
-        # Set working directory - use worktree_path if provided, otherwise project root
-        if working_dir is None:
-            # For worktree operations, use the worktree directory as working directory
-            # This ensures environment files and relative paths work correctly
-            working_dir = self.project_root
+        # Resolve working directory
+        working_dir = self._resolve_working_directory(working_dir)
 
-        # Convert to absolute path to ensure Docker resolves it correctly
-        working_dir = working_dir.resolve() if isinstance(working_dir, Path) else Path(working_dir).resolve()
-
-        # Set environment variables for build context
-        import os
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(working_dir)  # Absolute path to worktree or project root
-        env["COMPOSE_PROJECT_ROOT"] = str(working_dir)
-        env["PWD"] = str(working_dir)
+        # Prepare environment variables
+        env = self._prepare_compose_environment(working_dir, project_name)
 
         # Debug logging for path resolution
         log_info(f"Docker Compose execution context (with profile):")
@@ -1153,13 +1189,9 @@ class DockerManager:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=working_dir, env=env)
             return True
         except subprocess.CalledProcessError as e:
-            log_error(f"Docker compose command with override failed: {e}")
+            self._handle_compose_error(e, "Docker compose command with override failed")
             log_error(f"Command executed: {' '.join(cmd)}")
             log_error(f"Working directory: {working_dir}")
-            if e.stdout:
-                log_error(f"STDOUT: {e.stdout}")
-            if e.stderr:
-                log_error(f"STDERR: {e.stderr}")
             return False
 
     def start_services(self, compose_file: Path, env_file: Optional[Path] = None,
@@ -1289,11 +1321,8 @@ class DockerManager:
         project_name = sanitize_project_name(project_name)
         compose_project_name = f"{project_name}-{branch_name}"
         
-        # Build docker compose command
-        if self.compose_cmd == "docker compose":
-            cmd = ["docker", "compose"]
-        else:
-            cmd = [self.compose_cmd]
+        # Build base command
+        cmd = self._build_compose_base_command()
         
         # Add environment file
         cmd.extend(["--env-file", str(env_file)])
@@ -1307,17 +1336,14 @@ class DockerManager:
         # Add the passthrough arguments
         cmd.extend(compose_args)
         
-        # Set environment variables
-        import os
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(worktree_path)
-        env["COMPOSE_PROJECT_ROOT"] = str(worktree_path)
-        env["PWD"] = str(worktree_path)
-        # Set COMPOSE_PROJECT_NAME to ensure Docker Compose uses correct project name for volumes
-        env["COMPOSE_PROJECT_NAME"] = compose_project_name
+        # Resolve working directory (already resolved as worktree_path, but ensure consistency)
+        working_dir = self._resolve_working_directory(worktree_path)
+        
+        # Prepare environment variables
+        env = self._prepare_compose_environment(working_dir, compose_project_name)
         
         log_info(f"Running docker compose command for worktree '{branch_name}':")
-        log_info(f"  Working directory: {worktree_path}")
+        log_info(f"  Working directory: {working_dir}")
         log_info(f"  Compose file: {compose_override_path}")
         log_info(f"  Environment file: {env_file}")
         log_info(f"  Project name: {compose_project_name}")
@@ -1325,7 +1351,7 @@ class DockerManager:
         
         try:
             # Run command and stream output to user
-            result = subprocess.run(cmd, cwd=worktree_path, env=env)
+            result = subprocess.run(cmd, cwd=working_dir, env=env)
             return result.returncode == 0
         except Exception as e:
             log_error(f"Failed to run docker compose command: {e}")

@@ -8,8 +8,8 @@ them to remote servers via SCP for deployment.
 import subprocess
 import re
 import socket
-import threading
 import os
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -22,6 +22,7 @@ from ..utils.logging import log_info, log_success, log_warning, log_error, print
 from ..utils.path_utils import detect_execution_context, get_worktree_branch_name
 from ..utils.confirmation import confirm_action
 from ..utils.ssh_utils import add_ssh_host_key
+from ..utils.streaming import execute_with_streaming
 
 
 class PushManager:
@@ -1098,98 +1099,32 @@ dockertree --version || true
             log_info("Executing server preparation script via SSH...")
             log_info("This may take 5-10 minutes depending on server state and network speed...")
             
-            # Check if verbose mode is enabled for real-time streaming
-            if is_verbose():
-                log_info("Verbose mode enabled: streaming server preparation output in real-time...")
-                # Use Popen for real-time streaming
-                process = subprocess.Popen(
-                    ssh_cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1  # Line buffered
-                )
-                
-                # Write script to stdin and close
-                process.stdin.write(remote_script)
-                process.stdin.close()
-                
-                # Use threading to read from both stdout and stderr concurrently
-                stdout_lines = []
-                stderr_lines = []
-                stdout_done = threading.Event()
-                stderr_done = threading.Event()
-                
-                def read_stdout():
-                    """Read stdout lines and log them in real-time."""
-                    try:
-                        for line in iter(process.stdout.readline, ''):
-                            if line:
-                                line = line.rstrip()
-                                stdout_lines.append(line)
-                                # Show all output lines immediately in verbose mode
-                                log_info(f"  {line}")
-                    finally:
-                        stdout_done.set()
-                
-                def read_stderr():
-                    """Read stderr lines and log them in real-time."""
-                    try:
-                        for line in iter(process.stderr.readline, ''):
-                            if line:
-                                line = line.rstrip()
-                                stderr_lines.append(line)
-                                log_error(f"  {line}")
-                    finally:
-                        stderr_done.set()
-                
-                # Start threads to read from both streams
-                stdout_thread = threading.Thread(target=read_stdout, daemon=True)
-                stderr_thread = threading.Thread(target=read_stderr, daemon=True)
-                stdout_thread.start()
-                stderr_thread.start()
-                
-                # Wait for process to complete
-                process.wait()
-                
-                # Wait for both threads to finish reading
-                stdout_done.wait(timeout=5)
-                stderr_done.wait(timeout=5)
-                
-                if process.returncode != 0:
-                    log_error("Remote preparation failed")
-                    return False
-                
-                log_info("Server preparation script completed successfully")
-                return True
-            else:
-                # Non-verbose mode: use buffered approach (original behavior)
-                result = subprocess.run(
-                    ssh_cmd,
-                    input=remote_script,
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                if result.returncode != 0:
-                    log_error("Remote preparation failed")
-                    if result.stdout:
-                        log_info("Server preparation output:")
-                        for line in result.stdout.splitlines():
-                            log_info(f"  {line}")
-                    if result.stderr:
-                        log_error("Server preparation errors:")
-                        for line in result.stderr.splitlines():
-                            log_error(f"  {line}")
-                    return False
-                # Show output at end (only if there was output)
-                if result.stdout:
-                    log_info("Server preparation output:")
-                    for line in result.stdout.splitlines():
-                        log_info(f"  {line}")
-                log_info("Server preparation script completed successfully")
-                return True
+            # Use streaming utility for consistent output handling
+            success, stdout_lines, stderr_lines = execute_with_streaming(
+                ssh_cmd,
+                script=remote_script,
+                timeout=None,  # No timeout for server prep (can take 5-10 minutes)
+                progress_interval=30,
+                prefix="  ",
+                filter_keywords=None  # Show all output in verbose mode, filtered in non-verbose
+            )
+            
+            if not success:
+                log_error("Remote preparation failed")
+                if stderr_lines:
+                    log_error("Server preparation errors:")
+                    for line in stderr_lines:
+                        log_error(f"  {line}")
+                return False
+            
+            # Show output summary if not in verbose mode (verbose mode already showed it)
+            if not is_verbose() and stdout_lines:
+                log_info("Server preparation output:")
+                for line in stdout_lines:
+                    log_info(f"  {line}")
+            
+            log_info("Server preparation script completed successfully")
+            return True
         except Exception as e:
             log_error(f"Error preparing server: {e}")
             return False
