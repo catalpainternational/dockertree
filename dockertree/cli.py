@@ -1569,9 +1569,10 @@ def validate_package(package_file: str, json: bool):
 @click.option('--droplet-size', help='Droplet size slug (e.g., s-1vcpu-1gb, s-2vcpu-4gb). Use "dockertree droplets sizes" to list all available sizes. Default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var')
 @click.option('--droplet-image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
 @click.option('--droplet-ssh-keys', type=str, help='SSH key names for droplet (comma-separated, e.g., anders,peter)')
+@click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed (skips export/transfer if package exists, skips server prep if already done)')
 @add_json_option
 @add_verbose_option
-def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, create_droplet: bool, droplet_name: Optional[str], droplet_region: Optional[str], droplet_size: Optional[str], droplet_image: Optional[str], droplet_ssh_keys: Optional[str], json: bool):
+def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, create_droplet: bool, droplet_name: Optional[str], droplet_region: Optional[str], droplet_size: Optional[str], droplet_image: Optional[str], droplet_ssh_keys: Optional[str], resume: bool, json: bool):
     """Push dockertree package to remote server via SCP.
 
     Exports a complete dockertree environment package and transfers it to a
@@ -1580,6 +1581,11 @@ def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str,
 
     When using --create-droplet, scp_target is optional and defaults to root@<droplet-ip>:/root.
     The droplet will always be waited for until ready before pushing.
+
+    Use --resume to resume a failed push operation. Resume mode automatically detects:
+    - If package already exists on server (skips export and transfer)
+    - If server is already prepared (skips server preparation)
+    - Continues from where it left off
 
     Examples:
 
@@ -1597,6 +1603,9 @@ def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str,
 
         # Push with domain configuration
         dockertree push feature-auth user@server:/path/to/packages --domain app.example.com
+
+        # Resume a failed push (skips already completed steps)
+        dockertree push feature-auth user@server:/path/to/packages --resume --auto-import
 
     After pushing, SSH to the server and import with:
         dockertree packages import <package-file> --standalone --domain your-domain.com
@@ -1638,7 +1647,8 @@ def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str,
             droplet_region=droplet_region,
             droplet_size=droplet_size,
             droplet_image=droplet_image,
-            droplet_ssh_keys=droplet_ssh_keys_list
+            droplet_ssh_keys=droplet_ssh_keys_list,
+            resume=resume
         )
         
         if not success:

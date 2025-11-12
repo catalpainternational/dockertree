@@ -9,6 +9,7 @@ import subprocess
 import re
 import socket
 import threading
+import os
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -51,7 +52,8 @@ class PushManager:
                     droplet_region: Optional[str] = None,
                     droplet_size: Optional[str] = None,
                     droplet_image: Optional[str] = None,
-                    droplet_ssh_keys: Optional[list] = None) -> bool:
+                    droplet_ssh_keys: Optional[list] = None,
+                    resume: bool = False) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -167,36 +169,6 @@ class PushManager:
                     log_info(f"  - {wt}")
                 return False
             
-            log_info("Worktree validated, proceeding with export...")
-            export_result = self.package_manager.export_package(
-                branch_name=branch_name,
-                output_dir=output_dir,
-                include_code=True,  # Always include code for deployments
-                compressed=True     # Always compress for faster transfer
-            )
-            
-            if not export_result.get("success"):
-                log_error(f"Failed to export package: {export_result.get('error')}")
-                return False
-            
-            package_path = Path(export_result.get("package_path"))
-            log_info(f"Package exported successfully: {package_path}")
-            if not package_path.exists():
-                log_error(f"Package file not found: {package_path}")
-                return False
-            
-            package_size_mb = package_path.stat().st_size / 1024 / 1024
-            log_success(f"Package size: {package_size_mb:.2f} MB")
-            
-            # Log package metadata if available
-            metadata = export_result.get("metadata", {})
-            if metadata:
-                log_info("Package metadata:")
-                log_info(f"  - Branch: {metadata.get('branch_name', 'unknown')}")
-                log_info(f"  - Project: {metadata.get('project_name', 'unknown')}")
-                log_info(f"  - Includes code: {metadata.get('include_code', False)}")
-                log_info(f"  - Volumes skipped: {metadata.get('skip_volumes', False)}")
-            
             # Ensure remote directory exists
             remote_dir = self._infer_remote_directory(remote_path)
             log_info(f"Inferred remote directory: {remote_dir}")
@@ -206,13 +178,77 @@ class PushManager:
             else:
                 log_info("Remote directory is current directory, skipping directory creation")
 
+            # Resume mode: detect what's already done (check BEFORE export)
+            package_already_on_server = False
+            server_already_prepared = False
+            remote_file_path = None
+            package_path = None
+            
+            if resume:
+                log_info("Resume mode enabled: checking what's already completed...")
+                
+                # Check if server is already prepared
+                if self._verify_dockertree_installed(username, server):
+                    server_already_prepared = True
+                    log_info("✓ Server already prepared (dockertree found)")
+                    log_info("Skipping server preparation...")
+                else:
+                    log_info("Server not prepared, will prepare if needed")
+                
+                # Try to find existing package on server
+                found_package = self._find_existing_package(username, server, remote_path, branch_name)
+                if found_package:
+                    remote_file_path = found_package
+                    package_already_on_server = True
+                    log_info(f"✓ Found existing package on server: {found_package}")
+                    log_info("Skipping package export and transfer...")
+                else:
+                    log_info("No existing package found on server, will export and transfer")
+            
+            # Export package only if not already on server
+            if not package_already_on_server:
+                log_info("Worktree validated, proceeding with export...")
+                export_result = self.package_manager.export_package(
+                    branch_name=branch_name,
+                    output_dir=output_dir,
+                    include_code=True,  # Always include code for deployments
+                    compressed=True     # Always compress for faster transfer
+                )
+                
+                if not export_result.get("success"):
+                    log_error(f"Failed to export package: {export_result.get('error')}")
+                    return False
+                
+                package_path = Path(export_result.get("package_path"))
+                log_info(f"Package exported successfully: {package_path}")
+                if not package_path.exists():
+                    log_error(f"Package file not found: {package_path}")
+                    return False
+                
+                package_size_mb = package_path.stat().st_size / 1024 / 1024
+                log_success(f"Package size: {package_size_mb:.2f} MB")
+                
+                # Log package metadata if available
+                metadata = export_result.get("metadata", {})
+                if metadata:
+                    log_info("Package metadata:")
+                    log_info(f"  - Branch: {metadata.get('branch_name', 'unknown')}")
+                    log_info(f"  - Project: {metadata.get('project_name', 'unknown')}")
+                    log_info(f"  - Includes code: {metadata.get('include_code', False)}")
+                    log_info(f"  - Volumes skipped: {metadata.get('skip_volumes', False)}")
+            else:
+                # Extract package name from remote path for display
+                if remote_file_path:
+                    package_name = os.path.basename(remote_file_path)
+                    log_info(f"Using existing package: {package_name}")
+            
             # Auto-import requires server preparation
-            if auto_import and not prepare_server:
+            if auto_import and not prepare_server and not server_already_prepared:
                 log_info("Auto-import requires server preparation. Enabling --prepare-server...")
                 prepare_server = True
 
             # Prepare server dependencies if requested (before upload/import)
-            if prepare_server:
+            if prepare_server and not server_already_prepared:
                 log_info("Server preparation requested, installing dependencies...")
                 log_info("This may take several minutes depending on server state...")
                 ok = self._prepare_server(username, server)
@@ -227,25 +263,50 @@ class PushManager:
                     if not self._verify_dockertree_installed(username, server):
                         log_error("dockertree not found on server. Server preparation may have failed.")
                         return False
+            elif server_already_prepared:
+                log_info("Server preparation skipped (already prepared)")
             else:
                 log_info("Server preparation skipped (--prepare-server not specified)")
 
-            # Transfer package via SCP
-            log_info(f"Starting SCP transfer to {server}...")
-            log_info(f"Source: {package_path}")
-            log_info(f"Destination: {scp_target}")
-            if not self._scp_transfer(package_path, scp_target):
-                log_error("Failed to transfer package to remote server")
+            # Transfer package via SCP (skip if already on server in resume mode)
+            if not (resume and package_already_on_server):
+                if not package_path:
+                    log_error("Package path not available for transfer")
+                    return False
+                log_info(f"Starting SCP transfer to {server}...")
+                log_info(f"Source: {package_path}")
+                log_info(f"Destination: {scp_target}")
+                if not self._scp_transfer(package_path, scp_target):
+                    log_error("Failed to transfer package to remote server")
+                    return False
+                
+                log_success(f"Package pushed successfully to {scp_target}")
+                log_info("SCP transfer completed")
+            else:
+                log_info(f"Package already on server, skipping transfer")
+            
+            # Determine remote package path for import
+            if resume and package_already_on_server and remote_file_path:
+                remote_package_path = remote_file_path
+            elif package_path:
+                remote_package_path = f"{remote_path}/{package_path.name}"
+            else:
+                log_error("Cannot determine remote package path")
                 return False
             
-            log_success(f"Package pushed successfully to {scp_target}")
-            log_info("SCP transfer completed")
-            
             # Display package info and next steps
-            package_size_mb = package_path.stat().st_size / 1024 / 1024
-            print_plain(f"\n📦 Package: {package_path.name}")
+            if package_path:
+                package_size_mb = package_path.stat().st_size / 1024 / 1024
+                package_name = package_path.name
+            else:
+                # In resume mode with existing package
+                package_name = os.path.basename(remote_package_path) if remote_package_path else "existing package"
+                package_size_mb = 0  # Size unknown for existing package
+            
+            print_plain(f"\n📦 Package: {package_name}")
             print_plain(f"📁 Remote Location: {scp_target}")
-            print_plain(f"💾 Size: {package_size_mb:.1f} MB")
+            if package_size_mb > 0:
+                print_plain(f"💾 Size: {package_size_mb:.1f} MB")
             print_plain(f"\n📋 Next Steps:")
             print_plain(f"   1. SSH to the server:")
             print_plain(f"      ssh {username}@{server}")
@@ -266,26 +327,26 @@ class PushManager:
             # Optional: auto import on server
             if auto_import:
                 log_info("Auto-import enabled, running remote import and startup...")
-                log_info(f"Remote package path: {remote_path}/{package_path.name}")
+                log_info(f"Remote package path: {remote_package_path}")
                 log_info(f"Branch name: {branch_name}")
                 if domain:
                     log_info(f"Domain override: {domain}")
                 if ip:
                     log_info(f"IP override: {ip}")
-                self._run_remote_import(username, server, f"{remote_path}/{package_path.name}", branch_name, domain, ip)
+                self._run_remote_import(username, server, remote_package_path, branch_name, domain, ip)
                 log_info("Remote import process initiated")
             else:
                 log_info("Auto-import disabled, manual import required")
 
-            # Clean up package unless keep_package is True
-            if not keep_package and package_path.exists():
+            # Clean up package unless keep_package is True (only if we created it locally)
+            if package_path and not keep_package and package_path.exists():
                 log_info("Cleaning up local package file...")
                 try:
                     package_path.unlink()
                     log_info(f"Cleaned up local package: {package_path.name}")
                 except Exception as e:
                     log_warning(f"Failed to clean up package: {e}")
-            else:
+            elif package_path:
                 log_info(f"Keeping local package (--keep-package flag or file not found)")
             
             log_info("Push operation completed successfully")
@@ -484,6 +545,79 @@ class PushManager:
             log_error(f"Unexpected error during transfer: {e}")
             return False
 
+    def _check_remote_file_exists(self, username: str, server: str, remote_file_path: str) -> bool:
+        """Check if a file exists on the remote server.
+        
+        Args:
+            username: SSH username
+            server: Server hostname or IP
+            remote_file_path: Full path to file on remote server
+            
+        Returns:
+            True if file exists, False otherwise
+        """
+        try:
+            # Add SSH host key before connection
+            add_ssh_host_key(server)
+            
+            cmd = [
+                "ssh", f"{username}@{server}",
+                f"bash -lc 'test -f {remote_file_path} && echo EXISTS || echo NOT_FOUND'"
+            ]
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                return output == "EXISTS"
+            return False
+        except Exception as e:
+            log_warning(f"Failed to check remote file existence: {e}")
+            return False
+    
+    def _find_existing_package(self, username: str, server: str, remote_path: str, branch_name: str) -> Optional[str]:
+        """Find an existing dockertree package file on the remote server for the given branch.
+        
+        Args:
+            username: SSH username
+            server: Server hostname or IP
+            remote_path: Remote directory to search
+            branch_name: Branch name to match
+            
+        Returns:
+            Full path to package file if found, None otherwise
+        """
+        try:
+            # Add SSH host key before connection
+            add_ssh_host_key(server)
+            
+            # Search for dockertree package files matching the branch name
+            cmd = [
+                "ssh", f"{username}@{server}",
+                f"bash -lc 'find {remote_path} -maxdepth 1 -type f -name \"*{branch_name}*.dockertree-package.tar.gz\" 2>/dev/null | head -1'"
+            ]
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                if output:
+                    return output
+            return None
+        except Exception as e:
+            log_warning(f"Failed to search for existing package: {e}")
+            return None
+    
     def _ensure_remote_dir(self, username: str, server: str, remote_dir: str) -> None:
         """Create the remote directory with mkdir -p (best effort)."""
         try:
@@ -1337,7 +1471,7 @@ if command -v timeout >/dev/null 2>&1; then
   while kill -0 $UP_PID 2>/dev/null && [ $ELAPSED -lt $TIMEOUT ]; do
     sleep 30
     ELAPSED=$((ELAPSED + 30))
-    log "Still starting containers... (${ELAPSED}s elapsed)"
+    log "Still starting containers... (${{ELAPSED}}s elapsed)"
     # Show container status
     RUNNING=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
     TOTAL=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
