@@ -5,7 +5,7 @@ This module provides functionality to parse and validate container selection
 syntax like 'worktree.container' for selective push operations.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from pathlib import Path
 import yaml
 
@@ -179,4 +179,75 @@ def validate_container_selections(
             )
     
     return True
+
+
+def resolve_service_dependencies(
+    compose_data: Dict,
+    service_names: List[str],
+    exclude_services: Optional[List[str]] = None,
+    project_root: Optional[Path] = None
+) -> List[str]:
+    """Resolve service dependencies for selected services.
+    
+    Args:
+        compose_data: Parsed docker-compose.yml data
+        service_names: List of service names to resolve dependencies for
+        exclude_services: Optional list of service names to exclude from dependency resolution
+        project_root: Project root directory (unused, kept for API consistency)
+        
+    Returns:
+        List of service names including dependencies (excluding specified services)
+    """
+    services = compose_data.get('services', {})
+    if not services:
+        return service_names
+    
+    exclude_set = set(exclude_services or [])
+    
+    # Track services we need to include
+    services_to_include = set(service_names)
+    # Track services we've already processed
+    processed = set()
+    
+    def resolve_deps(service_name: str):
+        """Recursively resolve dependencies for a service."""
+        if service_name in processed or service_name not in services:
+            return
+        
+        processed.add(service_name)
+        service_config = services[service_name]
+        
+        # Check depends_on
+        depends_on = service_config.get('depends_on', [])
+        if isinstance(depends_on, list):
+            for dep in depends_on:
+                if isinstance(dep, str):
+                    dep_name = dep
+                elif isinstance(dep, dict):
+                    dep_name = dep.get('service') or list(dep.keys())[0] if dep else None
+                else:
+                    continue
+                
+                # Skip excluded services
+                if dep_name and dep_name in exclude_set:
+                    continue
+                
+                if dep_name and dep_name in services:
+                    services_to_include.add(dep_name)
+                    resolve_deps(dep_name)
+        elif isinstance(depends_on, dict):
+            for dep_name in depends_on.keys():
+                # Skip excluded services
+                if dep_name in exclude_set:
+                    continue
+                    
+                if dep_name in services:
+                    services_to_include.add(dep_name)
+                    resolve_deps(dep_name)
+    
+    # Resolve dependencies for all selected services
+    for service_name in service_names:
+        resolve_deps(service_name)
+    
+    return sorted(list(services_to_include))
 

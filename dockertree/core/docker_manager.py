@@ -1210,7 +1210,8 @@ class DockerManager:
                           env_file: Optional[Path] = None,
                           project_name: Optional[str] = None,
                           working_dir: Optional[Path] = None,
-                          extra_flags: Optional[List[str]] = None) -> bool:
+                          extra_flags: Optional[List[str]] = None,
+                          profile: Optional[str] = None) -> bool:
         """Run a docker compose command.
         
         Args:
@@ -1220,6 +1221,7 @@ class DockerManager:
             project_name: Optional project name
             working_dir: Optional working directory
             extra_flags: Optional list of additional flags to append to the command
+            profile: Optional Docker Compose profile to use
         """
         # Build base command
         cmd = self._build_compose_base_command()
@@ -1240,6 +1242,11 @@ class DockerManager:
             cmd.extend(["-p", project_name])
         
         cmd.extend(["-f", str(compose_file)])
+        
+        # Add profile flag if provided
+        if profile:
+            cmd.extend(["--profile", profile])
+        
         cmd.extend(command)
         
         # Add any extra flags at the end

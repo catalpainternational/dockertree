@@ -297,8 +297,13 @@ class WorktreeOrchestrator:
                 "error": f"Exception during worktree creation: {str(e)}"
             }
     
-    def start_worktree(self, branch_name: str) -> Dict[str, Any]:
-        """Start worktree environment with complete orchestration."""
+    def start_worktree(self, branch_name: str, profile: Optional[str] = None) -> Dict[str, Any]:
+        """Start worktree environment with complete orchestration.
+        
+        Args:
+            branch_name: Name of the branch/worktree to start
+            profile: Optional Docker Compose profile to use
+        """
         # Validate worktree exists
         if not self.git_manager.validate_worktree_exists(branch_name):
             return {
@@ -383,7 +388,7 @@ class WorktreeOrchestrator:
         compose_project_name = f"{project_name}-{resolved_branch_name}"
         
         success = self.docker_manager.run_compose_command(
-            compose_file, ["up", "-d"], env_file, compose_project_name, worktree_path
+            compose_file, ["up", "-d"], env_file, compose_project_name, worktree_path, profile=profile
         )
         
         if not success:

@@ -78,11 +78,19 @@ class WorktreeManager:
             log_error(result['error'])
             return False, result
     
-    def start_worktree(self, branch_name: str) -> bool:
-        """Start worktree environment - CLI interface."""
-        log_info(f"Starting worktree environment for branch: {branch_name}")
+    def start_worktree(self, branch_name: str, profile: Optional[str] = None) -> bool:
+        """Start worktree environment - CLI interface.
         
-        result = self.orchestrator.start_worktree(branch_name)
+        Args:
+            branch_name: Name of the branch/worktree to start
+            profile: Optional Docker Compose profile to use
+        """
+        if profile:
+            log_info(f"Starting worktree environment for branch: {branch_name} with profile: {profile}")
+        else:
+            log_info(f"Starting worktree environment for branch: {branch_name}")
+        
+        result = self.orchestrator.start_worktree(branch_name, profile=profile)
         
         if result['success']:
             data = result['data']

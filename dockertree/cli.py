@@ -371,20 +371,27 @@ def create(branch_name: str, json: bool):
 @cli.command()
 @click.argument('branch_name')
 @click.option('-d', '--detach', is_flag=True, default=True, help='Run containers in detached mode (default: True)')
+@click.option('--profile', help='Docker Compose profile to use (e.g., worker)')
 @add_json_option
 @add_verbose_option
-def up(branch_name: str, detach: bool, json: bool):
+def up(branch_name: str, detach: bool, profile: Optional[str], json: bool):
     """Start the worktree environment for the specified branch.
 
     Starts all Docker containers for the worktree environment, including
     database, Redis, and application containers. The environment will be
     accessible via a unique URL.
 
+    Use --profile to start only services with a specific profile. For example,
+    if your compose file defines services with profiles: ["worker"], you can
+    start only those services with --profile worker.
+
     Examples:
 
         dockertree feature-auth up
 
         dockertree feature-auth up -d
+
+        dockertree feature-auth up -d --profile worker
     """
     if not detach:
         if json:
@@ -396,7 +403,7 @@ def up(branch_name: str, detach: bool, json: bool):
         check_setup_or_prompt()
         check_prerequisites()
         worktree_manager = WorktreeManager()
-        success = worktree_manager.start_worktree(branch_name)
+        success = worktree_manager.start_worktree(branch_name, profile=profile)
         if not success:
             if json:
                 JSONOutput.print_error(f"Failed to start worktree environment for {branch_name}")
@@ -407,7 +414,8 @@ def up(branch_name: str, detach: bool, json: bool):
                 access_url = worktree_manager.env_manager.get_access_url(branch_name)
                 JSONOutput.print_success(f"Worktree environment started for {branch_name}", {
                     "branch_name": branch_name,
-                    "url": access_url
+                    "url": access_url,
+                    "profile": profile
                 })
     except Exception as e:
         if json:
@@ -915,6 +923,7 @@ def droplet():
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server')
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
+@click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
 @add_json_option
 @add_verbose_option
 def droplet_create(branch_name: Optional[str], region: Optional[str], size: Optional[str], image: Optional[str],
@@ -922,7 +931,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                     create_only: bool, scp_target: Optional[str],
                     output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool,
                     domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool,
-                    code_only: bool, containers: Optional[str]):
+                    code_only: bool, containers: Optional[str], exclude_deps: Optional[str]):
     """Create a new DigitalOcean droplet and optionally push dockertree environment.
 
     By default, creates a droplet and automatically pushes the dockertree environment
@@ -1154,6 +1163,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         # ssh_keys_list is already a list from line 1034, so we can use it directly
         droplet_ssh_keys_list = ssh_keys_list if ssh_keys_list else None
         
+        # Parse exclude_deps from comma-separated string to list
+        exclude_deps_list = [d.strip() for d in exclude_deps.split(',')] if exclude_deps else None
+        
         try:
             success = push_manager.push_package(
                 branch_name=branch_name,
@@ -1162,6 +1174,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 keep_package=keep_package,
                 auto_import=not no_auto_import,  # Invert: no_auto_import=True means auto_import=False
                 containers=containers,
+                exclude_deps=exclude_deps_list,
                 domain=domain,
                 ip=ip,
                 prepare_server=prepare_server,
@@ -1911,9 +1924,10 @@ def validate_package(package_file: str, json: bool):
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed (skips export/transfer if package exists, skips server prep if already done)')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)')
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
+@click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
 @add_json_option
 @add_verbose_option
-def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool, code_only: bool, containers: Optional[str], json: bool):
+def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool, code_only: bool, containers: Optional[str], exclude_deps: Optional[str], json: bool):
     """Push dockertree package to remote server via SCP.
 
     Exports a complete dockertree environment package and transfers it to a
@@ -1981,6 +1995,9 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
             return
         
         push_manager = PushManager()
+        # Parse exclude_deps from comma-separated string to list
+        exclude_deps_list = [d.strip() for d in exclude_deps.split(',')] if exclude_deps else None
+        
         success = push_manager.push_package(
             branch_name=branch_name,
             scp_target=scp_target,
@@ -2000,7 +2017,8 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
             droplet_ssh_keys=None,
             resume=resume,
             code_only=code_only,
-            containers=containers
+            containers=containers,
+            exclude_deps=exclude_deps_list
         )
         
         elapsed_time = time.time() - start_time

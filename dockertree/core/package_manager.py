@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,6 +23,7 @@ from ..core.worktree_orchestrator import WorktreeOrchestrator
 from ..utils.logging import log_info, log_success, log_warning, log_error
 from ..utils.checksum import calculate_file_checksum, verify_file_checksum
 from ..utils.confirmation import confirm_use_existing_worktree
+from ..utils.container_selector import resolve_service_dependencies
 
 
 class PackageManager:
@@ -60,7 +62,8 @@ class PackageManager:
     
     def export_package(self, branch_name: str, output_dir: Path, 
                       include_code: bool = False, compressed: bool = True, skip_volumes: bool = False,
-                      container_filter: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+                      container_filter: Optional[List[Dict[str, str]]] = None,
+                      exclude_deps: Optional[List[str]] = None) -> Dict[str, Any]:
         """Export worktree to package - orchestrates existing managers.
         
         Args:
@@ -71,6 +74,7 @@ class PackageManager:
             skip_volumes: Whether to skip volume backup (fallback option)
             container_filter: Optional list of dicts with 'worktree' and 'container' keys
                              to filter which containers/volumes to export
+            exclude_deps: Optional list of service names to exclude from dependency resolution
             
         Returns:
             Dictionary with success status, package path, and metadata
@@ -100,7 +104,7 @@ class PackageManager:
             temp_package_dir.mkdir(exist_ok=True)
             
             # 4. Copy environment files
-            env_success = self._copy_environment_files(worktree_path, temp_package_dir)
+            env_success = self._copy_environment_files(worktree_path, temp_package_dir, container_filter, exclude_deps)
             if not env_success:
                 return {
                     "success": False,
@@ -647,8 +651,17 @@ class PackageManager:
         
         return sorted(packages, key=lambda x: x["name"])
     
-    def _copy_environment_files(self, worktree_path: Path, package_dir: Path) -> bool:
-        """Copy environment files to package directory."""
+    def _copy_environment_files(self, worktree_path: Path, package_dir: Path, 
+                                container_filter: Optional[List[Dict[str, str]]] = None,
+                                exclude_deps: Optional[List[str]] = None) -> bool:
+        """Copy environment files to package directory.
+        
+        Args:
+            worktree_path: Path to worktree directory
+            package_dir: Path to package directory
+            container_filter: Optional list of dicts with 'worktree' and 'container' keys
+                             to filter which services to include in compose file
+        """
         try:
             env_dir = package_dir / "environment"
             env_dir.mkdir(exist_ok=True)
@@ -668,11 +681,157 @@ class PackageManager:
             if compose_file.exists():
                 shutil.copy2(compose_file, env_dir / "docker-compose.dockertree.yml")
             
+            # If container_filter is provided, create filtered compose file
+            if container_filter:
+                worktree_compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
+                if worktree_compose_file.exists():
+                    # Extract exclude_deps from container_filter if present
+                    exclude_deps = None
+                    for selection in container_filter:
+                        if 'exclude_deps' in selection:
+                            exclude_deps = selection.get('exclude_deps')
+                            break
+                    
+                    filtered_compose = self._filter_compose_services(
+                        worktree_compose_file, container_filter, worktree_path, exclude_deps
+                    )
+                    if filtered_compose:
+                        filtered_path = env_dir / ".dockertree" / "docker-compose.worktree.filtered.yml"
+                        filtered_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(filtered_path, 'w') as f:
+                            yaml.dump(filtered_compose, f, default_flow_style=False, sort_keys=False)
+                        log_info(f"Created filtered compose file with {len(filtered_compose.get('services', {}))} service(s)")
+            
             return True
             
         except Exception as e:
             log_error(f"Failed to copy environment files: {e}")
             return False
+    
+    def _filter_compose_services(self, compose_file: Path, 
+                                 container_filter: List[Dict[str, str]],
+                                 worktree_path: Path,
+                                 exclude_deps: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        """Filter compose file to include only selected services and their dependencies.
+        
+        Args:
+            compose_file: Path to the compose file to filter
+            container_filter: List of dicts with 'worktree' and 'container' keys
+            worktree_path: Path to worktree directory (for finding branch name)
+            exclude_deps: Optional list of service names to exclude from dependency resolution
+            
+        Returns:
+            Filtered compose data dict, or None if filtering fails
+        """
+        try:
+            # Load compose file
+            with open(compose_file) as f:
+                compose_data = yaml.safe_load(f) or {}
+            
+            services = compose_data.get('services', {})
+            if not services:
+                log_warning("No services found in compose file")
+                return None
+            
+            # Get branch name from worktree path
+            branch_name = worktree_path.name
+            
+            # Extract service names from container_filter for this branch
+            selected_services = []
+            for selection in container_filter:
+                if selection.get('worktree') == branch_name:
+                    service_name = selection.get('container')
+                    if service_name and service_name in services:
+                        selected_services.append(service_name)
+            
+            if not selected_services:
+                log_warning(f"No matching services found in container filter for branch {branch_name}")
+                return None
+            
+            log_info(f"Filtering compose file to include services: {', '.join(selected_services)}")
+            if exclude_deps:
+                log_info(f"Excluding services from dependencies: {', '.join(exclude_deps)}")
+            
+            # Resolve dependencies
+            services_to_include = resolve_service_dependencies(compose_data, selected_services, exclude_deps)
+            log_info(f"Including services with dependencies: {', '.join(services_to_include)}")
+            
+            # Create filtered compose data
+            filtered_compose = {
+                'version': compose_data.get('version'),
+                'services': {},
+                'networks': compose_data.get('networks', {}),
+                'volumes': {}
+            }
+            
+            # Copy selected services and remove depends_on for excluded services
+            exclude_set = set(exclude_deps or [])
+            for service_name in services_to_include:
+                if service_name in services:
+                    service_config = services[service_name].copy()
+                    
+                    # Remove depends_on entries for excluded services
+                    if 'depends_on' in service_config:
+                        depends_on = service_config['depends_on']
+                        if isinstance(depends_on, list):
+                            # Filter out excluded services
+                            filtered_deps = []
+                            for dep in depends_on:
+                                if isinstance(dep, str):
+                                    if dep not in exclude_set:
+                                        filtered_deps.append(dep)
+                                elif isinstance(dep, dict):
+                                    # Handle dict format: {service: {condition: ...}}
+                                    dep_name = dep.get('service') or (list(dep.keys())[0] if dep else None)
+                                    if dep_name and dep_name not in exclude_set:
+                                        filtered_deps.append(dep)
+                                else:
+                                    filtered_deps.append(dep)
+                            
+                            if filtered_deps:
+                                service_config['depends_on'] = filtered_deps
+                            else:
+                                # Remove depends_on if all dependencies are excluded
+                                del service_config['depends_on']
+                        elif isinstance(depends_on, dict):
+                            # Filter out excluded services from dict
+                            filtered_deps = {k: v for k, v in depends_on.items() if k not in exclude_set}
+                            if filtered_deps:
+                                service_config['depends_on'] = filtered_deps
+                            else:
+                                del service_config['depends_on']
+                    
+                    filtered_compose['services'][service_name] = service_config
+            
+            # Filter volumes to only include those used by selected services
+            selected_volumes = set()
+            for service_name, service_config in filtered_compose['services'].items():
+                # Check volumes in service
+                volumes = service_config.get('volumes', [])
+                for volume in volumes:
+                    if isinstance(volume, str):
+                        # Parse volume string (e.g., "volume_name:/path" or "volume_name")
+                        parts = volume.split(':')
+                        if parts[0] and not parts[0].startswith('.') and not parts[0].startswith('/'):
+                            selected_volumes.add(parts[0])
+                    elif isinstance(volume, dict):
+                        # Handle named volumes
+                        if 'source' in volume or 'volume' in volume:
+                            vol_name = volume.get('source') or volume.get('volume')
+                            if vol_name and not vol_name.startswith('.') and not vol_name.startswith('/'):
+                                selected_volumes.add(vol_name)
+            
+            # Copy only selected volumes
+            all_volumes = compose_data.get('volumes', {})
+            for vol_name in selected_volumes:
+                if vol_name in all_volumes:
+                    filtered_compose['volumes'][vol_name] = all_volumes[vol_name]
+            
+            return filtered_compose
+            
+        except Exception as e:
+            log_error(f"Failed to filter compose services: {e}")
+            return None
     
     def _restore_environment_files(self, package_dir: Path, worktree_path: Path) -> bool:
         """Restore environment files from package to worktree."""
@@ -693,6 +852,21 @@ class PackageManager:
                 if dockertree_dst.exists():
                     shutil.rmtree(dockertree_dst)
                 shutil.copytree(dockertree_src, dockertree_dst)
+            
+            # Check for filtered compose file and use it if available
+            filtered_compose_file = dockertree_dst / "docker-compose.worktree.filtered.yml"
+            worktree_compose_file = dockertree_dst / "docker-compose.worktree.yml"
+            if filtered_compose_file.exists():
+                log_info("Found filtered compose file in package, using it as worktree compose file")
+                # Load filtered compose to get service count
+                with open(filtered_compose_file) as f:
+                    filtered_data = yaml.safe_load(f) or {}
+                service_count = len(filtered_data.get('services', {}))
+                # Replace the worktree compose file with the filtered one
+                if worktree_compose_file.exists():
+                    worktree_compose_file.unlink()
+                shutil.copy2(filtered_compose_file, worktree_compose_file)
+                log_info(f"Restored filtered compose file with {service_count} service(s)")
             
             # Restore docker-compose.dockertree.yml
             compose_file = env_dir / "docker-compose.dockertree.yml"

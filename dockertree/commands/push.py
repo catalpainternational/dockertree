@@ -12,7 +12,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 
 from ..core.package_manager import PackageManager
 from ..core.dns_manager import DNSManager, parse_domain, is_domain
@@ -57,7 +57,8 @@ class PushManager:
                     droplet_ssh_keys: Optional[list] = None,
                     resume: bool = False,
                     code_only: bool = False,
-                    containers: Optional[str] = None) -> bool:
+                    containers: Optional[str] = None,
+                    exclude_deps: Optional[List[str]] = None) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -185,6 +186,9 @@ class PushManager:
                     log_info(f"Selected {len(container_filter)} container(s) for export")
                     for selection in container_filter:
                         log_info(f"  - {selection['worktree']}.{selection['container']}")
+                    log_info("Service filtering enabled: compose file will be filtered to include only selected services and dependencies")
+                    if exclude_deps:
+                        log_info(f"Excluding services from dependencies: {', '.join(exclude_deps)}")
                 except ValueError as e:
                     log_error(f"Invalid container selection: {e}")
                     return False
@@ -197,7 +201,8 @@ class PushManager:
                     output_dir=output_dir,
                     include_code=True,  # Always include code for deployments
                     compressed=True,    # Always compress for faster transfer
-                    container_filter=container_filter
+                    container_filter=container_filter,
+                    exclude_deps=exclude_deps
                 )
                 
                 if not export_result.get("success"):
