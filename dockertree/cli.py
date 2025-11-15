@@ -5,6 +5,7 @@ This module provides the main CLI interface using Click framework.
 """
 
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +21,7 @@ from .commands.push import PushManager
 from .commands.droplets import DropletCommands
 from .commands.domains import DomainCommands
 from .core.dns_manager import parse_domain
-from .utils.logging import log_error, log_info, log_warning, log_success, error_exit, set_verbose
+from .utils.logging import log_error, log_info, log_warning, log_success, error_exit, set_verbose, format_elapsed_time, print_plain
 from .utils.path_utils import detect_execution_context, get_worktree_branch_name
 from .utils.validation import check_prerequisites, check_setup_or_prompt, check_prerequisites_no_git
 from .utils.pattern_matcher import has_wildcard
@@ -913,6 +914,7 @@ def droplet():
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server')
+@click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @add_json_option
 @add_verbose_option
 def droplet_create(branch_name: Optional[str], region: Optional[str], size: Optional[str], image: Optional[str],
@@ -920,7 +922,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                     create_only: bool, scp_target: Optional[str],
                     output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool,
                     domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool,
-                    code_only: bool):
+                    code_only: bool, containers: Optional[str]):
     """Create a new DigitalOcean droplet and optionally push dockertree environment.
 
     By default, creates a droplet and automatically pushes the dockertree environment
@@ -950,6 +952,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         # Create droplet with custom configuration and push
         dockertree droplet create test --region sfo3 --size s-2vcpu-4gb
     """
+    start_time = time.time()
     try:
         import subprocess
         
@@ -1045,9 +1048,13 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
             tags=tags_list,
             wait=wait or wait_for_push,  # Always wait if pushing
             api_token=api_token,
-            json=json
+            json=json,
+            containers=containers
         )
         if not success:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error(f"Failed to create droplet: {droplet_name}")
             else:
@@ -1056,6 +1063,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         
         # If create_only, we're done
         if create_only:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             return
         
         # Otherwise, push the environment to the newly created droplet
@@ -1066,6 +1076,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         from .core.droplet_manager import DropletManager
         token = DropletManager.resolve_droplet_token(api_token or dns_token)
         if not token:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error("Digital Ocean API token not found for push operation")
             else:
@@ -1074,6 +1087,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         
         provider = DropletManager.create_provider('digitalocean', token)
         if not provider:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error("Failed to create droplet provider for push")
             else:
@@ -1089,6 +1105,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 break
         
         if not droplet or not droplet.ip_address:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error(f"Droplet {droplet_name} created but IP address not available")
             else:
@@ -1100,6 +1119,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
             # Parse provided scp_target to extract username and path (server will be replaced)
             push_manager = PushManager()
             if not push_manager._validate_scp_target(scp_target):
+                elapsed_time = time.time() - start_time
+                if not json:
+                    print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
                 if json:
                     JSONOutput.print_error(f"Invalid SCP target format: {scp_target}")
                 else:
@@ -1114,79 +1136,23 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         final_scp_target = f"{username}@{droplet.ip_address}:{remote_path}"
         
         # Now push using PushManager
-        if not json:
-            log_info("[DEBUG] About to call check_setup_or_prompt()...")
-        try:
-            check_setup_or_prompt()
-            if not json:
-                log_info("[DEBUG] check_setup_or_prompt() completed")
-        except Exception as e:
-            if not json:
-                log_error(f"[DEBUG] Error in check_setup_or_prompt(): {e}")
-                import traceback
-                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
-            raise
-        
-        if not json:
-            log_info("[DEBUG] About to call check_prerequisites()...")
-        try:
-            check_prerequisites()
-            if not json:
-                log_info("[DEBUG] check_prerequisites() completed")
-        except Exception as e:
-            if not json:
-                log_error(f"[DEBUG] Error in check_prerequisites(): {e}")
-                import traceback
-                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
-            raise
+        check_setup_or_prompt()
+        check_prerequisites()
         
         # Validate mutual exclusivity
         if domain and ip:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
             else:
                 error_exit("Options --domain and --ip are mutually exclusive")
             return
         
-        if not json:
-            log_info("[DEBUG] About to instantiate PushManager()...")
-        try:
-            push_manager = PushManager()
-            if not json:
-                log_info("[DEBUG] PushManager() instantiated successfully")
-        except Exception as e:
-            if not json:
-                log_error(f"[DEBUG] Error instantiating PushManager(): {e}")
-                import traceback
-                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
-            raise
-        
-        # Parse comma-separated SSH key names into a list (if provided as string)
-        # Note: ssh_keys_list is already a list from line 1034, so we can use it directly
-        if not json:
-            log_info("[DEBUG] About to use ssh_keys_list...")
-            log_info(f"[DEBUG] ssh_keys_list type: {type(ssh_keys_list)}, value: {ssh_keys_list}")
-        # ssh_keys_list is already a list, so we can use it directly without conversion
+        push_manager = PushManager()
+        # ssh_keys_list is already a list from line 1034, so we can use it directly
         droplet_ssh_keys_list = ssh_keys_list if ssh_keys_list else None
-        if not json:
-            log_info(f"[DEBUG] droplet_ssh_keys_list set to: {droplet_ssh_keys_list}")
-        
-        if not json:
-            log_info(f"[DEBUG] Prepared parameters for push_package:")
-            log_info(f"[DEBUG]   branch_name={branch_name}")
-            log_info(f"[DEBUG]   scp_target={final_scp_target}")
-            log_info(f"[DEBUG]   output_dir={output_dir}")
-            log_info(f"[DEBUG]   keep_package={keep_package}")
-            log_info(f"[DEBUG]   auto_import={not no_auto_import}")
-            log_info(f"[DEBUG]   domain={domain}")
-            log_info(f"[DEBUG]   ip={ip}")
-            log_info(f"[DEBUG]   prepare_server={prepare_server}")
-            log_info(f"[DEBUG]   dns_token={'***' if (dns_token or api_token) else None}")
-            log_info(f"[DEBUG]   skip_dns_check={skip_dns_check}")
-            log_info(f"[DEBUG]   droplet_ssh_keys={droplet_ssh_keys_list}")
-            log_info(f"[DEBUG]   resume={resume}")
-            log_info(f"[DEBUG]   code_only={code_only}")
-            log_info("[DEBUG] About to call push_manager.push_package()...")
         
         try:
             success = push_manager.push_package(
@@ -1195,6 +1161,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 output_dir=Path(output_dir),
                 keep_package=keep_package,
                 auto_import=not no_auto_import,  # Invert: no_auto_import=True means auto_import=False
+                containers=containers,
                 domain=domain,
                 ip=ip,
                 prepare_server=prepare_server,
@@ -1212,30 +1179,42 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         except click.exceptions.ClickException as e:
             # Catch Click-specific exceptions
             import traceback
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error(f"Click error during push: {e}")
             else:
-                log_error(f"[DEBUG] Click exception caught: {e}")
-                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
                 error_exit(f"Click error during push: {e}\n{traceback.format_exc()}")
             return
         except Exception as e:
             import traceback
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error(f"Error during push: {e}")
             else:
                 error_exit(f"Error during push: {e}\n{traceback.format_exc()}")
             return
         
+        elapsed_time = time.time() - start_time
         if not success:
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error(f"Failed to push package to droplet")
             else:
                 error_exit(f"Failed to push package to droplet")
         else:
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_success(f"Droplet created and package pushed successfully")
     except Exception as e:
+        elapsed_time = time.time() - start_time
+        if not json:
+            print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
         if json:
             JSONOutput.print_error(f"Error creating droplet: {e}")
         else:
@@ -1931,9 +1910,10 @@ def validate_package(package_file: str, json: bool):
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed (skips export/transfer if package exists, skips server prep if already done)')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)')
+@click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @add_json_option
 @add_verbose_option
-def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool, code_only: bool, json: bool):
+def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool, code_only: bool, containers: Optional[str], json: bool):
     """Push dockertree package to remote server via SCP.
 
     Exports a complete dockertree environment package and transfers it to a
@@ -1972,24 +1952,33 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
     After pushing, SSH to the server and import with:
         dockertree packages import <package-file> --standalone --domain your-domain.com
     """
+    start_time = time.time()
     try:
         check_setup_or_prompt()
         check_prerequisites()
         
         # Validate mutual exclusivity
         if domain and ip:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
             else:
                 error_exit("Options --domain and --ip are mutually exclusive")
+            return
         
         # Validate scp_target is provided when not using code-only
         # (code-only can use stored config from env.dockertree)
         if not code_only and not scp_target:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error("scp_target is required")
             else:
                 error_exit("scp_target is required")
+            return
         
         push_manager = PushManager()
         success = push_manager.push_package(
@@ -2010,18 +1999,27 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
             droplet_image=None,
             droplet_ssh_keys=None,
             resume=resume,
-            code_only=code_only
+            code_only=code_only,
+            containers=containers
         )
         
+        elapsed_time = time.time() - start_time
         if not success:
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_error(f"Failed to push package")
             else:
                 error_exit(f"Failed to push package")
         else:
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
             if json:
                 JSONOutput.print_success(f"Package pushed successfully")
     except Exception as e:
+        elapsed_time = time.time() - start_time
+        if not json:
+            print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
         if json:
             JSONOutput.print_error(f"Error pushing package: {e}")
         else:

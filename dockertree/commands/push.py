@@ -9,7 +9,6 @@ import subprocess
 import re
 import socket
 import os
-import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -36,25 +35,13 @@ class PushManager:
         Args:
             project_root: Project root directory. If None, uses current working directory.
         """
-        log_info("[DEBUG] PushManager.__init__ called")
-        try:
-            if project_root is None:
-                log_info("[DEBUG] project_root is None, calling get_project_root()")
-                from ..config.settings import get_project_root
-                self.project_root = get_project_root()
-                log_info(f"[DEBUG] get_project_root() returned: {self.project_root}")
-            else:
-                log_info(f"[DEBUG] Using provided project_root: {project_root}")
-                self.project_root = Path(project_root).resolve()
-            
-            log_info(f"[DEBUG] Initializing PackageManager with project_root: {self.project_root}")
-            self.package_manager = PackageManager(project_root=self.project_root)
-            log_info("[DEBUG] PushManager.__init__ completed successfully")
-        except Exception as e:
-            log_error(f"[DEBUG] Error in PushManager.__init__: {e}")
-            import traceback
-            log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
-            raise
+        if project_root is None:
+            from ..config.settings import get_project_root
+            self.project_root = get_project_root()
+        else:
+            self.project_root = Path(project_root).resolve()
+        
+        self.package_manager = PackageManager(project_root=self.project_root)
     
     def push_package(self, branch_name: Optional[str], scp_target: Optional[str], 
                     output_dir: Path = None, keep_package: bool = False,
@@ -69,7 +56,8 @@ class PushManager:
                     droplet_image: Optional[str] = None,
                     droplet_ssh_keys: Optional[list] = None,
                     resume: bool = False,
-                    code_only: bool = False) -> bool:
+                    code_only: bool = False,
+                    containers: Optional[str] = None) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -77,53 +65,25 @@ class PushManager:
             scp_target: SCP target in format username@server:path (optional when create_droplet is True)
             output_dir: Temporary package location (default: ./packages)
             keep_package: Don't delete package after successful push
+            containers: Optional comma-separated list of 'worktree.container' patterns
+                       to push only specific containers and their volumes
             
         Returns:
             True if successful, False otherwise
         """
         try:
             log_info("Starting push operation...")
-            log_info(f"[DEBUG] sys.argv at start of push_package: {sys.argv}")
-            log_info(f"[DEBUG] push_package called with parameters:")
-            log_info(f"[DEBUG]   branch_name={branch_name}")
-            log_info(f"[DEBUG]   scp_target={scp_target}")
-            log_info(f"[DEBUG]   output_dir={output_dir}")
-            log_info(f"[DEBUG]   keep_package={keep_package}")
-            log_info(f"[DEBUG]   auto_import={auto_import}")
-            log_info(f"[DEBUG]   domain={domain}")
-            log_info(f"[DEBUG]   ip={ip}")
-            log_info(f"[DEBUG]   prepare_server={prepare_server}")
-            log_info(f"[DEBUG]   dns_token={'***' if dns_token else None}")
-            log_info(f"[DEBUG]   skip_dns_check={skip_dns_check}")
-            log_info(f"[DEBUG]   create_droplet={create_droplet}")
-            log_info(f"[DEBUG]   droplet_name={droplet_name}")
-            log_info(f"[DEBUG]   droplet_region={droplet_region}")
-            log_info(f"[DEBUG]   droplet_size={droplet_size}")
-            log_info(f"[DEBUG]   droplet_image={droplet_image}")
-            log_info(f"[DEBUG]   droplet_ssh_keys={droplet_ssh_keys}")
-            log_info(f"[DEBUG]   resume={resume}")
-            log_info(f"[DEBUG]   code_only={code_only}")
             
             # Handle code-only push
-            log_info("[DEBUG] Checking code_only flag...")
             if code_only:
                 if output_dir is None:
                     output_dir = self.project_root / "packages"
                 return self._push_code_only(branch_name, scp_target, domain, ip, output_dir)
             
             # Auto-detect branch name if not provided
-            log_info("[DEBUG] Checking branch_name...")
             if not branch_name:
                 log_info("Branch name not provided, attempting auto-detection...")
-                log_info("[DEBUG] Calling _detect_current_branch()...")
-                try:
-                    branch_name = self._detect_current_branch()
-                    log_info(f"[DEBUG] _detect_current_branch() returned: {branch_name}")
-                except Exception as e:
-                    log_error(f"[DEBUG] Error in _detect_current_branch(): {e}")
-                    import traceback
-                    log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
-                    raise
+                branch_name = self._detect_current_branch()
                 if not branch_name:
                     log_error("Could not detect branch name. Please specify branch_name.")
                     return False
@@ -132,38 +92,20 @@ class PushManager:
                 log_info(f"Using provided branch name: {branch_name}")
             
             # Validate and parse SCP target (required)
-            log_info("[DEBUG] Validating SCP target...")
             if not scp_target:
                 log_error("scp_target is required")
                 return False
             
             # Validate SCP target format
             log_info(f"Validating SCP target format: {scp_target}")
-            log_info("[DEBUG] Calling _validate_scp_target()...")
-            try:
-                is_valid = self._validate_scp_target(scp_target)
-                log_info(f"[DEBUG] _validate_scp_target() returned: {is_valid}")
-            except Exception as e:
-                log_error(f"[DEBUG] Error in _validate_scp_target(): {e}")
-                import traceback
-                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
-                raise
-            if not is_valid:
+            if not self._validate_scp_target(scp_target):
                 log_error(f"Invalid SCP target format: {scp_target}")
                 log_info("Expected format: username@server:path")
                 return False
             log_info("SCP target format is valid")
             
             # Parse SCP target
-            log_info("[DEBUG] Calling _parse_scp_target()...")
-            try:
-                username, server, remote_path = self._parse_scp_target(scp_target)
-                log_info(f"[DEBUG] _parse_scp_target() returned: username={username}, server={server}, remote_path={remote_path}")
-            except Exception as e:
-                log_error(f"[DEBUG] Error in _parse_scp_target(): {e}")
-                import traceback
-                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
-                raise
+            username, server, remote_path = self._parse_scp_target(scp_target)
             log_info(f"Parsed SCP target - Username: {username}, Server: {server}, Remote Path: {remote_path}")
             
             # Handle DNS management if domain is provided
@@ -233,6 +175,20 @@ class PushManager:
                 else:
                     log_info("No existing package found on server, will export and transfer")
             
+            # Parse container filter if provided
+            container_filter = None
+            if containers:
+                log_info(f"Parsing container selection: {containers}")
+                try:
+                    from ..utils.container_selector import parse_container_selection
+                    container_filter = parse_container_selection(containers, self.project_root)
+                    log_info(f"Selected {len(container_filter)} container(s) for export")
+                    for selection in container_filter:
+                        log_info(f"  - {selection['worktree']}.{selection['container']}")
+                except ValueError as e:
+                    log_error(f"Invalid container selection: {e}")
+                    return False
+            
             # Export package only if not already on server
             if not package_already_on_server:
                 log_info("Worktree validated, proceeding with export...")
@@ -240,7 +196,8 @@ class PushManager:
                     branch_name=branch_name,
                     output_dir=output_dir,
                     include_code=True,  # Always include code for deployments
-                    compressed=True     # Always compress for faster transfer
+                    compressed=True,    # Always compress for faster transfer
+                    container_filter=container_filter
                 )
                 
                 if not export_result.get("success"):
@@ -1221,13 +1178,21 @@ dockertree --version || true
                         stdout_done.set()
                 
                 def read_stderr():
-                    """Read stderr lines and log them in real-time."""
+                    """Read stderr lines and log them appropriately."""
                     try:
                         for line in iter(process.stderr.readline, ''):
                             if line:
                                 line = line.rstrip()
                                 stderr_lines.append(line)
-                                log_error(f"[REMOTE] {line}")
+                                # Check if line contains error indicators
+                                line_lower = line.lower()
+                                if any(indicator in line_lower for indicator in ['✗', 'error', 'failed', 'fatal', 'exception']):
+                                    log_error(f"[REMOTE] {line}")
+                                elif any(indicator in line for indicator in ['✓', 'SUCCESS', 'successfully']):
+                                    log_success(f"[REMOTE] {line}")
+                                else:
+                                    # Informational message (log, docker ps output, etc.)
+                                    log_info(f"[REMOTE] {line}")
                     finally:
                         stderr_done.set()
                 
@@ -1260,7 +1225,13 @@ dockertree --version || true
                     if stderr_lines:
                         log_error("Remote import errors:")
                         for line in stderr_lines:
-                            log_error(f"  {line}")
+                            # Check if line is actually an error
+                            line_lower = line.lower()
+                            if any(indicator in line_lower for indicator in ['✗', 'error', 'failed', 'fatal', 'exception']):
+                                log_error(f"  {line}")
+                            else:
+                                # Show informational lines too when there's an error
+                                log_info(f"  {line}")
                     return
                 
                 log_success("Remote import script completed successfully")
@@ -2168,8 +2139,8 @@ log_success "=== Remote import process completed ==="
         resolved = {
             'scp_target': scp_target or stored_config.get('scp_target'),
             'branch_name': branch_name or stored_config.get('branch_name'),
-            'domain': domain or stored_config.get('domain'),
-            'ip': ip or stored_config.get('ip')
+            'domain': domain if domain is not None else stored_config.get('domain'),
+            'ip': ip if ip is not None else stored_config.get('ip')
         }
         
         # Validate required parameters

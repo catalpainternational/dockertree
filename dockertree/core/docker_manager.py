@@ -7,6 +7,7 @@ container lifecycle, and compose file execution.
 
 import subprocess
 import shutil
+import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,13 +16,16 @@ from ..config.settings import (
     get_compose_command, 
     get_volume_names,
     DEFAULT_ENV_VARS,
-    get_project_root
+    get_project_root,
+    get_project_name,
+    sanitize_project_name
 )
 from ..utils.logging import log_info, log_success, log_warning, log_error, show_progress
 from ..utils.validation import (
     validate_docker_running, validate_network_exists, validate_volume_exists,
     get_containers_using_volume, are_containers_running, get_postgres_container_for_volume
 )
+from ..core.git_manager import GitManager
 
 
 class DockerManager:
@@ -579,6 +583,114 @@ class DockerManager:
                     log_error(f"Failed to restart containers: {restart_error}")
             
             return None
+    
+    def get_volumes_for_service(self, branch_name: str, service_name: str) -> List[str]:
+        """Get list of volume names associated with a specific service.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            service_name: Service name from docker-compose.yml
+            
+        Returns:
+            List of volume names (with worktree prefix) associated with the service
+        """
+        # Get worktree path
+        git_manager = GitManager(project_root=self.project_root, validate=False)
+        worktree_path = git_manager.find_worktree_path(branch_name)
+        if not worktree_path:
+            log_error(f"Could not find worktree path for '{branch_name}'")
+            return []
+        
+        # Find docker-compose.yml file
+        compose_file = worktree_path / "docker-compose.yml"
+        if not compose_file.exists():
+            compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
+        
+        if not compose_file.exists():
+            log_error(f"No docker-compose.yml found for worktree '{branch_name}'")
+            return []
+        
+        # Load compose file
+        try:
+            with open(compose_file) as f:
+                compose_data = yaml.safe_load(f) or {}
+        except Exception as e:
+            log_error(f"Failed to parse docker-compose.yml for worktree '{branch_name}': {e}")
+            return []
+        
+        # Get service definition
+        services = compose_data.get('services', {})
+        if service_name not in services:
+            log_error(f"Service '{service_name}' not found in worktree '{branch_name}'")
+            return []
+        
+        service_config = services[service_name]
+        
+        # Get project name for volume prefix
+        project_name = None
+        config_path = self.project_root / ".dockertree" / "config.yml"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+                    project_name = config.get("project_name")
+            except Exception:
+                pass
+        
+        if not project_name:
+            project_name = self.project_root.name
+        
+        project_name = sanitize_project_name(project_name)
+        compose_project_name = f"{project_name}-{branch_name}"
+        
+        # Extract volumes from service
+        volumes = []
+        service_volumes = service_config.get('volumes', [])
+        
+        # Handle both list and dict formats
+        if isinstance(service_volumes, list):
+            for volume_spec in service_volumes:
+                if isinstance(volume_spec, str):
+                    # Format: "volume_name:/path/in/container" or "/path/in/container"
+                    if ':' in volume_spec:
+                        volume_name = volume_spec.split(':')[0].strip()
+                    else:
+                        # Anonymous volume, skip
+                        continue
+                elif isinstance(volume_spec, dict):
+                    # Format: {"type": "volume", "source": "volume_name", ...}
+                    volume_name = volume_spec.get('source') or volume_spec.get('target')
+                    if not volume_name:
+                        continue
+                else:
+                    continue
+                
+                # Check if it's a named volume (not anonymous)
+                compose_volumes = compose_data.get('volumes', {})
+                if volume_name in compose_volumes:
+                    # This is a named volume from the volumes section
+                    # Apply worktree prefix pattern: {project_name}-{branch_name}_{volume_name}
+                    prefixed_volume_name = f"{compose_project_name}_{volume_name}"
+                    volumes.append(prefixed_volume_name)
+                elif volume_name.startswith('/') or ':' not in volume_spec if isinstance(volume_spec, str) else False:
+                    # Anonymous volume or bind mount, skip
+                    continue
+                else:
+                    # Might be an external volume or already prefixed
+                    # Check if it matches our pattern
+                    if f"{branch_name}_" in volume_name or compose_project_name in volume_name:
+                        volumes.append(volume_name)
+        
+        # Also check for volume mounts in the service config
+        # Some compose files use different structures
+        if 'volumes' in service_config and isinstance(service_config['volumes'], dict):
+            for volume_name in service_config['volumes'].keys():
+                if volume_name in compose_data.get('volumes', {}):
+                    prefixed_volume_name = f"{compose_project_name}_{volume_name}"
+                    if prefixed_volume_name not in volumes:
+                        volumes.append(prefixed_volume_name)
+        
+        return volumes
     
     def ensure_containers_stopped_before_restore(self, branch_name: str, worktree_path: Path) -> bool:
         """Ensure containers are stopped before volume restoration.

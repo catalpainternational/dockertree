@@ -28,7 +28,7 @@ class DropletCommands:
                       ssh_keys: Optional[List[str]] = None,
                       tags: Optional[List[str]] = None,
                       wait: bool = False, api_token: Optional[str] = None,
-                      json: bool = False) -> bool:
+                      json: bool = False, containers: Optional[str] = None) -> bool:
         """Create a new droplet.
         
         Args:
@@ -41,6 +41,8 @@ class DropletCommands:
             wait: Wait for droplet to be ready
             api_token: Digital Ocean API token
             json: Output as JSON
+            containers: Optional comma-separated list of 'worktree.container' patterns
+                       for selective container/volume deployment (stored for future use)
             
         Returns:
             True if successful, False otherwise

@@ -174,6 +174,28 @@ def show_progress(message: str) -> Progress:
         transient=True
     )
 
+def format_elapsed_time(seconds: float) -> str:
+    """Format elapsed time in seconds into a readable string.
+    
+    Args:
+        seconds: Elapsed time in seconds
+        
+    Returns:
+        Formatted string like "2m 30s" or "1h 5m 20s"
+    """
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    
+    hours = int(minutes // 60)
+    mins = int(minutes % 60)
+    return f"{hours}h {mins}m {secs}s"
+
 def error_exit(message: str, exit_code: int = 1) -> None:
     """Log an error and exit."""
     log_error(message)

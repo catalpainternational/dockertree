@@ -11,7 +11,7 @@ import time
 from typing import Optional, Callable, List
 from contextlib import contextmanager
 
-from .logging import log_info, log_error, is_verbose
+from .logging import log_info, log_error, log_success, is_verbose
 
 
 @contextmanager
@@ -58,18 +58,28 @@ def stream_ssh_output(process: subprocess.Popen,
             stdout_done.set()
     
     def read_stderr():
-        """Read stderr lines."""
+        """Read stderr lines and log them appropriately."""
         try:
             for line in iter(process.stderr.readline, ''):
                 if line:
                     line = line.rstrip()
                     with output_lock:
                         stderr_lines.append(line)
-                    if verbose:
+                    # Check if line contains error indicators
+                    line_lower = line.lower()
+                    if any(indicator in line_lower for indicator in ['✗', 'error', 'failed', 'fatal', 'exception']):
                         log_error(f"{prefix}{line}")
+                    elif any(indicator in line for indicator in ['✓', 'SUCCESS', 'successfully']):
+                        if verbose:
+                            log_success(f"{prefix}{line}")
+                        else:
+                            log_info(f"{prefix}{line}")
                     else:
-                        # Always show errors
-                        log_error(f"{prefix}{line}")
+                        # Informational message (log, docker ps output, etc.)
+                        if verbose:
+                            log_info(f"{prefix}{line}")
+                        # In non-verbose mode, only show errors
+                        # (informational stderr is suppressed)
         finally:
             stderr_done.set()
     

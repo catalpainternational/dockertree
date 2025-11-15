@@ -59,7 +59,8 @@ class PackageManager:
         return True
     
     def export_package(self, branch_name: str, output_dir: Path, 
-                      include_code: bool = False, compressed: bool = True, skip_volumes: bool = False) -> Dict[str, Any]:
+                      include_code: bool = False, compressed: bool = True, skip_volumes: bool = False,
+                      container_filter: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """Export worktree to package - orchestrates existing managers.
         
         Args:
@@ -68,6 +69,8 @@ class PackageManager:
             include_code: Whether to include git archive of code
             compressed: Whether to compress the final package
             skip_volumes: Whether to skip volume backup (fallback option)
+            container_filter: Optional list of dicts with 'worktree' and 'container' keys
+                             to filter which containers/volumes to export
             
         Returns:
             Dictionary with success status, package path, and metadata
@@ -110,9 +113,38 @@ class PackageManager:
                 volumes_backup_path = temp_package_dir / "volumes" / f"backup_{branch_name}.tar"
                 volumes_backup_path.parent.mkdir(exist_ok=True)
                 
-                log_info(f"Backing up volumes for {branch_name}...")
-                backup_file = self.docker_manager.backup_volumes(branch_name, temp_package_dir / "volumes")
-                if not backup_file:
+                # If container_filter is provided, only backup volumes for selected containers
+                if container_filter:
+                    log_info(f"Backing up volumes for selected containers in {branch_name}...")
+                    # Collect volumes for all selected containers
+                    selected_volumes = set()
+                    for selection in container_filter:
+                        if selection.get('worktree') == branch_name:
+                            container_name = selection.get('container')
+                            volumes = self.docker_manager.get_volumes_for_service(branch_name, container_name)
+                            selected_volumes.update(volumes)
+                            log_info(f"  Container '{container_name}': {len(volumes)} volume(s)")
+                    
+                    if selected_volumes:
+                        log_info(f"Backing up {len(selected_volumes)} selected volume(s)...")
+                        backup_file = self._backup_selected_volumes(
+                            branch_name, 
+                            list(selected_volumes), 
+                            temp_package_dir / "volumes"
+                        )
+                    else:
+                        log_warning("No volumes found for selected containers")
+                        backup_file = None
+                else:
+                    log_info(f"Backing up all volumes for {branch_name}...")
+                    backup_file = self.docker_manager.backup_volumes(branch_name, temp_package_dir / "volumes")
+                
+                if container_filter and not backup_file:
+                    return {
+                        "success": False,
+                        "error": "Failed to backup selected volumes"
+                    }
+                elif not container_filter and not backup_file:
                     return {
                         "success": False,
                         "error": "Failed to backup volumes"
@@ -134,7 +166,9 @@ class PackageManager:
                     }
             
             # 7. Generate metadata with checksums
-            metadata = self._generate_metadata(branch_name, temp_package_dir, include_code, skip_volumes)
+            metadata = self._generate_metadata(
+                branch_name, temp_package_dir, include_code, skip_volumes, container_filter
+            )
             
             # 8. Compress package if requested
             final_package_path = temp_package_dir
@@ -671,7 +705,116 @@ class PackageManager:
             log_error(f"Failed to restore environment files: {e}")
             return False
     
-    def _generate_metadata(self, branch_name: str, package_dir: Path, include_code: bool, skip_volumes: bool = False) -> Dict[str, Any]:
+    def _backup_selected_volumes(self, branch_name: str, volume_names: List[str], backup_dir: Path) -> Optional[Path]:
+        """Backup only selected volumes to a tar file.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            volume_names: List of volume names to backup
+            backup_dir: Directory to save the backup
+            
+        Returns:
+            Path to backup file if successful, None otherwise
+        """
+        import tempfile
+        backup_file = backup_dir / f"backup_{branch_name}.tar"
+        
+        log_info(f"Backing up {len(volume_names)} selected volume(s) for {branch_name} to {backup_file}")
+        
+        # Check if worktree is running before backup
+        was_running = self.docker_manager._is_worktree_running(branch_name)
+        if was_running:
+            log_info(f"Worktree containers are running, stopping them safely before backup...")
+            from ..core.worktree_orchestrator import WorktreeOrchestrator
+            orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+            stop_result = orchestrator.stop_worktree(branch_name)
+            if not stop_result.get("success"):
+                log_warning("Failed to stop containers, but continuing with backup")
+            else:
+                log_success("Containers stopped successfully")
+        
+        # Create backup directory
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        temp_backup_dir = backup_dir / "temp_backup"
+        temp_backup_dir.mkdir(exist_ok=True)
+        
+        try:
+            from ..utils.validation import validate_volume_exists
+            
+            # Backup each selected volume
+            for volume_name in volume_names:
+                if not validate_volume_exists(volume_name):
+                    log_warning(f"Volume {volume_name} not found, skipping")
+                    continue
+                
+                log_info(f"Backing up volume: {volume_name}")
+                
+                # Use file-level backup
+                volume_backup = temp_backup_dir / f"{volume_name}.tar.gz"
+                
+                try:
+                    subprocess.run([
+                        "docker", "run", "--rm",
+                        "-v", f"{volume_name}:/data",
+                        "-v", f"{temp_backup_dir.absolute()}:/backup",
+                        "alpine", "tar", "czf", f"/backup/{volume_name}.tar.gz", "-C", "/data", "."
+                    ], check=True, capture_output=True, text=True)
+                    log_success(f"Volume backup created: {volume_name}.tar.gz")
+                except subprocess.CalledProcessError as e:
+                    log_error(f"Failed to backup volume {volume_name}: {e}")
+                    if e.stderr:
+                        log_error(f"Error details: {e.stderr}")
+                    continue
+            
+            # Create combined backup
+            subprocess.run([
+                "tar", "czf", str(backup_file), "-C", str(temp_backup_dir), "."
+            ], check=True, capture_output=True)
+            
+            # Cleanup temp directory
+            shutil.rmtree(temp_backup_dir)
+            
+            log_success(f"Backup created: {backup_file}")
+            
+            # Restart containers if they were running before
+            if was_running:
+                log_info("Restarting worktree containers in background...")
+                from ..core.worktree_orchestrator import WorktreeOrchestrator
+                orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+                import threading
+                
+                def start_in_background():
+                    start_result = orchestrator.start_worktree(branch_name)
+                    if start_result.get("success"):
+                        log_success("Containers restarted successfully")
+                    else:
+                        log_warning(f"Failed to restart containers: {start_result.get('error', 'Unknown error')}")
+                
+                thread = threading.Thread(target=start_in_background, daemon=True)
+                thread.start()
+            
+            return backup_file
+            
+        except subprocess.CalledProcessError as e:
+            log_error(f"Failed to create backup: {e}")
+            # Cleanup temp directory
+            if temp_backup_dir.exists():
+                shutil.rmtree(temp_backup_dir)
+            
+            # Try to restart containers if they were running
+            if was_running:
+                log_info("Attempting to restart containers after backup failure...")
+                try:
+                    from ..core.worktree_orchestrator import WorktreeOrchestrator
+                    orchestrator = WorktreeOrchestrator(project_root=self.project_root)
+                    orchestrator.start_worktree(branch_name)
+                except Exception as restart_error:
+                    log_error(f"Failed to restart containers: {restart_error}")
+            
+            return None
+    
+    def _generate_metadata(self, branch_name: str, package_dir: Path, include_code: bool, 
+                          skip_volumes: bool = False, container_filter: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """Generate package metadata with checksums."""
         metadata = {
             "package_version": "1.0",
@@ -681,6 +824,7 @@ class PackageManager:
             "project_name": get_project_name(),
             "include_code": include_code,
             "skip_volumes": skip_volumes,
+            "container_filter": container_filter if container_filter else None,
             "checksums": {}
         }
         
