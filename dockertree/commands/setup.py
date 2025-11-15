@@ -380,6 +380,9 @@ services:
                     service_config['container_name'] = f"${{COMPOSE_PROJECT_NAME}}-{service_name}"
                 
                 # Convert ports to expose for isolation
+                # Exception: Preserve ports for services that need external access (db, redis)
+                # This allows worker-only deployments to connect via private network
+                services_with_external_ports = ['db', 'redis', 'postgres', 'postgresql', 'mysql', 'mongodb']
                 if 'ports' in service_config:
                     ports = service_config.pop('ports')
                     expose_ports = []
@@ -391,6 +394,11 @@ services:
                         elif isinstance(port, int):
                             expose_ports.append(str(port))
                     service_config['expose'] = expose_ports
+                    
+                    # Preserve ports mapping for services that need external access
+                    if service_name in services_with_external_ports:
+                        service_config['ports'] = ports
+                        log_info(f"Preserved ports mapping for {service_name} (needed for external access)")
                 
                 # Add Caddy labels for web services
                 if service_name in ['web', 'app', 'frontend', 'api']:

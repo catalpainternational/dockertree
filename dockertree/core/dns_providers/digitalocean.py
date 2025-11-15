@@ -370,7 +370,8 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             'name': name,
             'region': region,
             'size': size,
-            'image': image
+            'image': image,
+            'private_networking': True  # Enable private networking for inter-droplet communication
         }
         
         if ssh_keys:
