@@ -296,7 +296,7 @@ The system uses a fallback hierarchy:
 **Responsibility**: Digital Ocean droplet management operations
 
 **Key Methods**:
-- `create_droplet()` - Create new droplet with configurable options
+- `create_droplet()` - Create new droplet with configurable options (default: creates and pushes environment)
 - `list_droplets()` - List all droplets with status information (supports table, JSON, CSV output)
 - `destroy_droplet()` - Destroy droplet and/or DNS records with confirmation
 - `get_droplet_info()` - Get detailed droplet information
@@ -906,13 +906,23 @@ Dockertree includes a droplet provider abstraction layer for cloud server manage
 ### Push Command Flow
 
 ```
-(optional) Droplet Creation → Export → (optional) DNS Management → Compress → SCP Transfer → (optional) Server Preparation → (optional) Remote Import → Start Proxy → Up
+Export → (optional) DNS Management → Compress → SCP Transfer → (optional) Server Preparation → (optional) Remote Import → Start Proxy → Up
 ```
 
-- Droplet creation (optional): creates new Digital Ocean droplet when `--create-droplet` provided, updates SCP target to use droplet IP
 - DNS management (optional): checks/creates DNS records via Digital Ocean DNS API when `--domain` provided
 - Server preparation (optional): checks presence of git, docker, docker compose, dockertree
 - Remote import (optional): runs `dockertree packages import` with `--domain` or `--ip`, then starts services
+
+### Droplet Create Command Flow
+
+```
+Create Droplet → Wait for Ready → (default) Push Environment → (optional) DNS Management → Compress → SCP Transfer → (optional) Server Preparation → (optional) Remote Import → Start Proxy → Up
+```
+
+- Droplet creation: creates new Digital Ocean droplet with configurable options
+- Default behavior: automatically pushes environment after droplet creation
+- `--create-only` flag: only creates droplet, skips push
+- When pushing: droplet is always waited for until ready, SCP target defaults to `root@<droplet-ip>:/root`
 
 ### HTTPS Configuration Architecture
 
@@ -964,22 +974,28 @@ These are read via helper functions in `config/settings.py` and are entirely opt
 
 ### Droplet Management Integration
 
-Droplet management is integrated into the push workflow:
+Droplet management is integrated into the create workflow:
 
-**Push Command Integration**:
-- `--create-droplet` flag triggers droplet creation before package export
-- When `--create-droplet` is used, `scp_target` is optional (defaults to `root@<droplet-ip>:/root`)
-- If `scp_target` is provided with `--create-droplet`, only username and path are used (server replaced with droplet IP)
+**Droplet Create Command Integration**:
+- Default behavior: creates droplet and automatically pushes environment
+- `--create-only` flag: only creates droplet, skips push
+- When pushing (default): `scp_target` is optional (defaults to `root@<droplet-ip>:/root`)
+- If `scp_target` is provided, only username and path are used (server replaced with droplet IP)
 - Droplet is always waited for until ready before pushing (no option to skip - required for push to work)
 - Droplet IP address automatically updates SCP target
 - Droplet defaults loaded from `.env` or `.dockertree/env.dockertree`
 
 **Workflow**:
-1. Create droplet (if `--create-droplet` specified)
+1. Create droplet with specified configuration
 2. Always wait for droplet ready (required - push needs IP address and SSH access)
 3. Extract droplet IP address
-4. Update SCP target to use droplet IP (or construct from defaults if scp_target not provided)
+4. If not `--create-only`, update SCP target to use droplet IP (or construct from defaults if scp_target not provided)
 5. Continue with standard push flow (export, transfer, import)
+
+**Droplet Push Command**:
+- Separate command for pushing to existing servers
+- No droplet creation logic (moved to `droplet create`)
+- Requires `scp_target` to be provided
 
 ### Adding New Commands
 

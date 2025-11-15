@@ -20,7 +20,8 @@ from .commands.push import PushManager
 from .commands.droplets import DropletCommands
 from .commands.domains import DomainCommands
 from .core.dns_manager import parse_domain
-from .utils.logging import log_error, log_info, error_exit, set_verbose
+from .utils.logging import log_error, log_info, log_warning, log_success, error_exit, set_verbose
+from .utils.path_utils import detect_execution_context, get_worktree_branch_name
 from .utils.validation import check_prerequisites, check_setup_or_prompt, check_prerequisites_no_git
 from .utils.pattern_matcher import has_wildcard
 from .utils.json_output import JSONOutput, add_json_option, handle_json_output
@@ -47,7 +48,7 @@ class DockertreeCLI(click.MultiCommand):
             reserved_commands = {
                 'start-proxy', 'stop-proxy', 'start', 'stop', 'create', 
                 'delete', 'remove', 'remove-all', 'delete-all', 'list', 'prune', 
-                'volumes', 'setup', 'help', 'completion', 'droplets', 'domains', '-D', '-r'
+                'volumes', 'setup', 'help', 'completion', 'droplet', 'domains', '-D', '-r'
             }
             
             if args[0] not in reserved_commands:
@@ -66,7 +67,7 @@ class DockertreeCLI(click.MultiCommand):
             reserved_commands = {
                 'start-proxy', 'stop-proxy', 'start', 'stop', 'create', 
                 'delete', 'remove', 'remove-all', 'delete-all', 'list', 'prune', 
-                'volumes', 'setup', 'help', 'completion', 'push', 'packages', 'droplets', 'domains', '-D', '-r'
+                'volumes', 'setup', 'help', 'completion', 'packages', 'droplet', 'domains', '-D', '-r'
             }
             
             # Common docker compose subcommands that should trigger passthrough
@@ -103,8 +104,8 @@ class DockertreeCLI(click.MultiCommand):
         """Return list of available commands."""
         return sorted([
             'create', 'delete', 'remove', 'start-proxy', 'stop-proxy', 'start', 'stop', 
-            'list', 'prune', 'volumes', 'packages', 'push', 'help', 'delete-all', 'remove-all',
-            'setup', 'clean-legacy', 'completion', '_completion', 'droplets', 'domains', '-D', '-r'  # Add dash-prefixed aliases
+            'list', 'prune', 'volumes', 'packages', 'help', 'delete-all', 'remove-all',
+            'setup', 'clean-legacy', 'completion', '_completion', 'droplet', 'domains', '-D', '-r'  # Add dash-prefixed aliases
         ])
     
     def get_command(self, ctx, name):
@@ -142,8 +143,6 @@ class DockertreeCLI(click.MultiCommand):
             return volumes
         elif name == 'packages':
             return packages
-        elif name == 'push':
-            return push
         elif name == 'help':
             return help
         elif name == 'delete-all':
@@ -156,8 +155,8 @@ class DockertreeCLI(click.MultiCommand):
             return completion
         elif name == '_completion':
             return _completion
-        elif name == 'droplets':
-            return droplets
+        elif name == 'droplet':
+            return droplet
         elif name == 'domains':
             return domains
         elif name == 'passthrough':
@@ -877,7 +876,7 @@ def volumes_clean(branch_name: str, json: bool):
 
 @cli.group()
 @add_verbose_option
-def droplets():
+def droplet():
     """Manage DigitalOcean droplets.
 
     Provides commands for creating, listing, and managing DigitalOcean
@@ -886,59 +885,356 @@ def droplets():
 
     Examples:
 
-        dockertree droplets list
+        dockertree droplet list
 
-        dockertree droplets create my-droplet
+        dockertree droplet create my-droplet
     """
     pass
 
 
-@droplets.command('create')
-@click.argument('name')
+@droplet.command('create')
+@click.argument('branch_name', required=False)
 @click.option('--region', help='Droplet region (default: nyc1 or from DIGITALOCEAN_REGION env var)')
-@click.option('--size', help='Droplet size slug (e.g., s-1vcpu-1gb, s-2vcpu-4gb). Use "dockertree droplets sizes" to list all available sizes. Default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var')
+@click.option('--size', help='Droplet size slug (e.g., s-1vcpu-1gb, s-2vcpu-4gb). Use "dockertree droplet sizes" to list all available sizes. Default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var')
 @click.option('--image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
-@click.option('--ssh-keys', multiple=True, help='SSH key IDs or fingerprints (can be specified multiple times)')
+@click.option('--ssh-keys', type=str, help='SSH key names (comma-separated, e.g., anders,peter)')
 @click.option('--tags', multiple=True, help='Tags for the droplet (can be specified multiple times)')
 @click.option('--wait', is_flag=True, default=False, help='Wait for droplet to be ready before returning')
 @click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--create-only', is_flag=True, default=False, help='Only create droplet, do not push environment (default: creates droplet and pushes environment)')
+@click.option('--scp-target', help='SCP target in format username@server:path (optional, defaults to root@<droplet-ip>:/root)')
+@click.option('--output-dir', type=click.Path(), default='./packages', help='Temporary package location (default: ./packages)')
+@click.option('--keep-package', is_flag=True, default=False, help='Keep package file after successful push (default: delete after push)')
+@click.option('--no-auto-import', is_flag=True, default=False, help='Skip automatic import and start on remote server after push (default: auto-import is enabled)')
+@click.option('--prepare-server', is_flag=True, default=False, help='Check remote server for required dependencies before push')
+@click.option('--domain', help='Domain override for remote import (subdomain.domain.tld). DNS A record will be automatically created if it does not exist.')
+@click.option('--ip', help='IP override for remote import (HTTP-only, no TLS)')
+@click.option('--dns-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
+@click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed')
+@click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server')
 @add_json_option
 @add_verbose_option
-def droplets_create(name: str, region: Optional[str], size: Optional[str], image: Optional[str],
-                    ssh_keys: tuple, tags: tuple, wait: bool, api_token: Optional[str], json: bool):
-    """Create a new DigitalOcean droplet.
+def droplet_create(branch_name: Optional[str], region: Optional[str], size: Optional[str], image: Optional[str],
+                    ssh_keys: Optional[str], tags: tuple, wait: bool, api_token: Optional[str], json: bool,
+                    create_only: bool, scp_target: Optional[str],
+                    output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool,
+                    domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool,
+                    code_only: bool):
+    """Create a new DigitalOcean droplet and optionally push dockertree environment.
 
-    Creates a new droplet with the specified configuration. Default values
-    can be set via environment variables or command-line options.
+    By default, creates a droplet and automatically pushes the dockertree environment
+    to it. Use --create-only to only create the droplet without pushing.
+
+    The droplet name is auto-detected:
+    - If --domain is provided, uses the subdomain (e.g., app.example.com -> app)
+    - Otherwise, uses the branch/worktree name (auto-detected from current directory if not provided)
+
+    When pushing (default behavior), the droplet is always waited for until ready
+    before pushing. The scp_target is optional and defaults to root@<droplet-ip>:/root.
 
     Examples:
 
-        dockertree droplets create my-droplet
+        # Create droplet and push environment (auto-detects branch name)
+        dockertree droplet create
 
-        dockertree droplets create my-droplet --region sfo3 --size s-2vcpu-4gb
-        dockertree droplets create my-droplet --ssh-keys 12345 --wait
+        # Create droplet with explicit branch name
+        dockertree droplet create test
+
+        # Create droplet only, do not push
+        dockertree droplet create test --create-only
+
+        # Create droplet with domain (uses subdomain as droplet name)
+        dockertree droplet create --domain app.example.com
+
+        # Create droplet with custom configuration and push
+        dockertree droplet create test --region sfo3 --size s-2vcpu-4gb
     """
     try:
+        import subprocess
+        
+        # Auto-detect branch name if not provided
+        if not branch_name:
+            if not json:
+                log_info("Branch name not provided, attempting auto-detection...")
+            
+            # Try to detect execution context (worktree or git root)
+            worktree_path, detected_branch, is_worktree = detect_execution_context()
+            
+            if is_worktree and detected_branch:
+                branch_name = detected_branch
+            else:
+                # Fallback: try git branch --show-current
+                try:
+                    from .config.settings import get_project_root
+                    project_root = get_project_root()
+                    result = subprocess.run(
+                        ["git", "branch", "--show-current"],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        cwd=project_root
+                    )
+                    branch = result.stdout.strip()
+                    if branch:
+                        branch_name = branch
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    pass
+                
+                # Fallback: extract from directory name
+                if not branch_name:
+                    current_path = Path.cwd()
+                    if "worktrees" in str(current_path):
+                        branch = get_worktree_branch_name(current_path)
+                        if branch:
+                            branch_name = branch
+            
+            if not branch_name:
+                if json:
+                    JSONOutput.print_error("Could not detect branch name. Please specify branch_name as argument or use --domain to auto-detect from subdomain.")
+                else:
+                    error_exit("Could not detect branch name. Please specify branch_name as argument or use --domain to auto-detect from subdomain.")
+                return
+            
+            if not json:
+                log_info(f"Auto-detected branch: {branch_name}")
+        
+        # Determine droplet name: use subdomain from domain if provided, otherwise use branch_name
+        if domain:
+            try:
+                subdomain, base_domain = parse_domain(domain)
+                # Check if this is a root domain (subdomain == base domain's first part)
+                # For example, "example.com" would parse as subdomain="example", base="com"
+                # We want to detect if there's actually a subdomain vs root domain
+                domain_parts = domain.split('.')
+                if len(domain_parts) == 2:
+                    # This is a root domain (e.g., example.com), no subdomain
+                    # Fall back to branch_name
+                    droplet_name = branch_name
+                    if not json:
+                        log_info(f"Domain '{domain}' is a root domain (no subdomain), using branch name '{branch_name}' as droplet name")
+                else:
+                    # This has a subdomain, use it
+                    droplet_name = subdomain
+                    if not json:
+                        log_info(f"Using subdomain '{subdomain}' from domain '{domain}' as droplet name")
+            except ValueError:
+                # If domain parsing fails, fall back to branch_name
+                droplet_name = branch_name
+                if not json:
+                    log_warning(f"Could not parse domain '{domain}', using branch name '{branch_name}' as droplet name")
+        else:
+            droplet_name = branch_name
+            if not json:
+                log_info(f"Using branch name '{branch_name}' as droplet name")
+        
         check_prerequisites_no_git()  # Don't require git for droplet operations
         droplet_commands = DropletCommands()
-        ssh_keys_list = list(ssh_keys) if ssh_keys else None
+        # Parse comma-separated SSH key names into a list
+        ssh_keys_list = [k.strip() for k in ssh_keys.split(',')] if ssh_keys else None
         tags_list = list(tags) if tags else None
+        
+        # Create droplet (always wait when pushing)
+        wait_for_push = not create_only
         success = droplet_commands.create_droplet(
-            name=name,
+            name=droplet_name,
             region=region,
             size=size,
             image=image,
             ssh_keys=ssh_keys_list,
             tags=tags_list,
-            wait=wait,
+            wait=wait or wait_for_push,  # Always wait if pushing
             api_token=api_token,
             json=json
         )
         if not success:
             if json:
-                JSONOutput.print_error(f"Failed to create droplet: {name}")
+                JSONOutput.print_error(f"Failed to create droplet: {droplet_name}")
             else:
-                error_exit(f"Failed to create droplet: {name}")
+                error_exit(f"Failed to create droplet: {droplet_name}")
+            return
+        
+        # If create_only, we're done
+        if create_only:
+            return
+        
+        # Otherwise, push the environment to the newly created droplet
+        if not json:
+            log_info("Droplet created successfully. Starting push operation...")
+        
+        # Get droplet IP address for push
+        from .core.droplet_manager import DropletManager
+        token = DropletManager.resolve_droplet_token(api_token or dns_token)
+        if not token:
+            if json:
+                JSONOutput.print_error("Digital Ocean API token not found for push operation")
+            else:
+                error_exit("Digital Ocean API token not found for push operation")
+            return
+        
+        provider = DropletManager.create_provider('digitalocean', token)
+        if not provider:
+            if json:
+                JSONOutput.print_error("Failed to create droplet provider for push")
+            else:
+                error_exit("Failed to create droplet provider for push")
+            return
+        
+        # Find droplet by name to get IP
+        droplets = provider.list_droplets()
+        droplet = None
+        for d in droplets:
+            if d.name == droplet_name:
+                droplet = d
+                break
+        
+        if not droplet or not droplet.ip_address:
+            if json:
+                JSONOutput.print_error(f"Droplet {droplet_name} created but IP address not available")
+            else:
+                error_exit(f"Droplet {droplet_name} created but IP address not available")
+            return
+        
+        # Prepare SCP target
+        if scp_target:
+            # Parse provided scp_target to extract username and path (server will be replaced)
+            push_manager = PushManager()
+            if not push_manager._validate_scp_target(scp_target):
+                if json:
+                    JSONOutput.print_error(f"Invalid SCP target format: {scp_target}")
+                else:
+                    error_exit(f"Invalid SCP target format: {scp_target}")
+                return
+            username, _, remote_path = push_manager._parse_scp_target(scp_target)
+        else:
+            # Use defaults for new droplets
+            username = "root"
+            remote_path = "/root"
+        
+        final_scp_target = f"{username}@{droplet.ip_address}:{remote_path}"
+        
+        # Now push using PushManager
+        if not json:
+            log_info("[DEBUG] About to call check_setup_or_prompt()...")
+        try:
+            check_setup_or_prompt()
+            if not json:
+                log_info("[DEBUG] check_setup_or_prompt() completed")
+        except Exception as e:
+            if not json:
+                log_error(f"[DEBUG] Error in check_setup_or_prompt(): {e}")
+                import traceback
+                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            raise
+        
+        if not json:
+            log_info("[DEBUG] About to call check_prerequisites()...")
+        try:
+            check_prerequisites()
+            if not json:
+                log_info("[DEBUG] check_prerequisites() completed")
+        except Exception as e:
+            if not json:
+                log_error(f"[DEBUG] Error in check_prerequisites(): {e}")
+                import traceback
+                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            raise
+        
+        # Validate mutual exclusivity
+        if domain and ip:
+            if json:
+                JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
+            else:
+                error_exit("Options --domain and --ip are mutually exclusive")
+            return
+        
+        if not json:
+            log_info("[DEBUG] About to instantiate PushManager()...")
+        try:
+            push_manager = PushManager()
+            if not json:
+                log_info("[DEBUG] PushManager() instantiated successfully")
+        except Exception as e:
+            if not json:
+                log_error(f"[DEBUG] Error instantiating PushManager(): {e}")
+                import traceback
+                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            raise
+        
+        # Parse comma-separated SSH key names into a list (if provided as string)
+        # Note: ssh_keys_list is already a list from line 1034, so we can use it directly
+        if not json:
+            log_info("[DEBUG] About to use ssh_keys_list...")
+            log_info(f"[DEBUG] ssh_keys_list type: {type(ssh_keys_list)}, value: {ssh_keys_list}")
+        # ssh_keys_list is already a list, so we can use it directly without conversion
+        droplet_ssh_keys_list = ssh_keys_list if ssh_keys_list else None
+        if not json:
+            log_info(f"[DEBUG] droplet_ssh_keys_list set to: {droplet_ssh_keys_list}")
+        
+        if not json:
+            log_info(f"[DEBUG] Prepared parameters for push_package:")
+            log_info(f"[DEBUG]   branch_name={branch_name}")
+            log_info(f"[DEBUG]   scp_target={final_scp_target}")
+            log_info(f"[DEBUG]   output_dir={output_dir}")
+            log_info(f"[DEBUG]   keep_package={keep_package}")
+            log_info(f"[DEBUG]   auto_import={not no_auto_import}")
+            log_info(f"[DEBUG]   domain={domain}")
+            log_info(f"[DEBUG]   ip={ip}")
+            log_info(f"[DEBUG]   prepare_server={prepare_server}")
+            log_info(f"[DEBUG]   dns_token={'***' if (dns_token or api_token) else None}")
+            log_info(f"[DEBUG]   skip_dns_check={skip_dns_check}")
+            log_info(f"[DEBUG]   droplet_ssh_keys={droplet_ssh_keys_list}")
+            log_info(f"[DEBUG]   resume={resume}")
+            log_info(f"[DEBUG]   code_only={code_only}")
+            log_info("[DEBUG] About to call push_manager.push_package()...")
+        
+        try:
+            success = push_manager.push_package(
+                branch_name=branch_name,
+                scp_target=final_scp_target,
+                output_dir=Path(output_dir),
+                keep_package=keep_package,
+                auto_import=not no_auto_import,  # Invert: no_auto_import=True means auto_import=False
+                domain=domain,
+                ip=ip,
+                prepare_server=prepare_server,
+                dns_token=dns_token or api_token,
+                skip_dns_check=skip_dns_check,
+                create_droplet=False,  # Already created
+                droplet_name=None,
+                droplet_region=None,
+                droplet_size=None,
+                droplet_image=None,
+                droplet_ssh_keys=droplet_ssh_keys_list,
+                resume=resume,
+                code_only=code_only
+            )
+        except click.exceptions.ClickException as e:
+            # Catch Click-specific exceptions
+            import traceback
+            if json:
+                JSONOutput.print_error(f"Click error during push: {e}")
+            else:
+                log_error(f"[DEBUG] Click exception caught: {e}")
+                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+                error_exit(f"Click error during push: {e}\n{traceback.format_exc()}")
+            return
+        except Exception as e:
+            import traceback
+            if json:
+                JSONOutput.print_error(f"Error during push: {e}")
+            else:
+                error_exit(f"Error during push: {e}\n{traceback.format_exc()}")
+            return
+        
+        if not success:
+            if json:
+                JSONOutput.print_error(f"Failed to push package to droplet")
+            else:
+                error_exit(f"Failed to push package to droplet")
+        else:
+            if json:
+                JSONOutput.print_success(f"Droplet created and package pushed successfully")
     except Exception as e:
         if json:
             JSONOutput.print_error(f"Error creating droplet: {e}")
@@ -946,12 +1242,12 @@ def droplets_create(name: str, region: Optional[str], size: Optional[str], image
             error_exit(f"Error creating droplet: {e}")
 
 
-@droplets.command('list')
+@droplet.command('list')
 @click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
 @click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
 @click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
 @add_verbose_option
-def droplets_list(api_token: Optional[str], output_json: bool, output_csv: bool):
+def droplet_list(api_token: Optional[str], output_json: bool, output_csv: bool):
     """List all DigitalOcean droplets.
 
     Displays all droplets in a formatted table by default. The list includes
@@ -959,10 +1255,10 @@ def droplets_list(api_token: Optional[str], output_json: bool, output_csv: bool)
 
     Examples:
 
-        dockertree droplets list
+        dockertree droplet list
 
-        dockertree droplets list --as-json
-        dockertree droplets list --as-csv
+        dockertree droplet list --as-json
+        dockertree droplet list --as-csv
     """
     try:
         check_prerequisites_no_git()  # Don't require git for droplet operations
@@ -980,12 +1276,12 @@ def droplets_list(api_token: Optional[str], output_json: bool, output_csv: bool)
             error_exit(f"Error listing droplets: {e}")
 
 
-@droplets.command('sizes')
+@droplet.command('sizes')
 @click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
 @click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
 @click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
 @add_verbose_option
-def droplets_sizes(api_token: Optional[str], output_json: bool, output_csv: bool):
+def droplet_sizes(api_token: Optional[str], output_json: bool, output_csv: bool):
     """List available DigitalOcean droplet sizes.
 
     Displays all available droplet sizes with their specifications including
@@ -993,10 +1289,10 @@ def droplets_sizes(api_token: Optional[str], output_json: bool, output_csv: bool
 
     Examples:
 
-        dockertree droplets sizes
+        dockertree droplet sizes
 
-        dockertree droplets sizes --as-json
-        dockertree droplets sizes --as-csv
+        dockertree droplet sizes --as-json
+        dockertree droplet sizes --as-csv
     """
     try:
         check_prerequisites_no_git()  # Don't require git for droplet operations
@@ -1014,8 +1310,8 @@ def droplets_sizes(api_token: Optional[str], output_json: bool, output_csv: bool
             error_exit(f"Error listing droplet sizes: {e}")
 
 
-@droplets.command('destroy')
-@click.argument('droplet_id', type=int)
+@droplet.command('destroy')
+@click.argument('droplet_ids', type=str)
 @click.option('--force', is_flag=True, default=False, help='Skip confirmation prompts')
 @click.option('--only-droplet', is_flag=True, default=False, help='Only destroy droplet, skip DNS deletion')
 @click.option('--only-domain', is_flag=True, default=False, help='Only destroy DNS records, skip droplet deletion')
@@ -1024,11 +1320,12 @@ def droplets_sizes(api_token: Optional[str], output_json: bool, output_csv: bool
 @click.option('--dns-token', help='DNS API token (if different from droplet token)')
 @add_json_option
 @add_verbose_option
-def droplets_destroy(droplet_id: int, force: bool, only_droplet: bool, only_domain: bool,
+def droplet_destroy(droplet_ids: str, force: bool, only_droplet: bool, only_domain: bool,
                     domain: Optional[str], api_token: Optional[str], dns_token: Optional[str], json: bool):
-    """Destroy a DigitalOcean droplet and/or associated DNS records.
+    """Destroy DigitalOcean droplet(s) and/or associated DNS records.
 
-    By default, destroys only the droplet. Use --only-domain to destroy
+    Accepts a single droplet ID or comma-separated list of IDs (e.g., 123,456,789).
+    By default, destroys only the droplet(s). Use --only-domain to destroy
     DNS records only, or omit flags to destroy both droplet and DNS records.
 
     Requires typing the droplet name to confirm (unless --force). When
@@ -1037,10 +1334,13 @@ def droplets_destroy(droplet_id: int, force: bool, only_droplet: bool, only_doma
 
     Examples:
 
-        dockertree droplets destroy 123456789
+        dockertree droplet destroy 123456789
 
-        dockertree droplets destroy 123456789 --force
-        dockertree droplets destroy 123456789 --only-domain
+        dockertree droplet destroy 123,456,789
+
+        dockertree droplet destroy 123456789 --force
+        dockertree droplet destroy 123,456,789 --force
+        dockertree droplet destroy 123456789 --only-domain
     """
     try:
         # Validate flags
@@ -1051,41 +1351,107 @@ def droplets_destroy(droplet_id: int, force: bool, only_droplet: bool, only_doma
                 error_exit("Cannot specify both --only-droplet and --only-domain")
             return
         
+        # Parse comma-separated droplet IDs
+        try:
+            droplet_id_list = [int(id_str.strip()) for id_str in droplet_ids.split(',') if id_str.strip()]
+        except ValueError as e:
+            if json:
+                JSONOutput.print_error(f"Invalid droplet ID format. All IDs must be integers. Got: {droplet_ids}")
+            else:
+                error_exit(f"Invalid droplet ID format. All IDs must be integers. Got: {droplet_ids}")
+            return
+        
+        if not droplet_id_list:
+            if json:
+                JSONOutput.print_error("No valid droplet IDs provided")
+            else:
+                error_exit("No valid droplet IDs provided")
+            return
+        
         check_prerequisites_no_git()  # Don't require git for droplet operations
         droplet_commands = DropletCommands()
-        success = droplet_commands.destroy_droplet(
-            droplet_id=droplet_id,
-            force=force,
-            api_token=api_token,
-            json=json,
-            only_droplet=only_droplet,
-            only_domain=only_domain,
-            domain=domain,
-            dns_token=dns_token
-        )
-        if not success:
-            if json:
-                JSONOutput.print_error(f"Failed to destroy droplet: {droplet_id}")
-            else:
-                error_exit(f"Failed to destroy droplet: {droplet_id}")
-    except ValueError:
+        
+        # Track results for each droplet
+        results = []
+        success_count = 0
+        failure_count = 0
+        total = len(droplet_id_list)
+        
+        # Process each droplet ID
+        # When processing multiple droplets, suppress individual JSON output
+        # and aggregate results instead
+        suppress_json = json and total > 1
+        
+        for droplet_id in droplet_id_list:
+            try:
+                success = droplet_commands.destroy_droplet(
+                    droplet_id=droplet_id,
+                    force=force,
+                    api_token=api_token,
+                    json=json if not suppress_json else False,  # Suppress JSON for individual calls when aggregating
+                    only_droplet=only_droplet,
+                    only_domain=only_domain,
+                    domain=domain,
+                    dns_token=dns_token
+                )
+                
+                if success:
+                    success_count += 1
+                    results.append({"droplet_id": droplet_id, "success": True})
+                else:
+                    failure_count += 1
+                    results.append({"droplet_id": droplet_id, "success": False, "error": "Failed to destroy droplet"})
+            except Exception as e:
+                failure_count += 1
+                results.append({"droplet_id": droplet_id, "success": False, "error": str(e)})
+                # Continue with next droplet even if this one failed
+                if not json:
+                    log_error(f"Error destroying droplet {droplet_id}: {e}")
+        
+        # Output summary
         if json:
-            JSONOutput.print_error(f"Invalid droplet ID: {droplet_id}. Must be an integer.")
-        else:
-            error_exit(f"Invalid droplet ID: {droplet_id}. Must be an integer.")
+            if suppress_json:
+                # Aggregate JSON output for multiple droplets
+                result = {
+                    "success": failure_count == 0,
+                    "total": total,
+                    "succeeded": success_count,
+                    "failed": failure_count,
+                    "results": results
+                }
+                JSONOutput.print_json(result)
+            # For single droplet, JSON was already output by destroy_droplet
+        
+        # Non-JSON summary for multiple droplets
+        if not json and total > 1:
+            if success_count == total:
+                log_success(f"Successfully destroyed {success_count} of {total} droplet(s)")
+            elif success_count > 0:
+                log_error(f"Destroyed {success_count} of {total} droplet(s) successfully ({failure_count} failed)")
+            else:
+                log_error(f"Failed to destroy all {total} droplet(s)")
+        
+        # Exit with error code if any failures occurred
+        if failure_count > 0:
+            if json and suppress_json:
+                # JSON output already printed, just exit with error code
+                sys.exit(1)
+            elif not json:
+                error_exit(f"Failed to destroy {failure_count} of {total} droplet(s)")
+        
     except Exception as e:
         if json:
-            JSONOutput.print_error(f"Error destroying droplet: {e}")
+            JSONOutput.print_error(f"Error destroying droplet(s): {e}")
         else:
-            error_exit(f"Error destroying droplet: {e}")
+            error_exit(f"Error destroying droplet(s): {e}")
 
 
-@droplets.command('info')
+@droplet.command('info')
 @click.argument('droplet_id', type=int)
 @click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
 @add_json_option
 @add_verbose_option
-def droplets_info(droplet_id: int, api_token: Optional[str], json: bool):
+def droplet_info(droplet_id: int, api_token: Optional[str], json: bool):
     """Get detailed information about a droplet.
 
     Displays comprehensive information about the specified droplet including
@@ -1093,9 +1459,9 @@ def droplets_info(droplet_id: int, api_token: Optional[str], json: bool):
 
     Examples:
 
-        dockertree droplets info 123456789
+        dockertree droplet info 123456789
 
-        dockertree droplets info 123456789 --json
+        dockertree droplet info 123456789 --json
     """
     try:
         check_prerequisites_no_git()  # Don't require git for droplet operations
@@ -1552,60 +1918,56 @@ def validate_package(package_file: str, json: bool):
             error_exit(f"Error validating package: {e}")
 
 
-@cli.command()
+@droplet.command('push')
 @click.argument('branch_name', required=False)
 @click.argument('scp_target', required=False)
 @click.option('--output-dir', type=click.Path(), default='./packages', help='Temporary package location (default: ./packages)')
 @click.option('--keep-package', is_flag=True, default=False, help='Keep package file after successful push (default: delete after push)')
-@click.option('--auto-import', is_flag=True, default=False, help='Automatically import and start on remote server after push')
+@click.option('--no-auto-import', is_flag=True, default=False, help='Skip automatic import and start on remote server after push (default: auto-import is enabled)')
 @click.option('--prepare-server', is_flag=True, default=False, help='Check remote server for required dependencies before push')
 @click.option('--domain', help='Domain override for remote import (subdomain.domain.tld). DNS A record will be automatically created if it does not exist.')
 @click.option('--ip', help='IP override for remote import (HTTP-only, no TLS)')
 @click.option('--dns-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
-@click.option('--create-droplet', is_flag=True, default=False, help='Create new DigitalOcean droplet before pushing')
-@click.option('--droplet-name', help='Name for new droplet (default: branch name)')
-@click.option('--droplet-region', help='Droplet region (default: nyc1 or from DIGITALOCEAN_REGION env var)')
-@click.option('--droplet-size', help='Droplet size slug (e.g., s-1vcpu-1gb, s-2vcpu-4gb). Use "dockertree droplets sizes" to list all available sizes. Default: s-1vcpu-1gb or from DIGITALOCEAN_SIZE env var')
-@click.option('--droplet-image', help='Droplet image (default: ubuntu-22-04-x64 or from DIGITALOCEAN_IMAGE env var)')
-@click.option('--droplet-ssh-keys', type=str, help='SSH key names for droplet (comma-separated, e.g., anders,peter)')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed (skips export/transfer if package exists, skips server prep if already done)')
+@click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)')
 @add_json_option
 @add_verbose_option
-def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, create_droplet: bool, droplet_name: Optional[str], droplet_region: Optional[str], droplet_size: Optional[str], droplet_image: Optional[str], droplet_ssh_keys: Optional[str], resume: bool, json: bool):
+def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool, code_only: bool, json: bool):
     """Push dockertree package to remote server via SCP.
 
     Exports a complete dockertree environment package and transfers it to a
     remote server via SCP. If branch_name is not provided, auto-detects from
     current working directory.
 
-    When using --create-droplet, scp_target is optional and defaults to root@<droplet-ip>:/root.
-    The droplet will always be waited for until ready before pushing.
-
     Use --resume to resume a failed push operation. Resume mode automatically detects:
     - If package already exists on server (skips export and transfer)
     - If server is already prepared (skips server preparation)
     - Continues from where it left off
 
+    Use --code-only for fast code updates on pre-existing servers. Automatically detects
+    whether code is stored in volumes or bind mounts and uses appropriate update method.
+    Uses stored push configuration from env.dockertree if available (saved after first push).
+
     Examples:
 
         # Auto-detect branch from current directory
-        dockertree push user@server:/path/to/packages
+        dockertree droplet push user@server:/path/to/packages
 
         # Explicit branch name
-        dockertree push feature-auth user@server:/path/to/packages
+        dockertree droplet push feature-auth user@server:/path/to/packages
 
-        # Create droplet and push (scp_target optional, defaults to root@<droplet-ip>:/root)
-        dockertree push feature-auth --create-droplet
+        # Code-only update (uses stored config from env.dockertree)
+        dockertree droplet push --code-only
 
-        # Create droplet with custom username and path
-        dockertree push feature-auth ubuntu@dummy:/home/ubuntu --create-droplet
+        # Code-only update with explicit arguments
+        dockertree droplet push feature-auth user@server:/path/to/packages --code-only
 
         # Push with domain configuration
-        dockertree push feature-auth user@server:/path/to/packages --domain app.example.com
+        dockertree droplet push feature-auth user@server:/path/to/packages --domain app.example.com
 
         # Resume a failed push (skips already completed steps)
-        dockertree push feature-auth user@server:/path/to/packages --resume --auto-import
+        dockertree droplet push feature-auth user@server:/path/to/packages --resume --auto-import
 
     After pushing, SSH to the server and import with:
         dockertree packages import <package-file> --standalone --domain your-domain.com
@@ -1621,34 +1983,34 @@ def push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str,
             else:
                 error_exit("Options --domain and --ip are mutually exclusive")
         
-        # Validate scp_target is provided when not creating droplet
-        if not create_droplet and not scp_target:
+        # Validate scp_target is provided when not using code-only
+        # (code-only can use stored config from env.dockertree)
+        if not code_only and not scp_target:
             if json:
-                JSONOutput.print_error("scp_target is required when --create-droplet is not used")
+                JSONOutput.print_error("scp_target is required")
             else:
-                error_exit("scp_target is required when --create-droplet is not used")
+                error_exit("scp_target is required")
         
         push_manager = PushManager()
-        # Parse comma-separated SSH key names into a list
-        droplet_ssh_keys_list = [k.strip() for k in droplet_ssh_keys.split(',')] if droplet_ssh_keys else None
         success = push_manager.push_package(
             branch_name=branch_name,
             scp_target=scp_target,
             output_dir=Path(output_dir),
             keep_package=keep_package,
-            auto_import=auto_import,
+            auto_import=not no_auto_import,  # Invert: no_auto_import=True means auto_import=False
             domain=domain,
             ip=ip,
             prepare_server=prepare_server,
             dns_token=dns_token,
             skip_dns_check=skip_dns_check,
-            create_droplet=create_droplet,
-            droplet_name=droplet_name,
-            droplet_region=droplet_region,
-            droplet_size=droplet_size,
-            droplet_image=droplet_image,
-            droplet_ssh_keys=droplet_ssh_keys_list,
-            resume=resume
+            create_droplet=False,
+            droplet_name=None,
+            droplet_region=None,
+            droplet_size=None,
+            droplet_image=None,
+            droplet_ssh_keys=None,
+            resume=resume,
+            code_only=code_only
         )
         
         if not success:

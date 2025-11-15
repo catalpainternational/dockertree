@@ -835,3 +835,109 @@ CADDY_EMAIL={caddy_email}
         except Exception as e:
             log_warning(f"Failed to apply IP overrides: {e}")
             return False
+    
+    def get_push_config(self, branch_name: str) -> Dict[str, Optional[str]]:
+        """Get push configuration from worktree's env.dockertree file.
+        
+        Reads PUSH_SCP_TARGET, PUSH_BRANCH_NAME, PUSH_DOMAIN, PUSH_IP from
+        the worktree's env.dockertree file.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            Dictionary with push configuration keys (scp_target, branch_name, domain, ip)
+            Values are None if not found
+        """
+        from ..config.settings import get_worktree_paths
+        from ..utils.env_loader import load_env_file
+        
+        try:
+            worktree_path, legacy_path = get_worktree_paths(branch_name)
+            env_path = get_env_compose_file_path(worktree_path)
+            if not env_path.exists() and legacy_path.exists():
+                env_path = get_env_compose_file_path(legacy_path)
+            
+            if not env_path.exists():
+                return {
+                    'scp_target': None,
+                    'branch_name': None,
+                    'domain': None,
+                    'ip': None
+                }
+            
+            env_vars = load_env_file(env_path)
+            
+            return {
+                'scp_target': env_vars.get('PUSH_SCP_TARGET'),
+                'branch_name': env_vars.get('PUSH_BRANCH_NAME'),
+                'domain': env_vars.get('PUSH_DOMAIN'),
+                'ip': env_vars.get('PUSH_IP')
+            }
+        except Exception:
+            return {
+                'scp_target': None,
+                'branch_name': None,
+                'domain': None,
+                'ip': None
+            }
+    
+    def save_push_config(self, branch_name: str, scp_target: str, domain: Optional[str] = None, 
+                        ip: Optional[str] = None) -> bool:
+        """Save push configuration to worktree's env.dockertree file.
+        
+        Appends or updates PUSH_SCP_TARGET, PUSH_BRANCH_NAME, PUSH_DOMAIN, PUSH_IP
+        in the worktree's env.dockertree file.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            scp_target: SCP target in format username@server:path
+            domain: Optional domain override
+            ip: Optional IP override (mutually exclusive with domain)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        from ..config.settings import get_worktree_paths
+        import re
+        
+        try:
+            worktree_path, legacy_path = get_worktree_paths(branch_name)
+            env_path = get_env_compose_file_path(worktree_path)
+            if not env_path.exists() and legacy_path.exists():
+                env_path = get_env_compose_file_path(legacy_path)
+            
+            # Ensure .dockertree directory exists
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Read existing content or create new
+            if env_path.exists():
+                content = env_path.read_text()
+            else:
+                content = f"# Dockertree environment configuration for {branch_name}\n"
+            
+            # Update or add push configuration variables
+            # Remove existing push config lines
+            content = re.sub(r'^PUSH_SCP_TARGET=.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'^PUSH_BRANCH_NAME=.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'^PUSH_DOMAIN=.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'^PUSH_IP=.*$', '', content, flags=re.MULTILINE)
+            
+            # Remove multiple blank lines
+            content = re.sub(r'\n\n\n+', '\n\n', content)
+            
+            # Add push configuration at the end
+            content += "\n# Push configuration (auto-saved after successful push)\n"
+            content += f"PUSH_SCP_TARGET={scp_target}\n"
+            content += f"PUSH_BRANCH_NAME={branch_name}\n"
+            if domain:
+                content += f"PUSH_DOMAIN={domain}\n"
+            if ip:
+                content += f"PUSH_IP={ip}\n"
+            
+            env_path.write_text(content)
+            log_info(f"Saved push configuration to {env_path}")
+            return True
+        except Exception as e:
+            log_warning(f"Failed to save push configuration: {e}")
+            return False

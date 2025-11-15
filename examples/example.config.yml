@@ -111,7 +111,7 @@ environment:
 # ============================================================================
 
 # Deployment configuration
-# Used by 'dockertree push' command
+# Used by 'dockertree droplet push' command
 # These settings provide defaults for deployment operations
 # deployment:
   # Default server for push operations

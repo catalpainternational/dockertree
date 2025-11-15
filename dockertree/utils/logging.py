@@ -119,9 +119,8 @@ COMMANDS:
     prune                    Remove prunable worktree references
     volumes                  Manage Docker volumes for worktrees
     packages                 Manage environment packages
-    droplets                 Manage DigitalOcean droplets
+    droplet                  Manage DigitalOcean droplets
     domains                  Manage DNS domains and records
-    push                     Push package to remote server
     setup                    Initialize dockertree for project
     completion               Manage shell completion
     --version, -v            Show version information

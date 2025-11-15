@@ -9,9 +9,11 @@ import subprocess
 import re
 import socket
 import os
+import sys
 import threading
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 from ..core.package_manager import PackageManager
 from ..core.dns_manager import DNSManager, parse_domain, is_domain
@@ -34,13 +36,25 @@ class PushManager:
         Args:
             project_root: Project root directory. If None, uses current working directory.
         """
-        if project_root is None:
-            from ..config.settings import get_project_root
-            self.project_root = get_project_root()
-        else:
-            self.project_root = Path(project_root).resolve()
-        
-        self.package_manager = PackageManager(project_root=self.project_root)
+        log_info("[DEBUG] PushManager.__init__ called")
+        try:
+            if project_root is None:
+                log_info("[DEBUG] project_root is None, calling get_project_root()")
+                from ..config.settings import get_project_root
+                self.project_root = get_project_root()
+                log_info(f"[DEBUG] get_project_root() returned: {self.project_root}")
+            else:
+                log_info(f"[DEBUG] Using provided project_root: {project_root}")
+                self.project_root = Path(project_root).resolve()
+            
+            log_info(f"[DEBUG] Initializing PackageManager with project_root: {self.project_root}")
+            self.package_manager = PackageManager(project_root=self.project_root)
+            log_info("[DEBUG] PushManager.__init__ completed successfully")
+        except Exception as e:
+            log_error(f"[DEBUG] Error in PushManager.__init__: {e}")
+            import traceback
+            log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            raise
     
     def push_package(self, branch_name: Optional[str], scp_target: Optional[str], 
                     output_dir: Path = None, keep_package: bool = False,
@@ -54,7 +68,8 @@ class PushManager:
                     droplet_size: Optional[str] = None,
                     droplet_image: Optional[str] = None,
                     droplet_ssh_keys: Optional[list] = None,
-                    resume: bool = False) -> bool:
+                    resume: bool = False,
+                    code_only: bool = False) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -68,11 +83,47 @@ class PushManager:
         """
         try:
             log_info("Starting push operation...")
+            log_info(f"[DEBUG] sys.argv at start of push_package: {sys.argv}")
+            log_info(f"[DEBUG] push_package called with parameters:")
+            log_info(f"[DEBUG]   branch_name={branch_name}")
+            log_info(f"[DEBUG]   scp_target={scp_target}")
+            log_info(f"[DEBUG]   output_dir={output_dir}")
+            log_info(f"[DEBUG]   keep_package={keep_package}")
+            log_info(f"[DEBUG]   auto_import={auto_import}")
+            log_info(f"[DEBUG]   domain={domain}")
+            log_info(f"[DEBUG]   ip={ip}")
+            log_info(f"[DEBUG]   prepare_server={prepare_server}")
+            log_info(f"[DEBUG]   dns_token={'***' if dns_token else None}")
+            log_info(f"[DEBUG]   skip_dns_check={skip_dns_check}")
+            log_info(f"[DEBUG]   create_droplet={create_droplet}")
+            log_info(f"[DEBUG]   droplet_name={droplet_name}")
+            log_info(f"[DEBUG]   droplet_region={droplet_region}")
+            log_info(f"[DEBUG]   droplet_size={droplet_size}")
+            log_info(f"[DEBUG]   droplet_image={droplet_image}")
+            log_info(f"[DEBUG]   droplet_ssh_keys={droplet_ssh_keys}")
+            log_info(f"[DEBUG]   resume={resume}")
+            log_info(f"[DEBUG]   code_only={code_only}")
+            
+            # Handle code-only push
+            log_info("[DEBUG] Checking code_only flag...")
+            if code_only:
+                if output_dir is None:
+                    output_dir = self.project_root / "packages"
+                return self._push_code_only(branch_name, scp_target, domain, ip, output_dir)
             
             # Auto-detect branch name if not provided
+            log_info("[DEBUG] Checking branch_name...")
             if not branch_name:
                 log_info("Branch name not provided, attempting auto-detection...")
-                branch_name = self._detect_current_branch()
+                log_info("[DEBUG] Calling _detect_current_branch()...")
+                try:
+                    branch_name = self._detect_current_branch()
+                    log_info(f"[DEBUG] _detect_current_branch() returned: {branch_name}")
+                except Exception as e:
+                    log_error(f"[DEBUG] Error in _detect_current_branch(): {e}")
+                    import traceback
+                    log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+                    raise
                 if not branch_name:
                     log_error("Could not detect branch name. Please specify branch_name.")
                     return False
@@ -80,69 +131,45 @@ class PushManager:
             else:
                 log_info(f"Using provided branch name: {branch_name}")
             
-            # Handle scp_target based on whether we're creating a droplet
-            if create_droplet:
-                # When creating a droplet, scp_target is optional
-                # Default to root@<droplet-ip>:/root if not provided
-                if scp_target:
-                    # Parse provided scp_target to extract username and path (server will be replaced)
-                    log_info(f"Parsing provided SCP target for username and path: {scp_target}")
-                    if not self._validate_scp_target(scp_target):
-                        log_error(f"Invalid SCP target format: {scp_target}")
-                        log_info("Expected format: username@server:path")
-                        return False
-                    username, _, remote_path = self._parse_scp_target(scp_target)
-                    log_info(f"Using username '{username}' and path '{remote_path}' from provided SCP target")
-                else:
-                    # Use defaults for new droplets
-                    username = "root"
-                    remote_path = "/root"
-                    log_info(f"Using default username '{username}' and path '{remote_path}' for new droplet")
-                
-                # Create droplet (always waits for it to be ready)
-                log_info("Droplet creation requested, creating new droplet...")
-                droplet_info = self._create_droplet_for_push(
-                    droplet_name=droplet_name or branch_name,
-                    droplet_region=droplet_region,
-                    droplet_size=droplet_size,
-                    droplet_image=droplet_image,
-                    droplet_ssh_keys=droplet_ssh_keys,
-                    api_token=dns_token
-                )
-                if not droplet_info:
-                    log_error("Failed to create droplet. Aborting push.")
-                    return False
-                
-                # Update server to use droplet IP
-                if droplet_info.ip_address:
-                    server = droplet_info.ip_address
-                    scp_target = f"{username}@{server}:{remote_path}"
-                    log_info(f"Updated SCP target to use droplet IP address: {scp_target}")
-                else:
-                    log_error("Droplet created but IP address not available. Cannot proceed with push.")
-                    return False
-            else:
-                # When not creating a droplet, scp_target is required
-                if not scp_target:
-                    log_error("scp_target is required when --create-droplet is not used")
-                    return False
-                
-                # Validate SCP target format
-                log_info(f"Validating SCP target format: {scp_target}")
-                if not self._validate_scp_target(scp_target):
-                    log_error(f"Invalid SCP target format: {scp_target}")
-                    log_info("Expected format: username@server:path")
-                    return False
-                log_info("SCP target format is valid")
-                
-                # Parse SCP target
+            # Validate and parse SCP target (required)
+            log_info("[DEBUG] Validating SCP target...")
+            if not scp_target:
+                log_error("scp_target is required")
+                return False
+            
+            # Validate SCP target format
+            log_info(f"Validating SCP target format: {scp_target}")
+            log_info("[DEBUG] Calling _validate_scp_target()...")
+            try:
+                is_valid = self._validate_scp_target(scp_target)
+                log_info(f"[DEBUG] _validate_scp_target() returned: {is_valid}")
+            except Exception as e:
+                log_error(f"[DEBUG] Error in _validate_scp_target(): {e}")
+                import traceback
+                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+                raise
+            if not is_valid:
+                log_error(f"Invalid SCP target format: {scp_target}")
+                log_info("Expected format: username@server:path")
+                return False
+            log_info("SCP target format is valid")
+            
+            # Parse SCP target
+            log_info("[DEBUG] Calling _parse_scp_target()...")
+            try:
                 username, server, remote_path = self._parse_scp_target(scp_target)
-                log_info(f"Parsed SCP target - Username: {username}, Server: {server}, Remote Path: {remote_path}")
+                log_info(f"[DEBUG] _parse_scp_target() returned: username={username}, server={server}, remote_path={remote_path}")
+            except Exception as e:
+                log_error(f"[DEBUG] Error in _parse_scp_target(): {e}")
+                import traceback
+                log_error(f"[DEBUG] Traceback: {traceback.format_exc()}")
+                raise
+            log_info(f"Parsed SCP target - Username: {username}, Server: {server}, Remote Path: {remote_path}")
             
             # Handle DNS management if domain is provided
             if domain and not skip_dns_check:
                 log_info(f"Domain provided: {domain}, managing DNS records...")
-                dns_success = self._handle_dns_management(domain, server, dns_token, create_droplet)
+                dns_success = self._handle_dns_management(domain, server, dns_token, False)
                 if not dns_success:
                     log_warning("DNS management failed, but continuing with push...")
             elif skip_dns_check:
@@ -351,6 +378,20 @@ class PushManager:
                 log_info(f"Keeping local package (--keep-package flag or file not found)")
             
             log_info("Push operation completed successfully")
+            
+            # Save push configuration for future use (both full and code-only)
+            from ..core.environment_manager import EnvironmentManager
+            env_manager = EnvironmentManager(project_root=self.project_root)
+            # Parse final scp_target to save
+            username, server, remote_path = self._parse_scp_target(scp_target)
+            final_scp_target = scp_target
+            env_manager.save_push_config(
+                branch_name,
+                final_scp_target,
+                domain,
+                ip
+            )
+            
             return True
             
         except Exception as e:
@@ -2084,4 +2125,574 @@ log_success "=== Remote import process completed ==="
         except Exception as e:
             log_error(f"Error creating droplet: {e}")
             return None
+    
+    def _resolve_push_config(self, branch_name: Optional[str], scp_target: Optional[str],
+                            domain: Optional[str], ip: Optional[str]) -> Dict[str, Optional[str]]:
+        """Resolve push configuration by merging env.dockertree config with CLI arguments.
+        
+        CLI arguments override stored configuration. Validates required parameters.
+        If branch_name is not provided, searches worktrees for one with push config.
+        
+        Args:
+            branch_name: Branch name from CLI (optional)
+            scp_target: SCP target from CLI (optional)
+            domain: Domain from CLI (optional)
+            ip: IP from CLI (optional)
+            
+        Returns:
+            Dictionary with resolved configuration (scp_target, branch_name, domain, ip)
+        """
+        from ..core.environment_manager import EnvironmentManager
+        from ..config.settings import get_worktree_paths
+        
+        env_manager = EnvironmentManager(project_root=self.project_root)
+        
+        # If branch_name not provided, try to find worktree with push config
+        if not branch_name:
+            log_info("Branch name not provided, searching worktrees for push configuration...")
+            worktree_dir = self.project_root / "worktrees"
+            if worktree_dir.exists():
+                for worktree_path in worktree_dir.iterdir():
+                    if worktree_path.is_dir():
+                        potential_branch = worktree_path.name
+                        config = env_manager.get_push_config(potential_branch)
+                        if config.get('scp_target') and config.get('branch_name'):
+                            branch_name = potential_branch
+                            log_info(f"Found push config in worktree: {branch_name}")
+                            break
+        
+        # Get stored config from env.dockertree
+        stored_config = env_manager.get_push_config(branch_name or '')
+        
+        # Merge with CLI arguments (CLI overrides stored config)
+        resolved = {
+            'scp_target': scp_target or stored_config.get('scp_target'),
+            'branch_name': branch_name or stored_config.get('branch_name'),
+            'domain': domain or stored_config.get('domain'),
+            'ip': ip or stored_config.get('ip')
+        }
+        
+        # Validate required parameters
+        if not resolved['scp_target']:
+            log_error("scp_target is required. Provide via CLI argument or set PUSH_SCP_TARGET in env.dockertree")
+            return {}
+        
+        if not resolved['branch_name']:
+            log_error("branch_name is required. Provide via CLI argument or set PUSH_BRANCH_NAME in env.dockertree")
+            return {}
+        
+        # Validate mutual exclusivity
+        if resolved['domain'] and resolved['ip']:
+            log_error("Options --domain and --ip are mutually exclusive")
+            return {}
+        
+        return resolved
+    
+    def _detect_code_storage_method(self, branch_name: str) -> Tuple[str, Optional[list]]:
+        """Detect whether code is stored in a Docker volume or bind mount.
+        
+        Checks docker-compose.yml and docker-compose.worktree.yml for volumes
+        mounted to common code paths.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            Tuple of (storage_method, code_volume_names)
+            storage_method: 'volume' if code is in a named volume, 'bind_mount' otherwise
+            code_volume_names: List of volume names containing code (None if bind mount)
+        """
+        try:
+            import yaml
+            from ..config.settings import get_worktree_paths, sanitize_project_name, get_project_name
+            from ..utils.path_utils import get_compose_override_path
+            
+            worktree_path, _ = get_worktree_paths(branch_name)
+            compose_file = get_compose_override_path(worktree_path)
+            
+            if not compose_file or not compose_file.exists():
+                # Fall back to project root compose file
+                compose_file = self.project_root / ".dockertree" / "docker-compose.worktree.yml"
+            
+            if not compose_file.exists():
+                log_warning("Could not find docker-compose file for code storage detection, assuming bind mount")
+                return ('bind_mount', None)
+            
+            with open(compose_file) as f:
+                compose_data = yaml.safe_load(f)
+            
+            if not compose_data or 'services' not in compose_data:
+                return ('bind_mount', None)
+            
+            # Common code paths (exact matches, not subdirectories)
+            code_paths = ['/app', '/code', '/src', '/usr/src/app', '/var/www', '/srv/app']
+            code_volumes = []
+            has_bind_mount = False
+            
+            # Get project name for volume name resolution
+            project_name = sanitize_project_name(get_project_name())
+            compose_project_name = f"{project_name}-{branch_name}"
+            
+            # Check each service for volume mounts to code paths
+            for service_name, service_config in compose_data['services'].items():
+                volumes = service_config.get('volumes', [])
+                if isinstance(volumes, list):
+                    for volume in volumes:
+                        if isinstance(volume, str):
+                            # Check for named volume mount (format: volume_name:/path or volume_name:/path:ro)
+                            parts = volume.split(':')
+                            if len(parts) >= 2:
+                                volume_name = parts[0]
+                                mount_path = parts[1]
+                                
+                                # Check if mount path is exactly a code path (not a subdirectory)
+                                if mount_path in code_paths:
+                                    # Check if it's a bind mount (starts with / or . or relative path)
+                                    if volume_name.startswith('/') or volume_name.startswith('.') or '/' in volume_name:
+                                        has_bind_mount = True
+                                        log_info(f"Detected code in bind mount: {volume_name} -> {mount_path}")
+                                    # Check if it's a named volume (not a bind mount)
+                                    elif not volume_name.startswith('$'):
+                                        # Resolve volume name (may contain ${COMPOSE_PROJECT_NAME})
+                                        resolved_volume_name = volume_name.replace('${COMPOSE_PROJECT_NAME}', compose_project_name)
+                                        code_volumes.append(resolved_volume_name)
+                                        log_info(f"Detected code in volume: {resolved_volume_name} mounted at {mount_path}")
+            
+            # Prefer bind mount if found (more common)
+            if has_bind_mount:
+                log_info("Code detected in bind mount, using archive-based update")
+                return ('bind_mount', None)
+            
+            if code_volumes:
+                return ('volume', code_volumes)
+            
+            # Default to bind mount if no code volumes found
+            log_info("No code volumes detected, assuming bind mount")
+            return ('bind_mount', None)
+            
+        except Exception as e:
+            log_warning(f"Error detecting code storage method: {e}, assuming bind mount")
+            return ('bind_mount', None)
+    
+    def _prepare_code_update(self, branch_name: str, storage_method: str, 
+                            code_volumes: Optional[list], output_dir: Path) -> Optional[Path]:
+        """Prepare code update file (volume backup or archive).
+        
+        Args:
+            branch_name: Branch name for the worktree
+            storage_method: 'volume' or 'bind_mount'
+            code_volumes: List of code volume names (only used when storage_method is 'volume')
+            output_dir: Directory to save the update file
+            
+        Returns:
+            Path to the file to transfer, or None if preparation failed
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        if storage_method == 'volume' and code_volumes:
+            # Backup code volume(s) only
+            log_info(f"Preparing code volume backup for volumes: {', '.join(code_volumes)}...")
+            
+            # Create temporary backup directory
+            import tempfile
+            import shutil
+            import tarfile
+            
+            temp_backup_dir = output_dir / "temp_code_backup"
+            temp_backup_dir.mkdir(exist_ok=True)
+            
+            try:
+                # Backup each code volume
+                for volume_name in code_volumes:
+                    from ..utils.validation import validate_volume_exists
+                    if not validate_volume_exists(volume_name):
+                        log_warning(f"Code volume {volume_name} not found, skipping")
+                        continue
+                    
+                    log_info(f"Backing up code volume: {volume_name}")
+                    volume_backup = temp_backup_dir / f"{volume_name}.tar.gz"
+                    
+                    try:
+                        subprocess.run([
+                            "docker", "run", "--rm",
+                            "-v", f"{volume_name}:/data:ro",
+                            "-v", f"{temp_backup_dir.absolute()}:/backup",
+                            "alpine", "tar", "czf", f"/backup/{volume_name}.tar.gz", "-C", "/data", "."
+                        ], check=True, capture_output=True, text=True)
+                        log_success(f"Code volume backup created: {volume_name}.tar.gz")
+                    except subprocess.CalledProcessError as e:
+                        log_error(f"Failed to backup code volume {volume_name}: {e}")
+                        if e.stderr:
+                            log_error(f"Error details: {e.stderr}")
+                        continue
+                
+                # Create combined backup file
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup_file = output_dir / f"{branch_name}_code_volumes_{timestamp}.tar.gz"
+                
+                with tarfile.open(backup_file, 'w:gz') as tar:
+                    tar.add(temp_backup_dir, arcname='.')
+                
+                # Cleanup temp directory
+                shutil.rmtree(temp_backup_dir)
+                
+                log_success(f"Code volume backup created: {backup_file}")
+                return backup_file
+                
+            except Exception as e:
+                log_error(f"Failed to create code volume backup: {e}")
+                if temp_backup_dir.exists():
+                    shutil.rmtree(temp_backup_dir)
+                return None
+        else:
+            # Create code archive
+            log_info("Creating code archive...")
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            archive_path = output_dir / f"{branch_name}_code_{timestamp}.tar.gz"
+            
+            from ..core.git_manager import GitManager
+            git_manager = GitManager(project_root=self.project_root, validate=False)
+            
+            if git_manager.create_worktree_archive(branch_name, archive_path):
+                log_success(f"Code archive created: {archive_path}")
+                return archive_path
+            else:
+                log_error("Failed to create code archive")
+                return None
+    
+    def _compose_code_update_script(self, branch_name: str, remote_file: str, 
+                                    storage_method: str, code_volumes: Optional[list] = None) -> str:
+        """Compose unified remote script for code update.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            remote_file: Path to update file on remote server
+            storage_method: 'volume' or 'bind_mount'
+            code_volumes: List of code volume names (for volume method)
+            
+        Returns:
+            Bash script string for remote execution
+        """
+        # Determine update command based on storage method
+        if storage_method == 'volume' and code_volumes:
+            # Volume restore - extract backup and restore each code volume
+            # Note: Volume names on remote may differ due to project name resolution
+            # We'll try exact match first, then search for matching volumes
+            volume_restore_commands = []
+            for vol_name in code_volumes:
+                # Escape volume name for use in shell script
+                vol_name_escaped = vol_name.replace('"', '\\"')
+                # Extract base volume name (last part after underscore) for matching
+                vol_base_name = vol_name.split('_')[-1] if '_' in vol_name else vol_name
+                volume_restore_commands.append(f'''
+# Restore code volume: {vol_name_escaped}
+log "Restoring code volume: {vol_name_escaped}"
+VOL_BACKUP="$TEMP_DIR/{vol_name_escaped}.tar.gz"
+
+# Find actual volume name on remote (may have different project prefix)
+# Try exact match first, then search by base name
+ACTUAL_VOL="{vol_name_escaped}"
+if ! docker volume inspect "$ACTUAL_VOL" >/dev/null 2>&1; then
+  # Try to find volume by base name
+  ACTUAL_VOL=$(docker volume ls --format "{{{{{{.Name}}}}}}" | grep -E "_{vol_base_name}$" | head -1 || echo "")
+  if [ -z "$ACTUAL_VOL" ]; then
+    log_error "Code volume not found on server. Expected: {vol_name_escaped} or *_{vol_base_name}"
+    exit 1
+  fi
+  log "Volume name differs on server: $ACTUAL_VOL (expected: {vol_name_escaped})"
+fi
+
+if [ -f "$VOL_BACKUP" ]; then
+  # Remove existing volume data and restore
+  log "Clearing existing volume data..."
+  docker run --rm -v "$ACTUAL_VOL:/data" alpine sh -c "rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true"
+  
+  log "Restoring code to volume..."
+  docker run --rm -v "$ACTUAL_VOL:/data" -v "$TEMP_DIR:/backup:ro" alpine tar -xzf "/backup/{vol_name_escaped}.tar.gz" -C /data
+  if [ $? -eq 0 ]; then
+    log_success "Code volume $ACTUAL_VOL restored successfully"
+  else
+    log_error "Failed to restore code volume $ACTUAL_VOL"
+    exit 1
+  fi
+else
+  log_error "Volume backup not found: $VOL_BACKUP"
+  exit 1
+fi
+''')
+            
+            update_command = f'''
+# Extract volume backup archive
+log "Extracting volume backup archive..."
+TEMP_DIR=$(mktemp -d)
+tar -xzf "{remote_file}" -C "$TEMP_DIR"
+if [ $? -ne 0 ]; then
+  log_error "Failed to extract volume backup archive"
+  exit 1
+fi
+log_success "Volume backup archive extracted"
+
+{''.join(volume_restore_commands)}
+
+# Cleanup temp directory
+rm -rf "$TEMP_DIR"
+'''
+        else:
+            # Archive extraction - need to find worktree path
+            update_command = f'''
+# Find worktree directory
+WORKTREE_PATH="$(find /root -maxdepth 3 -type d -path "*/worktrees/{branch_name}" -print -quit 2>/dev/null || true)"
+if [ -z "$WORKTREE_PATH" ]; then
+  log_error "Worktree directory not found for branch: {branch_name}"
+  exit 1
+fi
+log "Found worktree at: $WORKTREE_PATH"
+
+# Extract archive
+log "Extracting code archive to worktree..."
+tar -xzf "{remote_file}" -C "$WORKTREE_PATH" --strip-components=0
+if [ $? -ne 0 ]; then
+  log_error "Failed to extract code archive"
+  exit 1
+fi
+log_success "Code archive extracted successfully"
+'''
+        
+        script = f"""
+set -euo pipefail
+
+# Logging helper functions (reuse from _compose_remote_script pattern)
+log() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+}}
+
+log_success() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*" >&2
+}}
+
+log_error() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
+}}
+
+log_warning() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2
+}}
+
+log "=== Starting code update process ==="
+log "Branch name: {branch_name}"
+log "Storage method: {storage_method}"
+log "Update file: {remote_file}"
+
+# Determine dockertree binary (reuse from _compose_remote_script)
+log "Locating dockertree binary..."
+if [ -x /opt/dockertree-venv/bin/dockertree ]; then
+  DTBIN=/opt/dockertree-venv/bin/dockertree
+  log "Using dockertree from /opt/dockertree-venv/bin/dockertree"
+elif command -v dockertree >/dev/null 2>&1; then
+  DTBIN="$(command -v dockertree)"
+  log "Using dockertree from PATH: $DTBIN"
+else
+  DTBIN=dockertree
+  log "Using dockertree from PATH (fallback)"
+fi
+
+# Verify dockertree works
+if ! "$DTBIN" --version >/dev/null 2>&1; then
+  log_error "dockertree binary not working: $DTBIN"
+  exit 1
+fi
+log_success "dockertree binary verified: $($DTBIN --version 2>&1 | head -1)"
+
+# Find project root (reuse from _compose_remote_script)
+log "Detecting existing dockertree project..."
+HIT="$(find /root -maxdepth 3 -type f -path '*/.dockertree/config.yml' -print -quit 2>/dev/null || true)"
+if [ -z "$HIT" ]; then
+  log_error "No dockertree project found on server"
+  exit 1
+fi
+ROOT="$(dirname "$(dirname "$HIT")")"
+log "Found project at: $ROOT"
+cd "$ROOT"
+
+# Verify update file exists
+log "Verifying update file exists..."
+if [ ! -f "{remote_file}" ]; then
+  log_error "Update file not found: {remote_file}"
+  exit 1
+fi
+FILE_SIZE=$(du -h "{remote_file}" | cut -f1)
+log_success "Update file found: {remote_file} ($FILE_SIZE)"
+
+# Stop containers
+log "Stopping containers for branch: {branch_name}"
+if "$DTBIN" "{branch_name}" down; then
+  log_success "Containers stopped successfully"
+else
+  log_warning "Failed to stop containers (may not be running)"
+fi
+
+# Update code
+log "Updating code..."
+{update_command}
+
+# Restart containers
+log "Restarting containers for branch: {branch_name}"
+if "$DTBIN" "{branch_name}" up -d; then
+  log_success "Containers restarted successfully"
+else
+  log_error "Failed to restart containers"
+  exit 1
+fi
+
+# Verify containers are running
+log "Verifying containers are running..."
+sleep 2
+CONTAINERS_RUNNING=$(docker ps --filter "name={branch_name}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+if [ "$CONTAINERS_RUNNING" -gt 0 ]; then
+  log_success "$CONTAINERS_RUNNING container(s) running for branch {branch_name}"
+else
+  log_warning "No containers running - check logs with: dockertree {branch_name} logs"
+fi
+
+log_success "=== Code update process completed ==="
+"""
+        return script
+    
+    def _validate_code_update_prerequisites(self, config: Dict[str, Optional[str]], 
+                                           branch_name: str, storage_method: str) -> bool:
+        """Validate prerequisites for code update.
+        
+        Args:
+            config: Resolved push configuration
+            branch_name: Branch name for the worktree
+            storage_method: 'volume' or 'bind_mount'
+            
+        Returns:
+            True if all prerequisites are met, False otherwise
+        """
+        # Validate config
+        if not config or not config.get('scp_target') or not config.get('branch_name'):
+            return False
+        
+        # Parse SCP target to get server info
+        username, server, _ = self._parse_scp_target(config['scp_target'])
+        
+        # Verify dockertree installed on server
+        if not self._verify_dockertree_installed(username, server):
+            log_error("dockertree not found on server. Run with --prepare-server first.")
+            return False
+        
+        # For volumes, verify code volume exists
+        if storage_method == 'volume':
+            # This is a simplified check - in practice, we'd need to check on the server
+            log_info("Code volume validation will be performed on server during update")
+        
+        return True
+    
+    def _push_code_only(self, branch_name: Optional[str], scp_target: Optional[str],
+                       domain: Optional[str], ip: Optional[str], output_dir: Path) -> bool:
+        """Push code-only update to remote server.
+        
+        Args:
+            branch_name: Branch name (optional, can be from config)
+            scp_target: SCP target (optional, can be from config)
+            domain: Domain override (optional)
+            ip: IP override (optional)
+            output_dir: Directory for temporary files
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            log_info("Starting code-only push operation...")
+            
+            # Resolve configuration (will auto-detect branch from worktrees if needed)
+            config = self._resolve_push_config(branch_name, scp_target, domain, ip)
+            if not config:
+                return False
+            
+            resolved_branch = config['branch_name']
+            resolved_scp = config['scp_target']
+            
+            # Detect code storage method
+            storage_method, code_volumes = self._detect_code_storage_method(resolved_branch)
+            log_info(f"Detected code storage method: {storage_method}")
+            if code_volumes:
+                log_info(f"Code volumes: {', '.join(code_volumes)}")
+            
+            # Validate prerequisites
+            if not self._validate_code_update_prerequisites(config, resolved_branch, storage_method):
+                return False
+            
+            # Prepare code update
+            update_file = self._prepare_code_update(resolved_branch, storage_method, code_volumes, output_dir)
+            if not update_file:
+                return False
+            
+            # Parse SCP target
+            username, server, remote_path = self._parse_scp_target(resolved_scp)
+            
+            # Ensure remote directory exists
+            remote_dir = self._infer_remote_directory(remote_path)
+            if remote_dir and remote_dir not in ['.', '']:
+                self._ensure_remote_dir(username, server, remote_dir)
+            
+            # Transfer file
+            remote_file_path = f"{remote_path}/{update_file.name}" if not remote_path.endswith('/') else f"{remote_path}{update_file.name}"
+            remote_scp_target = f"{username}@{server}:{remote_file_path}"
+            
+            log_info(f"Transferring update file to {server}...")
+            if not self._scp_transfer(update_file, f"{username}@{server}:{remote_path}"):
+                log_error("Failed to transfer update file to remote server")
+                return False
+            
+            log_success(f"Update file transferred successfully")
+            
+            # Compose and execute remote script
+            script = self._compose_code_update_script(resolved_branch, remote_file_path, storage_method, code_volumes)
+            
+            exec_cmd = "cat > /tmp/dtcodeupdate.sh && chmod +x /tmp/dtcodeupdate.sh && /tmp/dtcodeupdate.sh && rm -f /tmp/dtcodeupdate.sh"
+            cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
+            
+            log_info("Executing remote code update script...")
+            log_info("This will: stop containers, update code, and restart containers")
+            
+            # Use streaming execution (reuse pattern from _run_remote_import)
+            from ..utils.streaming import execute_with_streaming
+            success, stdout_lines, stderr_lines = execute_with_streaming(
+                cmd,
+                script=script,
+                timeout=600,  # 10 minutes
+                progress_interval=30,
+                prefix="  ",
+                filter_keywords=None
+            )
+            
+            if not success:
+                log_error("Remote code update failed")
+                if stderr_lines:
+                    log_error("Update errors:")
+                    for line in stderr_lines:
+                        log_error(f"  {line}")
+                return False
+            
+            log_success("Code update completed successfully")
+            
+            # Save push configuration for future use
+            from ..core.environment_manager import EnvironmentManager
+            env_manager = EnvironmentManager(project_root=self.project_root)
+            env_manager.save_push_config(
+                resolved_branch,
+                resolved_scp,
+                config.get('domain'),
+                config.get('ip')
+            )
+            
+            return True
+            
+        except Exception as e:
+            log_error(f"Error in code-only push: {e}")
+            import traceback
+            log_error(f"Traceback: {traceback.format_exc()}")
+            return False
 

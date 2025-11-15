@@ -7,7 +7,7 @@ _dockertree_completion() {
     _init_completion || return
     
     # Main commands (including aliases)
-    local commands="start-proxy stop-proxy start stop create delete remove remove-all delete-all list prune volumes setup help completion -D -r"
+    local commands="start-proxy stop-proxy start stop create delete remove remove-all delete-all list prune volumes packages droplet domains setup help completion -D -r"
     
     # Commands that need worktree names
     local worktree_cmds="create delete remove"
@@ -120,6 +120,15 @@ _dockertree_completion() {
                     COMPREPLY=()
                 fi
                 return
+            fi
+            ;;
+        droplet)
+            # Handle droplet subcommands
+            local droplet_subcmds="create list sizes destroy info push"
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "$droplet_subcmds" -- "$cur") )
+            else
+                COMPREPLY=()
             fi
             ;;
         volumes)

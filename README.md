@@ -173,14 +173,18 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 ### Droplet Management
 | Command | Description | Example |
 |---------|-------------|---------|
-| `droplets create <name>` | Create a new Digital Ocean droplet | `dockertree droplets create myapp-prod` |
-| `droplets list` | List all droplets (formatted table) | `dockertree droplets list` |
-| `droplets list --as-json` | List droplets as JSON | `dockertree droplets list --as-json` |
-| `droplets list --as-csv` | List droplets as CSV | `dockertree droplets list --as-csv` |
-| `droplets info <id>` | Get droplet information | `dockertree droplets info 12345678` |
-| `droplets destroy <id>` | Destroy a droplet | `dockertree droplets destroy 12345678` |
+| `droplet create [branch_name]` | Create a new Digital Ocean droplet and push environment (default). Droplet name auto-detected from domain subdomain or branch name | `dockertree droplet create` or `dockertree droplet create test` |
+| `droplet create [branch_name] --create-only` | Create a droplet only, do not push | `dockertree droplet create test --create-only` |
+| `droplet create --domain app.example.com` | Create droplet using subdomain from domain as name | `dockertree droplet create --domain app.example.com` |
+| `droplet list` | List all droplets (formatted table) | `dockertree droplet list` |
+| `droplet list --as-json` | List droplets as JSON | `dockertree droplet list --as-json` |
+| `droplet list --as-csv` | List droplets as CSV | `dockertree droplet list --as-csv` |
+| `droplet info <id>` | Get droplet information | `dockertree droplet info 12345678` |
+| `droplet destroy <id>` | Destroy a droplet (supports comma-separated IDs) | `dockertree droplet destroy 12345678` or `dockertree droplet destroy 123,456,789` |
+| `droplet push [<branch>] <scp_target>` | Push dockertree package to remote server | `dockertree droplet push feature-auth user@server:/path` |
 
 **Droplet Creation Options:**
+- `branch_name` (optional argument) - Branch/worktree name (auto-detected from current directory if not provided)
 - `--region <region>` - Droplet region (defaults from env or nyc1)
 - `--size <size>` - Droplet size (defaults from env or s-1vcpu-1gb)
 - `--image <image>` - Droplet image (defaults from env or ubuntu-22-04-x64)
@@ -188,6 +192,13 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 - `--tags <tag>` - Tags for the droplet (can be specified multiple times)
 - `--wait` - Wait for droplet to be ready
 - `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+- `--create-only` - Only create droplet, do not push environment (default: creates and pushes)
+- `--scp-target <target>` - SCP target (optional, defaults to root@<droplet-ip>:/root)
+- Push options: `--no-auto-import` (opt-out), `--prepare-server`, `--domain`, `--ip`, `--dns-token`, `--skip-dns-check`, `--resume`, `--code-only`
+
+**Droplet Name Auto-Detection:**
+- If `--domain` is provided: uses subdomain as droplet name (e.g., `app.example.com` → `app`)
+- Otherwise: uses branch/worktree name as droplet name (auto-detected if not provided)
 
 **Droplet List Options:**
 - `--as-json` or `--json` - Output as JSON format
@@ -195,6 +206,7 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 - `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
 
 **Droplet Destroy Options:**
+- `<id>` - Single droplet ID or comma-separated list of IDs (e.g., `123,456,789`)
 - `--force` - Skip confirmation (destroys without typing droplet name)
 - `--only-droplet` - Only destroy droplet, skip DNS deletion
 - `--only-domain` - Only destroy DNS records, skip droplet deletion
@@ -205,7 +217,10 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 
 **Droplet Destroy Behavior:**
 - **Default**: Destroys droplet only (backward compatible)
-- **Confirmation**: Requires typing the exact droplet name to confirm (unless `--force`)
+- **Multiple Droplets**: Accepts comma-separated IDs (e.g., `123,456,789`) and processes all droplets sequentially
+- **Error Handling**: Continues destroying remaining droplets even if one fails
+- **Summary Output**: Shows summary of destroyed/failed droplets when processing multiple IDs
+- **Confirmation**: Requires typing the exact droplet name to confirm (unless `--force`) - each droplet requires confirmation separately
 - **DNS Auto-detection**: When destroying droplet, automatically finds and deletes DNS records pointing to droplet IP
 - **DNS-only mode**: Use `--only-domain` to delete DNS records without destroying the droplet
 - **Domain confirmation**: When deleting DNS records, requires typing the full domain name (e.g., "app.example.com") unless `--force`
@@ -840,67 +855,115 @@ The dockertree CLI follows a modular architecture designed for easy extension:
 - ✅ User guide in each .dockertree directory
 - ✅ MCP server for AI assistant integration
 - ✅ JSON output mode for programmatic access
- - ✅ Push command for SCP-based deployment with optional auto-import
+ - ✅ Push command for SCP-based deployment with auto-import enabled by default
 
 ## 🚀 Deployment (Push)
 
-### Basic Push
+### Create Droplet and Push (Default)
 ```bash
-# Export and transfer a package to a remote server via SCP
-dockertree push feature-auth user@server:/var/dockertree/packages
-```
+# Create a new Digital Ocean droplet and automatically push environment to it
+# Branch name auto-detected from current directory, droplet name uses branch name
+# Auto-import is enabled by default
+dockertree droplet create \
+  --prepare-server
 
-### Create Droplet and Push
-```bash
-# Create a new Digital Ocean droplet and push to it
-# scp_target is optional when using --create-droplet (defaults to root@<droplet-ip>:/root)
-dockertree push feature-auth --create-droplet \
-  --prepare-server --auto-import \
-  --domain app.example.com
+# With explicit branch name (droplet name = branch name)
+dockertree droplet create test \
+  --prepare-server
 
-# With custom username and path (server part is ignored, replaced with droplet IP)
-dockertree push feature-auth ubuntu@dummy:/home/ubuntu --create-droplet \
-  --prepare-server --auto-import
+# With domain (droplet name = subdomain from domain)
+dockertree droplet create \
+  --domain app.example.com \
+  --prepare-server
 
 # With custom droplet configuration
-dockertree push feature-auth --create-droplet \
-  --droplet-name myapp-prod \
-  --droplet-region sfo3 --droplet-size s-2vcpu-4gb \
-  --prepare-server --auto-import
+dockertree droplet create test \
+  --region sfo3 --size s-2vcpu-4gb \
+  --prepare-server \
+  --domain app.example.com
+
+# Create droplet only, do not push
+dockertree droplet create test --create-only
+```
+
+### Basic Push to Existing Server
+```bash
+# Export and transfer a package to a remote server via SCP
+dockertree droplet push feature-auth user@server:/var/dockertree/packages
 ```
 
 ### Auto-Import on Remote with Domain and HTTPS
 ```bash
 # Push with automatic DNS management and HTTPS deployment
-dockertree push feature-auth user@server:/var/dockertree/packages \
-  --auto-import --prepare-server \
+# Auto-import is enabled by default
+dockertree droplet push feature-auth user@server:/var/dockertree/packages \
+  --prepare-server \
   --domain app.example.com \
   --dns-token $DIGITALOCEAN_API_TOKEN
 
 # Or use environment variable for token
 export DIGITALOCEAN_API_TOKEN=your_token_here
-dockertree push feature-auth user@server:/var/dockertree/packages \
-  --auto-import --domain app.example.com
+dockertree droplet push feature-auth user@server:/var/dockertree/packages \
+  --domain app.example.com
 
 # Or add to .env file in project root (no export needed)
 # .env file:
 # DIGITALOCEAN_API_TOKEN=your_token_here
-dockertree push feature-auth user@server:/var/dockertree/packages \
-  --auto-import --domain app.example.com
+dockertree droplet push feature-auth user@server:/var/dockertree/packages \
+  --domain app.example.com
+
+# To skip auto-import (only push, don't import/start):
+dockertree droplet push feature-auth user@server:/var/dockertree/packages \
+  --no-auto-import
 
 # Options:
 #   --domain myapp.example.com        # Domain for HTTPS deployment
 #   --dns-token <token>                 # Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
 #   --skip-dns-check                    # Skip DNS validation
 #   --ip 203.0.113.10                   # IP-only HTTP mode (no Let's Encrypt for IPs)
-#   --create-droplet                    # Create new droplet before pushing (scp_target optional, defaults to root@<droplet-ip>:/root)
-#   --droplet-name <name>                # Droplet name (defaults to branch name)
-#   --droplet-region <region>            # Droplet region (defaults from env or nyc1)
-#   --droplet-size <size>                # Droplet size (defaults from env or s-1vcpu-1gb)
-#   --droplet-image <image>              # Droplet image (defaults from env or ubuntu-22-04-x64)
-#   --droplet-ssh-keys <key>             # SSH key names (comma-separated, e.g., anders,peter)
-# Note: When using --create-droplet, the droplet is always waited for until ready before pushing
 ```
+
+### Code-Only Push (Fast Updates)
+```bash
+# Push code-only update to pre-existing server
+# Uses stored push configuration from env.dockertree (saved after first push)
+dockertree droplet push --code-only
+
+# Code-only update with explicit arguments (overrides stored config)
+dockertree droplet push feature-auth user@server:/var/dockertree/packages --code-only
+
+# Code-only update with domain/IP override
+dockertree droplet push --code-only --domain app.example.com
+dockertree droplet push --code-only --ip 203.0.113.10
+```
+
+**How Code-Only Push Works:**
+- **Automatic Detection**: Dockertree automatically detects whether your code is stored in Docker volumes or bind mounts
+- **Volume-Based**: If code is in volumes, only code volumes are backed up and transferred
+- **Archive-Based**: If code is in bind mounts, a git archive is created and extracted to the worktree
+- **Configuration Storage**: Push configuration (scp_target, branch_name, domain, ip) is automatically saved to `.dockertree/env.dockertree` after successful push
+- **Reuse Configuration**: On subsequent pushes, stored configuration is used automatically (CLI arguments override stored config)
+
+**Push Configuration Variables:**
+After a successful push (full or code-only), the following variables are saved to `.dockertree/env.dockertree`:
+```
+PUSH_SCP_TARGET=user@server:/path/to/packages
+PUSH_BRANCH_NAME=feature-auth
+PUSH_DOMAIN=app.example.com  # optional
+PUSH_IP=203.0.113.10  # optional (mutually exclusive with domain)
+```
+
+**When to Use Code-Only Push:**
+- Quick code updates on pre-existing servers
+- Deploying minor fixes without full environment redeployment
+- Faster iteration during development
+- When only code changes, not environment configuration
+
+**When to Use Full Push:**
+- Initial deployment
+- Environment configuration changes
+- Database schema migrations
+- Volume data updates
 
 ### DNS Management
 Dockertree can automatically manage DNS records via Digital Ocean DNS API:
