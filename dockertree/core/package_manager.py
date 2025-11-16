@@ -65,7 +65,8 @@ class PackageManager:
                       include_code: bool = False, compressed: bool = True, skip_volumes: bool = False,
                       container_filter: Optional[List[Dict[str, str]]] = None,
                       exclude_deps: Optional[List[str]] = None,
-                      droplet_info: Optional[DropletInfo] = None) -> Dict[str, Any]:
+                      droplet_info: Optional[DropletInfo] = None,
+                      central_droplet_info: Optional[DropletInfo] = None) -> Dict[str, Any]:
         """Export worktree to package - orchestrates existing managers.
         
         Args:
@@ -176,7 +177,7 @@ class PackageManager:
             # 7. Generate metadata with checksums
             metadata = self._generate_metadata(
                 branch_name, temp_package_dir, include_code, skip_volumes, container_filter,
-                exclude_deps=exclude_deps, droplet_info=droplet_info
+                exclude_deps=exclude_deps, droplet_info=droplet_info, central_droplet_info=central_droplet_info
             )
             
             # 8. Compress package if requested
@@ -862,7 +863,14 @@ class PackageManager:
             
             # Resolve dependencies
             services_to_include = resolve_service_dependencies(compose_data, selected_services, exclude_deps)
+            
+            # Explicitly exclude services listed in exclude_deps from the final service list
+            exclude_set = set(exclude_deps or [])
+            services_to_include = [s for s in services_to_include if s not in exclude_set]
+            
             log_info(f"Including services with dependencies: {', '.join(services_to_include)}")
+            if exclude_deps:
+                log_info(f"Excluded services (not in final compose): {', '.join(exclude_deps)}")
             
             # Configure VPC port bindings if enabled (before filtering)
             self._configure_vpc_port_bindings(compose_data, services_to_include, worktree_path)
@@ -876,7 +884,6 @@ class PackageManager:
             }
             
             # Copy selected services and remove depends_on for excluded services
-            exclude_set = set(exclude_deps or [])
             for service_name in services_to_include:
                 if service_name in services:
                     service_config = services[service_name].copy()
@@ -1047,62 +1054,103 @@ class PackageManager:
             log_info("No environment variables found that reference excluded services")
             return False
         
+        import re
+        updated_env_file = False
+        updated_compose = False
+        
+        # Helper function to replace service name with central IP
+        def replace_service_with_ip(value: str, service_name: str) -> str:
+            """Replace service name with central private IP in environment variable value."""
+            if not value or service_name.lower() not in value.lower():
+                return value
+            
+            # Replace service name with IP
+            pattern = re.compile(re.escape(service_name), re.IGNORECASE)
+            new_value = pattern.sub(central_private_ip, value)
+            
+            # Also handle common patterns like "db:5432" -> "10.116.0.13:5432"
+            port_pattern = re.compile(rf'{re.escape(service_name)}:(\d+)', re.IGNORECASE)
+            new_value = port_pattern.sub(f'{central_private_ip}:\\1', new_value)
+            
+            return new_value
+        
         # Update environment file
         env_file = worktree_path / ".dockertree" / "env.dockertree"
-        if not env_file.exists():
-            log_warning(f"Environment file not found: {env_file}")
-            return False
-        
-        try:
-            # Read existing environment file
-            from ..utils.env_loader import load_env_file
-            env_vars = load_env_file(env_file)
-            
-            # Update environment variables
-            updated = False
-            for env_var, service_name in env_updates.items():
-                old_value = env_vars.get(env_var, '')
+        if env_file.exists():
+            try:
+                # Read existing environment file
+                from ..utils.env_loader import load_env_file
+                env_vars = load_env_file(env_file)
                 
-                # Replace service name with central server IP
-                # Pattern: {service_name} -> {central_private_ip}
-                # Pattern: {service_name}:{port} -> {central_private_ip}:{port}
-                new_value = old_value
-                if service_name.lower() in old_value.lower():
-                    # Replace service name with IP
-                    import re
-                    # Match service name in URLs/hosts
-                    pattern = re.compile(re.escape(service_name), re.IGNORECASE)
-                    new_value = pattern.sub(central_private_ip, old_value)
+                # Update environment variables
+                for env_var, service_name in env_updates.items():
+                    old_value = env_vars.get(env_var, '')
+                    new_value = replace_service_with_ip(old_value, service_name)
                     
-                    # Also handle common patterns like "db:5432" -> "10.116.0.13:5432"
-                    port_pattern = re.compile(rf'{re.escape(service_name)}:(\d+)', re.IGNORECASE)
-                    new_value = port_pattern.sub(f'{central_private_ip}:\\1', new_value)
+                    if new_value != old_value:
+                        env_vars[env_var] = new_value
+                        log_info(f"Updated env.dockertree {env_var}: {old_value} -> {new_value}")
+                        updated_env_file = True
+                    elif env_var not in env_vars:
+                        # Add new env var if it doesn't exist
+                        # Try to construct a reasonable default
+                        if 'HOST' in env_var.upper():
+                            env_vars[env_var] = central_private_ip
+                            log_info(f"Added env.dockertree {env_var}={central_private_ip}")
+                            updated_env_file = True
                 
-                if new_value != old_value:
-                    env_vars[env_var] = new_value
-                    log_info(f"Updated {env_var}: {old_value} -> {new_value}")
-                    updated = True
-                elif env_var not in env_vars:
-                    # Add new env var if it doesn't exist
-                    # Try to construct a reasonable default
-                    if 'HOST' in env_var.upper():
-                        env_vars[env_var] = central_private_ip
-                        log_info(f"Added {env_var}={central_private_ip}")
-                        updated = True
+                if updated_env_file:
+                    # Write updated environment file
+                    with open(env_file, 'w') as f:
+                        for key, value in env_vars.items():
+                            f.write(f"{key}={value}\n")
+                    log_success(f"Updated worker environment configuration in {env_file}")
+            except Exception as e:
+                log_error(f"Failed to update env.dockertree: {e}")
+        else:
+            log_warning(f"Environment file not found: {env_file}")
+        
+        # Update docker-compose file environment variables
+        try:
+            services = compose_data.get('services', {})
+            for service_name, service_config in services.items():
+                if 'environment' not in service_config:
+                    continue
+                
+                environment = service_config['environment']
+                if isinstance(environment, dict):
+                    # Dict format: {VAR: value}
+                    for env_var, service_ref in env_updates.items():
+                        if env_var in environment:
+                            old_value = str(environment[env_var])
+                            new_value = replace_service_with_ip(old_value, service_ref)
+                            if new_value != old_value:
+                                environment[env_var] = new_value
+                                log_info(f"Updated compose {service_name}.{env_var}: {old_value} -> {new_value}")
+                                updated_compose = True
+                elif isinstance(environment, list):
+                    # List format: ["VAR=value", ...]
+                    for i, env_entry in enumerate(environment):
+                        if '=' in env_entry:
+                            env_var, env_value = env_entry.split('=', 1)
+                            for env_var_name, service_ref in env_updates.items():
+                                if env_var == env_var_name:
+                                    new_value = replace_service_with_ip(env_value, service_ref)
+                                    if new_value != env_value:
+                                        environment[i] = f"{env_var}={new_value}"
+                                        log_info(f"Updated compose {service_name}.{env_var}: {env_value} -> {new_value}")
+                                        updated_compose = True
             
-            if updated:
-                # Write updated environment file
-                with open(env_file, 'w') as f:
-                    for key, value in env_vars.items():
-                        f.write(f"{key}={value}\n")
-                log_success(f"Updated worker environment configuration in {env_file}")
-                return True
-            
-            return False
-            
+            if updated_compose:
+                # Write updated compose file
+                import yaml
+                with open(compose_file, 'w') as f:
+                    yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+                log_success(f"Updated worker environment in compose file: {compose_file}")
         except Exception as e:
-            log_error(f"Failed to update worker environment: {e}")
-            return False
+            log_error(f"Failed to update compose file: {e}")
+        
+        return updated_env_file or updated_compose
     
     def _restore_environment_files(self, package_dir: Path, worktree_path: Path) -> bool:
         """Restore environment files from package to worktree."""
@@ -1260,7 +1308,8 @@ class PackageManager:
     
     def _generate_metadata(self, branch_name: str, package_dir: Path, include_code: bool, 
                           skip_volumes: bool = False, container_filter: Optional[List[Dict[str, str]]] = None,
-                          exclude_deps: Optional[List[str]] = None, droplet_info: Optional[DropletInfo] = None) -> Dict[str, Any]:
+                          exclude_deps: Optional[List[str]] = None, droplet_info: Optional[DropletInfo] = None,
+                          central_droplet_info: Optional[DropletInfo] = None) -> Dict[str, Any]:
         """Generate package metadata with checksums."""
         metadata = {
             "package_version": "1.0",
@@ -1299,6 +1348,14 @@ class PackageManager:
                 "vpc_uuid": None,
                 "private_ip_address": None
             }
+        
+        # Populate central_server_private_ip if this is a worker deployment and central droplet info is provided
+        if vpc_deployment and vpc_deployment.get("is_worker") and central_droplet_info:
+            central_ip = getattr(central_droplet_info, 'private_ip_address', None)
+            if central_ip:
+                vpc_deployment["central_server_private_ip"] = central_ip
+                from ..utils.logging import log_info
+                log_info(f"Populated central server private IP in metadata: {central_ip}")
         
         if vpc_deployment:
             metadata["vpc_deployment"] = vpc_deployment

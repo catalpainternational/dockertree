@@ -60,7 +60,8 @@ class PushManager:
                     containers: Optional[str] = None,
                     exclude_deps: Optional[List[str]] = None,
                     vpc_uuid: Optional[str] = None,
-                    droplet_info: Optional[DropletInfo] = None) -> bool:
+                    droplet_info: Optional[DropletInfo] = None,
+                    central_droplet_info: Optional[DropletInfo] = None) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -205,7 +206,8 @@ class PushManager:
                     compressed=True,    # Always compress for faster transfer
                     container_filter=container_filter,
                     exclude_deps=exclude_deps,
-                    droplet_info=droplet_info
+                    droplet_info=droplet_info,
+                    central_droplet_info=central_droplet_info
                 )
                 
                 if not export_result.get("success"):
