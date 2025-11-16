@@ -11,7 +11,8 @@ import time
 import requests
 import docker
 import logging
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Any
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -249,6 +250,147 @@ class CaddyDockerMonitor:
             logger.error(f"Route validation failed: {e}")
             return False
 
+    def check_caddy_logs_for_certificate_errors(self, domain: str) -> Dict[str, Any]:
+        """Check Caddy logs for certificate acquisition errors for a specific domain.
+        
+        Args:
+            domain: Domain to check for certificate errors
+            
+        Returns:
+            Dictionary with error information, or empty dict if no errors found
+        """
+        error_info = {}
+        try:
+            if not self.docker_client:
+                return error_info
+            
+            # Get Caddy container logs
+            try:
+                caddy_container = self.docker_client.containers.get("dockertree_caddy_proxy")
+                logs = caddy_container.logs(tail=200, since=600).decode('utf-8')  # Last 200 lines, last 10 minutes
+                
+                # Check for rate limit errors
+                rate_limit_patterns = [
+                    (r'rateLimited', 'rate_limit'),
+                    (r'too many certificates', 'rate_limit'),
+                    (r'HTTP 429', 'rate_limit'),
+                    (r'rate limit', 'rate_limit'),
+                    (r'retry after', 'rate_limit')
+                ]
+                
+                for pattern, error_type in rate_limit_patterns:
+                    if re.search(pattern, logs, re.IGNORECASE):
+                        # Also check if it's for our domain
+                        if domain.lower() in logs.lower():
+                            error_info = {
+                                'type': error_type,
+                                'domain': domain,
+                                'message': f'Rate limit error detected for {domain}',
+                                'severity': 'warning'
+                            }
+                            logger.warning(f"Certificate error detected: {error_info['message']}")
+                            return error_info
+                
+                # Check for other certificate errors
+                cert_error_patterns = [
+                    (r'could not get certificate', 'certificate_error'),
+                    (r'certificate.*failed', 'certificate_error'),
+                    (r'tls.*error', 'certificate_error'),
+                    (r'obtaining certificate.*error', 'certificate_error')
+                ]
+                
+                for pattern, error_type in cert_error_patterns:
+                    if re.search(pattern, logs, re.IGNORECASE):
+                        if domain.lower() in logs.lower():
+                            error_info = {
+                                'type': error_type,
+                                'domain': domain,
+                                'message': f'Certificate acquisition error for {domain}',
+                                'severity': 'error'
+                            }
+                            logger.error(f"Certificate error detected: {error_info['message']}")
+                            return error_info
+                            
+            except Exception as e:
+                logger.debug(f"Could not check Caddy logs: {e}")
+                return error_info
+            
+            return error_info
+        except Exception as e:
+            logger.debug(f"Error checking Caddy logs for certificate errors: {e}")
+            return error_info
+    
+    def check_certificate_status(self, domain: str) -> Optional[str]:
+        """Check current certificate status for a domain from Caddy API.
+        
+        Args:
+            domain: Domain to check
+            
+        Returns:
+            'production', 'staging', 'error', or None if unknown
+        """
+        try:
+            config = self.get_caddy_config()
+            if not config:
+                return None
+            
+            tls_config = config.get("apps", {}).get("tls", {})
+            policies = tls_config.get("automation", {}).get("policies", [])
+            
+            for policy in policies:
+                if domain in policy.get("subjects", []):
+                    issuers = policy.get("issuers", [])
+                    for issuer in issuers:
+                        ca = issuer.get("ca", "")
+                        if "staging" in ca.lower():
+                            return "staging"
+                        elif "acme" in issuer.get("module", "").lower():
+                            return "production"
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Error checking certificate status: {e}")
+            return None
+    
+    def monitor_certificate_health(self, containers: List[Dict]) -> List[Dict]:
+        """Monitor certificate health for all domains in containers.
+        
+        Args:
+            containers: List of container dictionaries with labels
+            
+        Returns:
+            List of certificate health information dictionaries
+        """
+        health_reports = []
+        
+        for container in containers:
+            labels = container.get('Labels', {})
+            if 'caddy.proxy' in labels:
+                domain = labels['caddy.proxy']
+                if self._is_domain(domain):
+                    # Check for certificate errors
+                    error_info = self.check_caddy_logs_for_certificate_errors(domain)
+                    
+                    # Check current certificate status
+                    cert_status = self.check_certificate_status(domain)
+                    
+                    health_report = {
+                        'domain': domain,
+                        'status': cert_status or 'unknown',
+                        'has_errors': bool(error_info),
+                        'error_info': error_info
+                    }
+                    
+                    health_reports.append(health_report)
+                    
+                    # Log health status
+                    if error_info:
+                        logger.warning(f"Certificate health issue for {domain}: {error_info.get('message', 'Unknown error')}")
+                    elif cert_status:
+                        logger.info(f"Certificate status for {domain}: {cert_status}")
+        
+        return health_reports
+    
     def detect_configuration_drift(self, containers: List[Dict]) -> List[str]:
         """Detect when Caddy configuration doesn't match container labels."""
         drift_issues = []
@@ -361,6 +503,15 @@ class CaddyDockerMonitor:
                             logger.info("Auto-reconfiguration completed")
                         else:
                             logger.error("Auto-reconfiguration failed")
+                    
+                    # Monitor certificate health
+                    cert_health = self.monitor_certificate_health(containers)
+                    for health in cert_health:
+                        if health['has_errors']:
+                            error_info = health['error_info']
+                            if error_info.get('type') == 'rate_limit':
+                                logger.warning(f"Rate limit detected for {health['domain']}. Consider using staging certificates.")
+                                logger.warning(f"To fix: Update Caddy config to use staging ACME endpoint for {health['domain']}")
                 
                 time.sleep(5)  # Check every 5 seconds
                 

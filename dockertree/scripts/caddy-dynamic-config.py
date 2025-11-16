@@ -122,8 +122,93 @@ class CaddyDynamicConfig:
         # Domain: contains dots and valid domain characters
         return '.' in host and not host.startswith('.')
     
-    def create_route_config(self, containers: List[Dict]) -> Dict:
-        """Create Caddy configuration with routes for containers."""
+    def check_caddy_logs_for_rate_limit(self, domain: str) -> bool:
+        """Check Caddy logs for rate limit errors for a specific domain.
+        
+        Args:
+            domain: Domain to check for rate limit errors
+            
+        Returns:
+            True if rate limit error detected, False otherwise
+        """
+        try:
+            if not self.docker_client:
+                return False
+            
+            # Get Caddy container logs
+            try:
+                caddy_container = self.docker_client.containers.get("dockertree_caddy_proxy")
+                logs = caddy_container.logs(tail=100, since=300).decode('utf-8')  # Last 100 lines, last 5 minutes
+                
+                # Check for rate limit errors
+                rate_limit_patterns = [
+                    r'rateLimited',
+                    r'too many certificates',
+                    r'HTTP 429',
+                    r'rate limit',
+                    r'retry after'
+                ]
+                
+                for pattern in rate_limit_patterns:
+                    if re.search(pattern, logs, re.IGNORECASE):
+                        # Also check if it's for our domain
+                        if domain.lower() in logs.lower():
+                            logger.warning(f"Rate limit error detected in Caddy logs for {domain}")
+                            return True
+            except Exception as e:
+                logger.debug(f"Could not check Caddy logs: {e}")
+                return False
+            
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking Caddy logs for rate limit: {e}")
+            return False
+    
+    def check_caddy_certificate_status(self, domain: str) -> Optional[str]:
+        """Check current certificate status for a domain from Caddy API.
+        
+        Args:
+            domain: Domain to check
+            
+        Returns:
+            'production', 'staging', 'error', or None if unknown
+        """
+        try:
+            # Get current Caddy configuration
+            response = requests.get(f"{self.caddy_admin_url}/config/", timeout=5)
+            if response.status_code != 200:
+                return None
+            
+            config = response.json()
+            tls_config = config.get("apps", {}).get("tls", {})
+            policies = tls_config.get("automation", {}).get("policies", [])
+            
+            for policy in policies:
+                if domain in policy.get("subjects", []):
+                    issuers = policy.get("issuers", [])
+                    for issuer in issuers:
+                        ca = issuer.get("ca", "")
+                        if "staging" in ca.lower():
+                            return "staging"
+                        elif "acme" in issuer.get("module", "").lower():
+                            return "production"
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Error checking certificate status: {e}")
+            return None
+    
+    def create_route_config(self, containers: List[Dict], use_staging: Optional[bool] = None) -> Dict:
+        """Create Caddy configuration with routes for containers.
+        
+        Args:
+            containers: List of container dictionaries with labels
+            use_staging: If True, use staging ACME endpoint. If None, auto-detect from rate limits.
+                        If False, use production endpoint.
+        
+        Returns:
+            Caddy configuration dictionary
+        """
         # Detect if any domains are being used (vs localhost/IP)
         has_domains = False
         domains = []
@@ -171,14 +256,43 @@ class CaddyDynamicConfig:
                 caddy_email = f"admin@{first_domain}"
                 logger.warning(f"CADDY_EMAIL not set. Using default: {caddy_email}")
             
+            # Determine if we should use staging certificates
+            should_use_staging = use_staging
+            if should_use_staging is None:
+                # Auto-detect: check for rate limit errors
+                should_use_staging = False
+                for domain in domains:
+                    if self.check_caddy_logs_for_rate_limit(domain):
+                        should_use_staging = True
+                        logger.warning(f"Rate limit detected for {domain}, using staging certificates")
+                        break
+                    # Also check current certificate status
+                    cert_status = self.check_caddy_certificate_status(domain)
+                    if cert_status == "staging":
+                        # Already using staging, keep it
+                        should_use_staging = True
+                        logger.info(f"Already using staging certificates for {domain}")
+                        break
+            
+            # Build issuer configuration
+            issuer_config = {
+                "module": "acme",
+                "email": caddy_email
+            }
+            
+            # Add staging CA endpoint if needed
+            if should_use_staging:
+                issuer_config["ca"] = "https://acme-staging-v02.api.letsencrypt.org/directory"
+                logger.info(f"Using Let's Encrypt staging endpoint for domains: {', '.join(domains)}")
+                logger.warning("Staging certificates will show browser warnings but allow HTTPS to work")
+            else:
+                logger.info(f"Using Let's Encrypt production endpoint for domains: {', '.join(domains)}")
+            
             config["apps"]["tls"] = {
                 "automation": {
                     "policies": [{
                         "subjects": domains,
-                        "issuers": [{
-                            "module": "acme",
-                            "email": caddy_email
-                        }]
+                        "issuers": [issuer_config]
                     }]
                 }
             }

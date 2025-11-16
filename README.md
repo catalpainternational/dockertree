@@ -504,6 +504,41 @@ Error: No exact match found for 'feature-auth'. Checked: worktrees, branches, an
 ```
 **Solution**: Use `dockertree list` to see exact branch names. Branch names are case-sensitive and must match exactly.
 
+**HTTPS hangs or certificate acquisition fails (Let's Encrypt rate limit)**
+```bash
+Error: HTTP 429 urn:ietf:params:acme:error:rateLimited - too many certificates (5) already issued for this exact set of identifiers in the last 168h0m0s
+```
+**Symptoms**: HTTPS connections hang or timeout, HTTP works fine. Browser shows connection timeout when accessing `https://your-domain.com`.
+
+**Root Cause**: Let's Encrypt limits certificate issuance to 5 certificates per domain per 168 hours (7 days). If you've deployed the same domain multiple times, you may hit this limit.
+
+**Solution**: Use Let's Encrypt staging certificates temporarily until the rate limit expires:
+
+1. **Manual Fix (Immediate)**: SSH to your server and update Caddy configuration:
+   ```bash
+   # Get current config
+   curl -s http://localhost:2019/config/ > /tmp/caddy_config.json
+   
+   # Edit config to use staging endpoint (add "ca" field to issuer)
+   # Update the issuer in apps.tls.automation.policies[0].issuers[0]:
+   # Add: "ca": "https://acme-staging-v02.api.letsencrypt.org/directory"
+   
+   # Reload Caddy
+   curl -X POST http://localhost:2019/load -H "Content-Type: application/json" -d @/tmp/caddy_config.json
+   ```
+
+2. **Automatic Fix (Long-term)**: Dockertree's dynamic configuration script (`caddy-dynamic-config.py`) now automatically detects rate limit errors and falls back to staging certificates. The script checks Caddy logs for rate limit patterns and automatically switches to staging when detected.
+
+3. **Staging Certificates**: 
+   - Staging certificates work for HTTPS but show browser security warnings
+   - Users can proceed after accepting the warning
+   - Connection is still encrypted, just not trusted by default
+   - Switch back to production certificates after rate limit expires (check Caddy logs for "retry after" timestamp)
+
+4. **Monitor Certificate Health**: The `caddy-docker-monitor.py` script monitors certificate health and logs warnings when rate limits are detected.
+
+**Note**: Rate limits expire after 168 hours (7 days) from the first certificate issuance. Check Caddy logs for the exact expiration time.
+
 ### Debug Commands
 
 ```bash
