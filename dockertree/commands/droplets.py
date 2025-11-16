@@ -137,11 +137,20 @@ class DropletCommands:
                 JSONOutput.print_json(result)
             else:
                 log_success(f"Droplet created successfully: {name} (ID: {droplet.id})")
+                print_plain("")
+                print_plain("Droplet Information:")
                 if droplet.ip_address:
-                    print_plain(f"  IP Address: {droplet.ip_address}")
+                    print_plain(f"  Public IP: {droplet.ip_address}")
+                if droplet.private_ip_address:
+                    print_plain(f"  Private IP: {droplet.private_ip_address}")
+                if droplet.vpc_uuid:
+                    print_plain(f"  VPC UUID: {droplet.vpc_uuid}")
                 print_plain(f"  Status: {droplet.status}")
                 print_plain(f"  Region: {droplet.region}")
                 print_plain(f"  Size: {droplet.size}")
+                print_plain(f"  Image: {droplet.image}")
+                if droplet.tags:
+                    print_plain(f"  Tags: {', '.join(droplet.tags)}")
             
             return True
             

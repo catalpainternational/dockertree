@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
 from ..dns_manager import DNSProvider
 from ..droplet_manager import DropletProvider, DropletInfo
-from ...utils.logging import log_info, log_warning, log_error
+from ...utils.logging import log_info, log_warning, log_error, log_success
 
 
 class DigitalOceanProvider(DNSProvider, DropletProvider):
@@ -519,8 +519,10 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
         if tags:
             payload['tags'] = tags
         
+        log_info("Sending droplet creation request to DigitalOcean API...")
         response = self._make_request('POST', '/droplets', json=payload)
         if not response:
+            log_error("Failed to receive response from DigitalOcean API")
             return None
         
         try:
@@ -535,8 +537,17 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             droplet_image = droplet_data.get('image', {}).get('slug', image)
             droplet_tags = droplet_data.get('tags', tags or [])
             
+            log_info(f"Droplet creation request submitted (ID: {droplet_id}, Status: {droplet_status})")
+            
             # Extract network information (public IP, private IP, VPC UUID)
             ip_address, private_ip_address, vpc_uuid = self._extract_network_info(droplet_data)
+            
+            if ip_address:
+                log_info(f"Public IP address: {ip_address}")
+            if private_ip_address:
+                log_info(f"Private IP address: {private_ip_address}")
+            if vpc_uuid:
+                log_info(f"VPC UUID: {vpc_uuid}")
             
             # Parse created_at if available
             created_at = None
@@ -718,11 +729,14 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             True if droplet is ready, False if timeout
         """
         start_time = time.time()
-        log_info(f"Waiting for droplet {droplet_id} to be ready...")
+        last_status_log = 0
+        last_logged_status = None
+        log_info(f"Waiting for droplet {droplet_id} to be ready (timeout: {timeout}s)...")
         
         droplet = None
         ssh_ready = False
         while time.time() - start_time < timeout:
+            elapsed = int(time.time() - start_time)
             droplet = self.get_droplet(droplet_id)
             if not droplet:
                 log_warning(f"Droplet {droplet_id} not found")
@@ -732,28 +746,37 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
                 log_error(f"Droplet {droplet_id} is in {droplet.status} status")
                 return False
             
+            # Log status updates every 15 seconds or on status change
+            if elapsed - last_status_log >= 15 or droplet.status != last_logged_status:
+                log_info(f"Droplet status: {droplet.status} (elapsed: {elapsed}s)")
+                last_logged_status = droplet.status
+                last_status_log = elapsed
+            
             if droplet.status == 'active':
                 # If SSH check is enabled and we have an IP, verify SSH
                 if check_ssh and droplet.ip_address:
                     if self._check_ssh_ready(droplet.ip_address):
                         if not ssh_ready:
-                            log_info(f"SSH is ready on {droplet.ip_address}")
+                            log_info(f"Droplet is active, checking SSH connectivity...")
+                            log_success(f"SSH is ready on {droplet.ip_address}")
                             ssh_ready = True
-                        log_info(f"Droplet {droplet_id} is ready (status: {droplet.status}, SSH: ready)")
+                        log_success(f"Droplet {droplet_id} is ready (status: {droplet.status}, SSH: ready)")
                         return True
                     # SSH not ready yet, continue waiting
                     if not ssh_ready:
+                        if elapsed - last_status_log >= 10:  # Log SSH wait every 10 seconds
                         log_info(f"Droplet is active, waiting for SSH to be ready on {droplet.ip_address}...")
+                            last_status_log = elapsed
                         ssh_ready = False
                 else:
                     # No SSH check or no IP yet
-                    log_info(f"Droplet {droplet_id} is ready (status: {droplet.status})")
+                    log_success(f"Droplet {droplet_id} is ready (status: {droplet.status})")
                     return True
             
             # Wait a bit before checking again
             time.sleep(5)
         
-        log_warning(f"Timeout waiting for droplet {droplet_id} to be ready")
+        log_warning(f"Timeout waiting for droplet {droplet_id} to be ready (waited {timeout}s)")
         return False
     
     def list_sizes(self) -> List[Dict[str, Any]]:

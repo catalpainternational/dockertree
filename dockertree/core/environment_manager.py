@@ -720,6 +720,10 @@ CADDY_EMAIL={caddy_email}
                                             log_info(f"Updated Caddy label for {service_name}: {domain}")
                         
                         if updated:
+                            # Remove version field if it's null (Docker Compose v2 doesn't require it)
+                            if 'version' in compose_data and compose_data.get('version') is None:
+                                compose_data.pop('version', None)
+                            
                             # Write YAML with proper formatting
                             yaml_content = yaml.dump(compose_data, default_flow_style=False, sort_keys=False, allow_unicode=True)
                             compose_file.write_text(yaml_content)
@@ -826,6 +830,10 @@ CADDY_EMAIL={caddy_email}
                                             log_info(f"Updated Caddy label for {service_name}: {ip}")
                         
                         if updated:
+                            # Remove version field if it's null (Docker Compose v2 doesn't require it)
+                            if 'version' in compose_data and compose_data.get('version') is None:
+                                compose_data.pop('version', None)
+                            
                             compose_file.write_text(yaml.dump(compose_data, default_flow_style=False, sort_keys=False))
                             log_info(f"Updated docker-compose.worktree.yml with IP: {ip}")
                 except Exception as e:

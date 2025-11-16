@@ -1043,6 +1043,30 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
             if not json:
                 log_info(f"Using branch name '{branch_name}' as droplet name")
         
+        # Get defaults for region, size, image if not provided
+        from .core.droplet_manager import DropletManager
+        defaults = DropletManager.get_droplet_defaults()
+        resolved_region = region or defaults.get('region', 'nyc1')
+        resolved_size = size or defaults.get('size', 's-1vcpu-1gb')
+        resolved_image = image or defaults.get('image', 'ubuntu-22-04-x64')
+        
+        # Add initial setup feedback
+        if not json:
+            log_info("Starting droplet creation process...")
+            log_info("Droplet configuration:")
+            log_info(f"  Name: {droplet_name}")
+            log_info(f"  Region: {resolved_region}")
+            log_info(f"  Size: {resolved_size}")
+            log_info(f"  Image: {resolved_image}")
+            if ssh_keys:
+                log_info(f"  SSH Keys: {ssh_keys}")
+            if tags:
+                log_info(f"  Tags: {', '.join(tags)}")
+            if containers:
+                log_info(f"  Containers: {containers}")
+            if exclude_deps:
+                log_info(f"  Exclude Dependencies: {exclude_deps}")
+        
         check_prerequisites_no_git()  # Don't require git for droplet operations
         droplet_commands = DropletCommands()
         # Parse comma-separated SSH key names into a list
@@ -1053,6 +1077,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         resolved_vpc_uuid = vpc_uuid
         if central_droplet_name and not vpc_uuid:
             if not json:
+                log_info("Resolving VPC configuration...")
                 log_info(f"Looking up VPC UUID from central droplet: {central_droplet_name}")
             from .core.droplet_manager import DropletManager
             token = DropletManager.resolve_droplet_token(api_token or dns_token)
@@ -1069,17 +1094,28 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                     if central_droplet and central_droplet.vpc_uuid:
                         resolved_vpc_uuid = central_droplet.vpc_uuid
                         if not json:
+                            log_info(f"Found central droplet '{central_droplet_name}' in region {central_droplet.region}")
+                            if central_droplet.region != resolved_region:
+                                log_warning("⚠️  Region mismatch detected!")
+                                log_warning(f"   Central droplet '{central_droplet_name}' is in region: {central_droplet.region}")
+                                log_warning(f"   Worker droplet will be created in region: {resolved_region}")
+                                log_warning("   VPCs are region-specific. Ensure both droplets are in the same region.")
                             log_info(f"Using VPC UUID from central droplet: {resolved_vpc_uuid}")
+                            if central_droplet.private_ip_address:
+                                log_info(f"Central droplet private IP: {central_droplet.private_ip_address}")
                     elif not json:
                         log_warning(f"Central droplet '{central_droplet_name}' not found or has no VPC UUID, using default VPC")
+        elif not json and not vpc_uuid:
+            log_info("Resolving VPC configuration...")
+            log_info(f"Using default VPC for region {resolved_region}")
         
         # Create droplet (always wait when pushing)
         wait_for_push = not create_only
         success = droplet_commands.create_droplet(
             name=droplet_name,
-            region=region,
-            size=size,
-            image=image,
+            region=resolved_region,
+            size=resolved_size,
+            image=resolved_image,
             ssh_keys=ssh_keys_list,
             tags=tags_list,
             wait=wait or wait_for_push,  # Always wait if pushing
@@ -1107,7 +1143,15 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         
         # Otherwise, push the environment to the newly created droplet
         if not json:
-            log_info("Droplet created successfully. Starting push operation...")
+            log_info("")
+            log_info("Droplet created successfully. Preparing to push environment...")
+            log_info(f"Will push worktree '{branch_name}' to {droplet_name}")
+            if containers:
+                log_info(f"Selected containers: {containers}")
+            if exclude_deps:
+                exclude_deps_preview = [d.strip() for d in exclude_deps.split(',')]
+                log_info(f"Excluding dependencies: {', '.join(exclude_deps_preview)}")
+            log_info("")
         
         # Get droplet IP address for push
         from .core.droplet_manager import DropletManager

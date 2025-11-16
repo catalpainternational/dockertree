@@ -711,6 +711,10 @@ class PackageManager:
                         worktree_compose_file, container_filter, worktree_path, exclude_deps
                     )
                     if filtered_compose:
+                        # Remove version field if it's null (Docker Compose v2 doesn't require it)
+                        if 'version' in filtered_compose and filtered_compose.get('version') is None:
+                            filtered_compose.pop('version', None)
+                        
                         filtered_path = env_dir / ".dockertree" / "docker-compose.worktree.filtered.yml"
                         filtered_path.parent.mkdir(parents=True, exist_ok=True)
                         with open(filtered_path, 'w') as f:

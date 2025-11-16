@@ -549,6 +549,10 @@ services:
             if not self._validate_transformed_compose(compose_data):
                 return False
             
+            # Remove version field if it's null (Docker Compose v2 doesn't require it)
+            if 'version' in compose_data and compose_data.get('version') is None:
+                compose_data.pop('version', None)
+            
             # Write transformed compose file
             with open(target_compose, 'w') as f:
                 yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
