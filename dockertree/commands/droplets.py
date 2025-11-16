@@ -129,7 +129,9 @@ class DropletCommands:
                         "region": droplet.region,
                         "size": droplet.size,
                         "image": droplet.image,
-                        "tags": droplet.tags
+                        "tags": droplet.tags,
+                        "private_ip_address": droplet.private_ip_address,
+                        "vpc_uuid": droplet.vpc_uuid
                     }
                 }
                 JSONOutput.print_json(result)
@@ -243,7 +245,9 @@ class DropletCommands:
                             "size": d.size,
                             "image": d.image,
                             "tags": d.tags,
-                            "created_at": d.created_at.isoformat() if d.created_at else None
+                            "created_at": d.created_at.isoformat() if d.created_at else None,
+                            "private_ip_address": d.private_ip_address,
+                            "vpc_uuid": d.vpc_uuid
                         }
                         for d in droplets
                     ]
@@ -630,7 +634,9 @@ class DropletCommands:
                         "size": droplet.size,
                         "image": droplet.image,
                         "tags": droplet.tags,
-                        "created_at": droplet.created_at.isoformat() if droplet.created_at else None
+                        "created_at": droplet.created_at.isoformat() if droplet.created_at else None,
+                        "private_ip_address": droplet.private_ip_address,
+                        "vpc_uuid": droplet.vpc_uuid
                     }
                 }
                 JSONOutput.print_json(result)

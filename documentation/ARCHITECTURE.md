@@ -770,6 +770,31 @@ dockertree packages import package.tar.gz --standalone --target-dir ./project
 }
 ```
 
+### VPC Deployment Architecture
+
+Dockertree supports VPC deployments for secure private networking between droplets:
+
+**VPC Metadata in Packages**:
+- Packages can include `vpc_deployment` metadata when VPC information is available or `--exclude-deps` is used
+- Metadata includes: `is_worker`, `excluded_services`, `central_server_private_ip`, `vpc_uuid`, `private_ip_address`
+- Used for automatic worker environment configuration during import
+
+**Automatic Port Binding**:
+- Configurable via `.dockertree/config.yml`: `vpc.auto_bind_ports: true`
+- Only activates when `--containers` flag is used and service has `expose` ports but no `ports` mapping
+- Automatically adds `0.0.0.0:{container_port}:{container_port}` bindings for VPC-accessible services
+
+**Worker Environment Configuration**:
+- Automatically configures environment variables when package metadata indicates worker deployment
+- Pattern-based detection: finds env vars referencing excluded services (e.g., `DB_HOST`, `REDIS_URL`)
+- Replaces service names with central server's VPC private IP
+- Only activates when `vpc_deployment.is_worker=true` in package metadata
+
+**VPC UUID Tracking**:
+- `--central-droplet-name` flag enables explicit VPC UUID reuse from central droplet
+- Conservative approach: no auto-detection, requires explicit flag
+- VPC UUID stored in `DropletInfo` and package metadata for reference
+
 ### Standalone Requirements
 
 For standalone import to succeed:
@@ -889,11 +914,18 @@ Dockertree includes a droplet provider abstraction layer for cloud server manage
 **Features**:
 - Automatic droplet creation with configurable defaults
 - Droplet status polling and readiness detection
-- IP address extraction from droplet networks
+- IP address extraction from droplet networks (public and private VPC IPs)
+- VPC UUID tracking and reuse for worker deployments
 - Token management via CLI flags, shell environment variables, or `.env` files
 - Default configuration from `.env` or `.dockertree/env.dockertree`
 - Integration with DNS deletion for cleanup operations
 - Domain association display in list output
+
+**VPC Networking Support**:
+- `DropletInfo` includes `private_ip_address` and `vpc_uuid` fields
+- `_extract_network_info()` helper method extracts both public and private IPs from API responses
+- `--central-droplet-name` flag enables VPC UUID reuse for worker deployments
+- Automatic VPC detection and configuration for multi-droplet setups
 
 **Token Resolution**: Reuses `DNSManager.resolve_dns_token()` since both use the same Digital Ocean API token
 

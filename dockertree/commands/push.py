@@ -16,7 +16,7 @@ from typing import Optional, Tuple, Dict, List
 
 from ..core.package_manager import PackageManager
 from ..core.dns_manager import DNSManager, parse_domain, is_domain
-from ..core.droplet_manager import DropletManager
+from ..core.droplet_manager import DropletManager, DropletInfo
 # Import DNS providers to trigger registration
 from ..core import dns_providers  # noqa: F401
 from ..utils.logging import log_info, log_success, log_warning, log_error, print_plain, is_verbose
@@ -59,7 +59,8 @@ class PushManager:
                     code_only: bool = False,
                     containers: Optional[str] = None,
                     exclude_deps: Optional[List[str]] = None,
-                    vpc_uuid: Optional[str] = None) -> bool:
+                    vpc_uuid: Optional[str] = None,
+                    droplet_info: Optional[DropletInfo] = None) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -203,7 +204,8 @@ class PushManager:
                     include_code=True,  # Always include code for deployments
                     compressed=True,    # Always compress for faster transfer
                     container_filter=container_filter,
-                    exclude_deps=exclude_deps
+                    exclude_deps=exclude_deps,
+                    droplet_info=droplet_info
                 )
                 
                 if not export_result.get("success"):

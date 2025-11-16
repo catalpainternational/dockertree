@@ -20,6 +20,7 @@ from ..core.docker_manager import DockerManager
 from ..core.git_manager import GitManager
 from ..core.environment_manager import EnvironmentManager
 from ..core.worktree_orchestrator import WorktreeOrchestrator
+from ..core.droplet_manager import DropletInfo
 from ..utils.logging import log_info, log_success, log_warning, log_error
 from ..utils.checksum import calculate_file_checksum, verify_file_checksum
 from ..utils.confirmation import confirm_use_existing_worktree
@@ -63,7 +64,8 @@ class PackageManager:
     def export_package(self, branch_name: str, output_dir: Path, 
                       include_code: bool = False, compressed: bool = True, skip_volumes: bool = False,
                       container_filter: Optional[List[Dict[str, str]]] = None,
-                      exclude_deps: Optional[List[str]] = None) -> Dict[str, Any]:
+                      exclude_deps: Optional[List[str]] = None,
+                      droplet_info: Optional[DropletInfo] = None) -> Dict[str, Any]:
         """Export worktree to package - orchestrates existing managers.
         
         Args:
@@ -136,23 +138,25 @@ class PackageManager:
                             list(selected_volumes), 
                             temp_package_dir / "volumes"
                         )
+                        # If backup was attempted but failed, return error
+                        if not backup_file:
+                            return {
+                                "success": False,
+                                "error": "Failed to backup selected volumes"
+                            }
                     else:
                         log_warning("No volumes found for selected containers")
                         backup_file = None
+                        # No volumes found is valid - continue with export
                 else:
                     log_info(f"Backing up all volumes for {branch_name}...")
                     backup_file = self.docker_manager.backup_volumes(branch_name, temp_package_dir / "volumes")
-                
-                if container_filter and not backup_file:
-                    return {
-                        "success": False,
-                        "error": "Failed to backup selected volumes"
-                    }
-                elif not container_filter and not backup_file:
-                    return {
-                        "success": False,
-                        "error": "Failed to backup volumes"
-                    }
+                    # If backup was attempted but failed, return error
+                    if not backup_file:
+                        return {
+                            "success": False,
+                            "error": "Failed to backup volumes"
+                        }
             else:
                 log_warning("Skipping volume backup as requested")
             
@@ -171,7 +175,8 @@ class PackageManager:
             
             # 7. Generate metadata with checksums
             metadata = self._generate_metadata(
-                branch_name, temp_package_dir, include_code, skip_volumes, container_filter
+                branch_name, temp_package_dir, include_code, skip_volumes, container_filter,
+                exclude_deps=exclude_deps, droplet_info=droplet_info
             )
             
             # 8. Compress package if requested
@@ -371,6 +376,11 @@ class PackageManager:
             if not env_success:
                 log_warning("Failed to restore some environment files")
             
+            # Configure worker environment if metadata indicates worker deployment
+            if metadata.get('vpc_deployment', {}).get('is_worker'):
+                log_info("Detected worker deployment, configuring environment variables...")
+                self._configure_worker_environment(worktree_path, metadata)
+            
             # Apply domain/ip overrides if provided
             if domain:
                 log_info(f"Applying domain overrides: {domain}")
@@ -498,6 +508,11 @@ class PackageManager:
             
             # Restore environment files
             self._restore_environment_files(package_dir, target_directory)
+            
+            # Configure worker environment if metadata indicates worker deployment
+            if metadata.get('vpc_deployment', {}).get('is_worker'):
+                log_info("Detected worker deployment, configuring environment variables...")
+                self._configure_worker_environment(target_directory, metadata)
             
             # Create worktree for the imported branch
             branch_name = metadata.get("branch_name")
@@ -708,6 +723,95 @@ class PackageManager:
             log_error(f"Failed to copy environment files: {e}")
             return False
     
+    def _detect_service_ports(self, compose_data: Dict[str, Any], service_name: str) -> List[int]:
+        """Extract exposed ports from service definition.
+        
+        Only returns ports from 'expose' field, not from 'ports' mappings.
+        This is used to detect services that need port bindings for VPC access.
+        
+        Args:
+            compose_data: Docker compose data dictionary
+            service_name: Name of the service
+            
+        Returns:
+            List of container port numbers from 'expose' field
+        """
+        service = compose_data.get('services', {}).get(service_name, {})
+        ports = []
+        
+        # Only check expose (container ports) - not ports mappings
+        # This method is used to detect services that need port bindings
+        if 'expose' in service:
+            for port in service['expose']:
+                try:
+                    ports.append(int(port))
+                except (ValueError, TypeError):
+                    continue
+        
+        return list(set(ports))  # Remove duplicates
+    
+    def _configure_vpc_port_bindings(self, compose_data: Dict[str, Any], 
+                                     selected_services: List[str],
+                                     worktree_path: Path) -> bool:
+        """Configure port bindings for VPC-accessible services.
+        
+        Only activates when:
+        - Service has expose ports but no ports mapping
+        - Service is in the selected services list
+        - Config allows it (opt-in via config.yml)
+        
+        Args:
+            compose_data: Docker compose data dictionary (will be modified)
+            selected_services: List of service names to configure
+            worktree_path: Path to worktree directory (for config access)
+            
+        Returns:
+            True if any ports were configured, False otherwise
+        """
+        # Check if VPC port binding is enabled in config
+        config_path = worktree_path / ".dockertree" / "config.yml"
+        auto_bind_ports = False
+        
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+                    vpc_config = config.get('vpc', {})
+                    auto_bind_ports = vpc_config.get('auto_bind_ports', False)
+            except Exception:
+                pass
+        
+        if not auto_bind_ports:
+            return False
+        
+        services = compose_data.get('services', {})
+        configured = False
+        
+        for service_name in selected_services:
+            if service_name not in services:
+                continue
+            
+            service = services[service_name]
+            
+            # Skip if service already has ports mapping
+            if 'ports' in service and service['ports']:
+                continue
+            
+            # Get exposed ports
+            exposed_ports = self._detect_service_ports(compose_data, service_name)
+            
+            if exposed_ports:
+                # Add port bindings: 0.0.0.0:{container_port}:{container_port}
+                port_bindings = []
+                for port in exposed_ports:
+                    port_bindings.append(f"0.0.0.0:{port}:{port}")
+                
+                service['ports'] = port_bindings
+                log_info(f"Configured VPC port bindings for {service_name}: {', '.join(port_bindings)}")
+                configured = True
+        
+        return configured
+    
     def _filter_compose_services(self, compose_file: Path, 
                                  container_filter: List[Dict[str, str]],
                                  worktree_path: Path,
@@ -755,6 +859,9 @@ class PackageManager:
             # Resolve dependencies
             services_to_include = resolve_service_dependencies(compose_data, selected_services, exclude_deps)
             log_info(f"Including services with dependencies: {', '.join(services_to_include)}")
+            
+            # Configure VPC port bindings if enabled (before filtering)
+            self._configure_vpc_port_bindings(compose_data, services_to_include, worktree_path)
             
             # Create filtered compose data
             filtered_compose = {
@@ -832,6 +939,166 @@ class PackageManager:
         except Exception as e:
             log_error(f"Failed to filter compose services: {e}")
             return None
+    
+    def _find_env_vars_for_service(self, compose_data: Dict[str, Any], service_name: str) -> List[str]:
+        """Find environment variables that reference a service.
+        
+        Args:
+            compose_data: Docker compose data dictionary
+            service_name: Name of the service to find references for
+            
+        Returns:
+            List of environment variable names that reference the service
+        """
+        env_vars = []
+        service_upper = service_name.upper()
+        
+        # Common patterns: {SERVICE}_HOST, {SERVICE}_URL, {SERVICE}HOST, etc.
+        patterns = [
+            f"{service_upper}_HOST",
+            f"{service_upper}_URL",
+            f"{service_upper}HOST",
+            f"{service_upper}URL",
+            f"{service_upper}_ADDRESS",
+            f"{service_upper}_SERVICE",
+        ]
+        
+        # Search all services for these patterns
+        for svc_name, svc_config in compose_data.get('services', {}).items():
+            env = svc_config.get('environment', {})
+            
+            # Handle both dict and list formats
+            if isinstance(env, dict):
+                for key, value in env.items():
+                    key_upper = key.upper()
+                    # Check if key matches patterns
+                    if any(pattern in key_upper for pattern in patterns):
+                        env_vars.append(key)
+                    # Also check if value contains service name
+                    if isinstance(value, str) and service_name.lower() in value.lower():
+                        env_vars.append(key)
+            elif isinstance(env, list):
+                for env_item in env:
+                    if isinstance(env_item, str):
+                        # Format: "KEY=value" or "KEY"
+                        if '=' in env_item:
+                            key = env_item.split('=', 1)[0]
+                            value = env_item.split('=', 1)[1]
+                        else:
+                            key = env_item
+                            value = None
+                        
+                        key_upper = key.upper()
+                        if any(pattern in key_upper for pattern in patterns):
+                            env_vars.append(key)
+                        if value and service_name.lower() in value.lower():
+                            env_vars.append(key)
+        
+        return list(set(env_vars))  # Remove duplicates
+    
+    def _configure_worker_environment(self, worktree_path: Path, metadata: Dict[str, Any]) -> bool:
+        """Configure worker environment variables to point to central server.
+        
+        Only activates when package metadata contains vpc_deployment.is_worker=true.
+        
+        Args:
+            worktree_path: Path to worktree directory
+            metadata: Package metadata dictionary
+            
+        Returns:
+            True if configuration was applied, False otherwise
+        """
+        vpc_deployment = metadata.get('vpc_deployment')
+        if not vpc_deployment or not vpc_deployment.get('is_worker'):
+            return False
+        
+        central_private_ip = vpc_deployment.get('central_server_private_ip')
+        excluded_services = vpc_deployment.get('excluded_services', [])
+        
+        if not central_private_ip or not excluded_services:
+            log_warning("Worker configuration requires central_server_private_ip and excluded_services")
+            return False
+        
+        # Load compose file to detect environment variables
+        compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
+        if not compose_file.exists():
+            log_warning(f"Compose file not found: {compose_file}")
+            return False
+        
+        try:
+            with open(compose_file) as f:
+                compose_data = yaml.safe_load(f) or {}
+        except Exception as e:
+            log_error(f"Failed to load compose file: {e}")
+            return False
+        
+        # Find environment variables for each excluded service
+        env_updates = {}
+        for service_name in excluded_services:
+            env_vars = self._find_env_vars_for_service(compose_data, service_name)
+            for env_var in env_vars:
+                env_updates[env_var] = service_name
+        
+        if not env_updates:
+            log_info("No environment variables found that reference excluded services")
+            return False
+        
+        # Update environment file
+        env_file = worktree_path / ".dockertree" / "env.dockertree"
+        if not env_file.exists():
+            log_warning(f"Environment file not found: {env_file}")
+            return False
+        
+        try:
+            # Read existing environment file
+            from ..utils.env_loader import load_env_file
+            env_vars = load_env_file(env_file)
+            
+            # Update environment variables
+            updated = False
+            for env_var, service_name in env_updates.items():
+                old_value = env_vars.get(env_var, '')
+                
+                # Replace service name with central server IP
+                # Pattern: {service_name} -> {central_private_ip}
+                # Pattern: {service_name}:{port} -> {central_private_ip}:{port}
+                new_value = old_value
+                if service_name.lower() in old_value.lower():
+                    # Replace service name with IP
+                    import re
+                    # Match service name in URLs/hosts
+                    pattern = re.compile(re.escape(service_name), re.IGNORECASE)
+                    new_value = pattern.sub(central_private_ip, old_value)
+                    
+                    # Also handle common patterns like "db:5432" -> "10.116.0.13:5432"
+                    port_pattern = re.compile(rf'{re.escape(service_name)}:(\d+)', re.IGNORECASE)
+                    new_value = port_pattern.sub(f'{central_private_ip}:\\1', new_value)
+                
+                if new_value != old_value:
+                    env_vars[env_var] = new_value
+                    log_info(f"Updated {env_var}: {old_value} -> {new_value}")
+                    updated = True
+                elif env_var not in env_vars:
+                    # Add new env var if it doesn't exist
+                    # Try to construct a reasonable default
+                    if 'HOST' in env_var.upper():
+                        env_vars[env_var] = central_private_ip
+                        log_info(f"Added {env_var}={central_private_ip}")
+                        updated = True
+            
+            if updated:
+                # Write updated environment file
+                with open(env_file, 'w') as f:
+                    for key, value in env_vars.items():
+                        f.write(f"{key}={value}\n")
+                log_success(f"Updated worker environment configuration in {env_file}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            log_error(f"Failed to update worker environment: {e}")
+            return False
     
     def _restore_environment_files(self, package_dir: Path, worktree_path: Path) -> bool:
         """Restore environment files from package to worktree."""
@@ -988,7 +1255,8 @@ class PackageManager:
             return None
     
     def _generate_metadata(self, branch_name: str, package_dir: Path, include_code: bool, 
-                          skip_volumes: bool = False, container_filter: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+                          skip_volumes: bool = False, container_filter: Optional[List[Dict[str, str]]] = None,
+                          exclude_deps: Optional[List[str]] = None, droplet_info: Optional[DropletInfo] = None) -> Dict[str, Any]:
         """Generate package metadata with checksums."""
         metadata = {
             "package_version": "1.0",
@@ -1001,6 +1269,35 @@ class PackageManager:
             "container_filter": container_filter if container_filter else None,
             "checksums": {}
         }
+        
+        # Add VPC deployment metadata if relevant
+        # Only include when: droplet has VPC info OR exclude_deps is used (indicates worker deployment)
+        vpc_deployment = None
+        if droplet_info:
+            # Check if droplet has VPC information
+            private_ip = getattr(droplet_info, 'private_ip_address', None)
+            vpc_uuid = getattr(droplet_info, 'vpc_uuid', None)
+            
+            if private_ip or vpc_uuid or exclude_deps:
+                vpc_deployment = {
+                    "is_worker": bool(exclude_deps),
+                    "excluded_services": exclude_deps if exclude_deps else [],
+                    "central_server_private_ip": None,  # Will be populated for workers
+                    "vpc_uuid": vpc_uuid,
+                    "private_ip_address": private_ip
+                }
+        elif exclude_deps:
+            # Worker deployment without droplet info (e.g., manual export)
+            vpc_deployment = {
+                "is_worker": True,
+                "excluded_services": exclude_deps,
+                "central_server_private_ip": None,
+                "vpc_uuid": None,
+                "private_ip_address": None
+            }
+        
+        if vpc_deployment:
+            metadata["vpc_deployment"] = vpc_deployment
         
         # Calculate checksums for all files
         for file_path in package_dir.rglob('*'):

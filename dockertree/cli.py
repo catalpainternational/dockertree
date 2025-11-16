@@ -925,6 +925,7 @@ def droplet():
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
 @click.option('--vpc-uuid', help='VPC UUID for the droplet. If not provided, will use the default VPC for the region.')
+@click.option('--central-droplet-name', help='Name of central droplet to reuse VPC UUID from (for worker deployments)')
 @add_json_option
 @add_verbose_option
 def droplet_create(branch_name: Optional[str], region: Optional[str], size: Optional[str], image: Optional[str],
@@ -933,7 +934,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                     output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool,
                     domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool,
                     code_only: bool, containers: Optional[str], exclude_deps: Optional[str],
-                    vpc_uuid: Optional[str]):
+                    vpc_uuid: Optional[str], central_droplet_name: Optional[str]):
     """Create a new DigitalOcean droplet and optionally push dockertree environment.
 
     By default, creates a droplet and automatically pushes the dockertree environment
@@ -1048,6 +1049,30 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         ssh_keys_list = [k.strip() for k in ssh_keys.split(',')] if ssh_keys else None
         tags_list = list(tags) if tags else None
         
+        # Resolve VPC UUID from central droplet if specified
+        resolved_vpc_uuid = vpc_uuid
+        if central_droplet_name and not vpc_uuid:
+            if not json:
+                log_info(f"Looking up VPC UUID from central droplet: {central_droplet_name}")
+            from .core.droplet_manager import DropletManager
+            token = DropletManager.resolve_droplet_token(api_token or dns_token)
+            if token:
+                provider = DropletManager.create_provider('digitalocean', token)
+                if provider:
+                    droplets = provider.list_droplets()
+                    central_droplet = None
+                    for d in droplets:
+                        if d.name == central_droplet_name:
+                            central_droplet = d
+                            break
+                    
+                    if central_droplet and central_droplet.vpc_uuid:
+                        resolved_vpc_uuid = central_droplet.vpc_uuid
+                        if not json:
+                            log_info(f"Using VPC UUID from central droplet: {resolved_vpc_uuid}")
+                    elif not json:
+                        log_warning(f"Central droplet '{central_droplet_name}' not found or has no VPC UUID, using default VPC")
+        
         # Create droplet (always wait when pushing)
         wait_for_push = not create_only
         success = droplet_commands.create_droplet(
@@ -1061,7 +1086,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
             api_token=api_token,
             json=json,
             containers=containers,
-            vpc_uuid=vpc_uuid
+            vpc_uuid=resolved_vpc_uuid
         )
         if not success:
             elapsed_time = time.time() - start_time
@@ -1190,7 +1215,8 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 droplet_image=None,
                 droplet_ssh_keys=droplet_ssh_keys_list,
                 resume=resume,
-                code_only=code_only
+                code_only=code_only,
+                droplet_info=droplet
             )
         except click.exceptions.ClickException as e:
             # Catch Click-specific exceptions

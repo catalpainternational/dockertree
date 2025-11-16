@@ -194,6 +194,8 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 - `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
 - `--create-only` - Only create droplet, do not push environment (default: creates and pushes)
 - `--scp-target <target>` - SCP target (optional, defaults to root@<droplet-ip>:/root)
+- `--vpc-uuid <uuid>` - VPC UUID for the droplet (if not provided, uses default VPC for the region)
+- `--central-droplet-name <name>` - Name of central droplet to reuse VPC UUID from (for worker deployments)
 - Push options: `--no-auto-import` (opt-out), `--prepare-server`, `--domain`, `--ip`, `--dns-token`, `--skip-dns-check`, `--resume`, `--code-only`
 
 **Droplet Name Auto-Detection:**
@@ -1027,6 +1029,43 @@ You can verify DNS records in several ways:
 - If the record doesn't exist on any nameserver, check that the DNS record was created successfully
 - Browser DNS caches may need to be cleared or wait for TTL expiration
 
+### VPC Deployments (DigitalOcean)
+
+Dockertree supports VPC (Virtual Private Cloud) deployments for secure private networking between droplets:
+
+**Central and Worker Droplet Setup:**
+
+```bash
+# 1. Create central server droplet with db/redis services
+dockertree droplet create test \
+  --domain central.example.com \
+  --containers test.db,test.redis,test.web \
+  --prepare-server
+
+# 2. Create worker droplet in same VPC (reuses VPC UUID from central)
+dockertree droplet create test \
+  --central-droplet-name central \
+  --containers test.rq-worker-1 \
+  --exclude-deps db,redis \
+  --prepare-server
+```
+
+**VPC Features:**
+- **Automatic VPC Detection**: Extracts private IP addresses and VPC UUID from droplets
+- **VPC UUID Reuse**: Use `--central-droplet-name` to automatically reuse VPC UUID from central droplet
+- **Port Binding**: Configure `.dockertree/config.yml` to automatically bind ports for VPC-accessible services:
+  ```yaml
+  vpc:
+    auto_bind_ports: true  # Enable automatic port binding (default: false)
+  ```
+- **Worker Environment Configuration**: When deploying workers with `--exclude-deps`, environment variables are automatically configured to point to central server's private IP
+- **VPC Metadata**: Package metadata includes VPC deployment information for automatic configuration
+
+**VPC Configuration Options:**
+- `--vpc-uuid <uuid>` - Explicitly specify VPC UUID
+- `--central-droplet-name <name>` - Reuse VPC UUID from central droplet (for worker deployments)
+- `--exclude-deps <services>` - Exclude services from dependency resolution (indicates worker deployment)
+
 ### Notes
 - When using `--domain`, dockertree automatically enables HTTPS via Caddy's Let's Encrypt integration
 - When using `--ip`, deployments are HTTP-only. Certificate authorities do not issue certificates for IP addresses; use a domain for HTTPS.
@@ -1038,6 +1077,8 @@ deployment:
   default_domain: myapp.example.com
   default_ip: 203.0.113.10
   ssh_key: ~/.ssh/deploy_key
+vpc:
+  auto_bind_ports: true  # Enable automatic port binding for VPC-accessible services
 ```
 
 ---

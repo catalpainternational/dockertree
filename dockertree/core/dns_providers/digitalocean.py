@@ -419,6 +419,32 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
         log_info(f"Using first VPC for {region}: {vpc_id}")
         return vpc_id
     
+    def _extract_network_info(self, droplet_data: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Extract public IP, private IP, and VPC UUID from droplet data.
+        
+        Args:
+            droplet_data: Droplet data from API response
+            
+        Returns:
+            Tuple of (public_ip, private_ip, vpc_uuid)
+        """
+        ip_address = None
+        private_ip_address = None
+        vpc_uuid = None
+        
+        networks = droplet_data.get('networks', {})
+        v4_networks = networks.get('v4', [])
+        
+        for network in v4_networks:
+            network_type = network.get('type')
+            if network_type == 'public':
+                ip_address = network.get('ip_address')
+            elif network_type == 'private':
+                private_ip_address = network.get('ip_address')
+                vpc_uuid = network.get('vpc_uuid')
+        
+        return (ip_address, private_ip_address, vpc_uuid)
+    
     def _resolve_vpc_uuid(self, region: str, vpc_uuid: Optional[str] = None) -> str:
         """Resolve VPC UUID for droplet creation.
         
@@ -509,14 +535,8 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             droplet_image = droplet_data.get('image', {}).get('slug', image)
             droplet_tags = droplet_data.get('tags', tags or [])
             
-            # Extract IP address from networks
-            ip_address = None
-            networks = droplet_data.get('networks', {})
-            v4_networks = networks.get('v4', [])
-            for network in v4_networks:
-                if network.get('type') == 'public':
-                    ip_address = network.get('ip_address')
-                    break
+            # Extract network information (public IP, private IP, VPC UUID)
+            ip_address, private_ip_address, vpc_uuid = self._extract_network_info(droplet_data)
             
             # Parse created_at if available
             created_at = None
@@ -532,6 +552,8 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
                 id=droplet_id,
                 name=droplet_name,
                 ip_address=ip_address,
+                private_ip_address=private_ip_address,
+                vpc_uuid=vpc_uuid,
                 status=droplet_status,
                 region=droplet_region,
                 size=droplet_size,
@@ -567,14 +589,8 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
                 droplet_image = droplet_data.get('image', {}).get('slug', 'unknown')
                 droplet_tags = droplet_data.get('tags', [])
                 
-                # Extract IP address from networks
-                ip_address = None
-                networks = droplet_data.get('networks', {})
-                v4_networks = networks.get('v4', [])
-                for network in v4_networks:
-                    if network.get('type') == 'public':
-                        ip_address = network.get('ip_address')
-                        break
+                # Extract network information (public IP, private IP, VPC UUID)
+                ip_address, private_ip_address, vpc_uuid = self._extract_network_info(droplet_data)
                 
                 # Parse created_at if available
                 created_at = None
@@ -588,6 +604,8 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
                     id=droplet_id,
                     name=droplet_name,
                     ip_address=ip_address,
+                    private_ip_address=private_ip_address,
+                    vpc_uuid=vpc_uuid,
                     status=droplet_status,
                     region=droplet_region,
                     size=droplet_size,
@@ -625,14 +643,8 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             droplet_image = droplet_data.get('image', {}).get('slug', 'unknown')
             droplet_tags = droplet_data.get('tags', [])
             
-            # Extract IP address from networks
-            ip_address = None
-            networks = droplet_data.get('networks', {})
-            v4_networks = networks.get('v4', [])
-            for network in v4_networks:
-                if network.get('type') == 'public':
-                    ip_address = network.get('ip_address')
-                    break
+            # Extract network information (public IP, private IP, VPC UUID)
+            ip_address, private_ip_address, vpc_uuid = self._extract_network_info(droplet_data)
             
             # Parse created_at if available
             created_at = None
@@ -646,6 +658,8 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
                 id=droplet_id,
                 name=droplet_name,
                 ip_address=ip_address,
+                private_ip_address=private_ip_address,
+                vpc_uuid=vpc_uuid,
                 status=droplet_status,
                 region=droplet_region,
                 size=droplet_size,

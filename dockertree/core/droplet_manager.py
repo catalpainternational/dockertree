@@ -19,13 +19,15 @@ class DropletInfo:
     """Information about a droplet."""
     id: int
     name: str
-    ip_address: Optional[str]
+    ip_address: Optional[str]  # Public IP
     status: str
     region: str
     size: str
     image: str
     created_at: Optional[datetime] = None
     tags: List[str] = None
+    private_ip_address: Optional[str] = None  # VPC private IP
+    vpc_uuid: Optional[str] = None  # VPC UUID
     
     def __post_init__(self):
         """Initialize default values."""
