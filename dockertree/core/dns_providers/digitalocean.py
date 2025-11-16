@@ -765,7 +765,7 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
                     # SSH not ready yet, continue waiting
                     if not ssh_ready:
                         if elapsed - last_status_log >= 10:  # Log SSH wait every 10 seconds
-                        log_info(f"Droplet is active, waiting for SSH to be ready on {droplet.ip_address}...")
+                            log_info(f"Droplet is active, waiting for SSH to be ready on {droplet.ip_address}...")
                             last_status_log = elapsed
                         ssh_ready = False
                 else:
