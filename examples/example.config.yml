@@ -147,7 +147,7 @@ environment:
   # provider: digitalocean
   
   # API token for DNS provider
-  # Can use environment variable: ${DIGITALOCEAN_API_TOKEN} or ${DNS_API_TOKEN}
+  # Can use environment variable: ${DIGITALOCEAN_API_TOKEN}
   # Priority: CLI flag > shell environment > .env file > this config file
   # api_token: ${DIGITALOCEAN_API_TOKEN}
   

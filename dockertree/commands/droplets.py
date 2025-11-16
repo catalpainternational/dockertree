@@ -28,7 +28,8 @@ class DropletCommands:
                       ssh_keys: Optional[List[str]] = None,
                       tags: Optional[List[str]] = None,
                       wait: bool = False, api_token: Optional[str] = None,
-                      json: bool = False, containers: Optional[str] = None) -> bool:
+                      json: bool = False, containers: Optional[str] = None,
+                      vpc_uuid: Optional[str] = None) -> bool:
         """Create a new droplet.
         
         Args:
@@ -52,9 +53,9 @@ class DropletCommands:
             token = DropletManager.resolve_droplet_token(api_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 else:
-                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 return False
             
             # Get defaults from environment
@@ -92,7 +93,8 @@ class DropletCommands:
                 size=size,
                 image=image,
                 ssh_keys=ssh_keys if ssh_keys else None,
-                tags=tags if tags else None
+                tags=tags if tags else None,
+                vpc_uuid=vpc_uuid
             )
             
             if not droplet:
@@ -164,9 +166,9 @@ class DropletCommands:
             token = DropletManager.resolve_droplet_token(api_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 else:
-                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 return False
             
             # Create provider
@@ -350,9 +352,9 @@ class DropletCommands:
             token = DropletManager.resolve_droplet_token(api_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 else:
-                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 return False
             
             # Create provider
@@ -592,9 +594,9 @@ class DropletCommands:
             token = DropletManager.resolve_droplet_token(api_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 else:
-                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 return False
             
             # Create provider
@@ -679,9 +681,9 @@ class DropletCommands:
             token = DropletManager.resolve_droplet_token(api_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 else:
-                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --api-token")
+                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
                 return False
             
             # Create provider

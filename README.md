@@ -191,7 +191,7 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 - `--ssh-keys <key>` - SSH key IDs or fingerprints (can be specified multiple times)
 - `--tags <tag>` - Tags for the droplet (can be specified multiple times)
 - `--wait` - Wait for droplet to be ready
-- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
 - `--create-only` - Only create droplet, do not push environment (default: creates and pushes)
 - `--scp-target <target>` - SCP target (optional, defaults to root@<droplet-ip>:/root)
 - Push options: `--no-auto-import` (opt-out), `--prepare-server`, `--domain`, `--ip`, `--dns-token`, `--skip-dns-check`, `--resume`, `--code-only`
@@ -203,7 +203,7 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 **Droplet List Options:**
 - `--as-json` or `--json` - Output as JSON format
 - `--as-csv` - Output as CSV format
-- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
 
 **Droplet Destroy Options:**
 - `<id>` - Single droplet ID or comma-separated list of IDs (e.g., `123,456,789`)
@@ -211,7 +211,7 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 - `--only-droplet` - Only destroy droplet, skip DNS deletion
 - `--only-domain` - Only destroy DNS records, skip droplet deletion
 - `--domain <domain>` - Domain name for DNS deletion (optional, auto-detects if not provided)
-- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
 - `--dns-token <token>` - DNS API token (if different from droplet token)
 - `--json` - Output as JSON format
 
@@ -918,7 +918,7 @@ dockertree droplet push feature-auth user@server:/var/dockertree/packages \
 
 # Options:
 #   --domain myapp.example.com        # Domain for HTTPS deployment
-#   --dns-token <token>                 # Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)
+#   --dns-token <token>                 # Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
 #   --skip-dns-check                    # Skip DNS validation
 #   --ip 203.0.113.10                   # IP-only HTTP mode (no Let's Encrypt for IPs)
 ```
@@ -973,9 +973,9 @@ Dockertree can automatically manage DNS records via Digital Ocean DNS API:
 - **Supported Provider**: Digital Ocean DNS
 - **API Token Configuration**: Multiple options supported (priority order):
   1. CLI flag: `--dns-token <token>`
-  2. Shell environment: `export DIGITALOCEAN_API_TOKEN=token` or `export DNS_API_TOKEN=token`
-  3. `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to project root `.env` file
-  4. Global config: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to `~/.dockertree/env.dockertree` file
+  2. Shell environment: `export DIGITALOCEAN_API_TOKEN=token`
+  3. `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` to project root `.env` file
+  4. Global config: Add `DIGITALOCEAN_API_TOKEN=token` to `~/.dockertree/env.dockertree` file
 
 ### DNS Provider Setup
 

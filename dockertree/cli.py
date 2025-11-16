@@ -909,7 +909,7 @@ def droplet():
 @click.option('--ssh-keys', type=str, help='SSH key names (comma-separated, e.g., anders,peter)')
 @click.option('--tags', multiple=True, help='Tags for the droplet (can be specified multiple times)')
 @click.option('--wait', is_flag=True, default=False, help='Wait for droplet to be ready before returning')
-@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @click.option('--create-only', is_flag=True, default=False, help='Only create droplet, do not push environment (default: creates droplet and pushes environment)')
 @click.option('--scp-target', help='SCP target in format username@server:path (optional, defaults to root@<droplet-ip>:/root)')
 @click.option('--output-dir', type=click.Path(), default='./packages', help='Temporary package location (default: ./packages)')
@@ -918,12 +918,13 @@ def droplet():
 @click.option('--prepare-server', is_flag=True, default=False, help='Check remote server for required dependencies before push')
 @click.option('--domain', help='Domain override for remote import (subdomain.domain.tld). DNS A record will be automatically created if it does not exist.')
 @click.option('--ip', help='IP override for remote import (HTTP-only, no TLS)')
-@click.option('--dns-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--dns-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server')
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
+@click.option('--vpc-uuid', help='VPC UUID for the droplet. If not provided, will use the default VPC for the region.')
 @add_json_option
 @add_verbose_option
 def droplet_create(branch_name: Optional[str], region: Optional[str], size: Optional[str], image: Optional[str],
@@ -931,7 +932,8 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                     create_only: bool, scp_target: Optional[str],
                     output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool,
                     domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool,
-                    code_only: bool, containers: Optional[str], exclude_deps: Optional[str]):
+                    code_only: bool, containers: Optional[str], exclude_deps: Optional[str],
+                    vpc_uuid: Optional[str]):
     """Create a new DigitalOcean droplet and optionally push dockertree environment.
 
     By default, creates a droplet and automatically pushes the dockertree environment
@@ -1058,7 +1060,8 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
             wait=wait or wait_for_push,  # Always wait if pushing
             api_token=api_token,
             json=json,
-            containers=containers
+            containers=containers,
+            vpc_uuid=vpc_uuid
         )
         if not success:
             elapsed_time = time.time() - start_time
@@ -1235,7 +1238,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
 
 
 @droplet.command('list')
-@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
 @click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
 @add_verbose_option
@@ -1269,7 +1272,7 @@ def droplet_list(api_token: Optional[str], output_json: bool, output_csv: bool):
 
 
 @droplet.command('sizes')
-@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
 @click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
 @add_verbose_option
@@ -1308,7 +1311,7 @@ def droplet_sizes(api_token: Optional[str], output_json: bool, output_csv: bool)
 @click.option('--only-droplet', is_flag=True, default=False, help='Only destroy droplet, skip DNS deletion')
 @click.option('--only-domain', is_flag=True, default=False, help='Only destroy DNS records, skip droplet deletion')
 @click.option('--domain', help='Domain name for DNS deletion (optional, auto-detects if not provided)')
-@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @click.option('--dns-token', help='DNS API token (if different from droplet token)')
 @add_json_option
 @add_verbose_option
@@ -1440,7 +1443,7 @@ def droplet_destroy(droplet_ids: str, force: bool, only_droplet: bool, only_doma
 
 @droplet.command('info')
 @click.argument('droplet_id', type=int)
-@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--api-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @add_json_option
 @add_verbose_option
 def droplet_info(droplet_id: int, api_token: Optional[str], json: bool):
@@ -1495,7 +1498,7 @@ def domains():
 @click.argument('subdomain')
 @click.argument('domain')
 @click.argument('ip')
-@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @add_json_option
 @add_verbose_option
 def domains_create(subdomain: str, domain: str, ip: str, dns_token: Optional[str], json: bool):
@@ -1535,7 +1538,7 @@ def domains_create(subdomain: str, domain: str, ip: str, dns_token: Optional[str
 
 @domains.command('list')
 @click.option('--domain', help='Base domain to filter by (optional, lists all domains if not provided)')
-@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @click.option('--as-json', '--json', 'output_json', is_flag=True, default=False, help='Output results as JSON format')
 @click.option('--as-csv', 'output_csv', is_flag=True, default=False, help='Output results as CSV format')
 @add_verbose_option
@@ -1578,7 +1581,7 @@ def domains_list(domain: Optional[str], dns_token: Optional[str], output_json: b
 @domains.command('delete')
 @click.argument('full_domain')
 @click.option('--force', is_flag=True, default=False, help='Skip confirmation prompt')
-@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @add_json_option
 @add_verbose_option
 def domains_delete(full_domain: str, force: bool, dns_token: Optional[str], json: bool):
@@ -1645,7 +1648,7 @@ def domains_delete(full_domain: str, force: bool, dns_token: Optional[str], json
 
 @domains.command('info')
 @click.argument('full_domain')
-@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--dns-token', help='DNS API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @add_json_option
 @add_verbose_option
 def domains_info(full_domain: str, dns_token: Optional[str], json: bool):
@@ -1919,7 +1922,7 @@ def validate_package(package_file: str, json: bool):
 @click.option('--prepare-server', is_flag=True, default=False, help='Check remote server for required dependencies before push')
 @click.option('--domain', help='Domain override for remote import (subdomain.domain.tld). DNS A record will be automatically created if it does not exist.')
 @click.option('--ip', help='IP override for remote import (HTTP-only, no TLS)')
-@click.option('--dns-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN/DNS_API_TOKEN env var)')
+@click.option('--dns-token', help='DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)')
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed (skips export/transfer if package exists, skips server prep if already done)')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)')

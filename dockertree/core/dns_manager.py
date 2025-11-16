@@ -166,9 +166,10 @@ class DNSManager:
         
         Priority order (highest to lowest):
         1. Explicit token from CLI flag
-        2. Shell environment variable (DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN)
-        3. .env file in project root (DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN)
-        4. ~/.dockertree/env.dockertree file (DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN)
+        2. Shell environment variable (DIGITALOCEAN_API_TOKEN)
+        3. .env file in project root (DIGITALOCEAN_API_TOKEN)
+        4. .dockertree/env.dockertree in project root (DIGITALOCEAN_API_TOKEN)
+        5. ~/.dockertree/env.dockertree file (DIGITALOCEAN_API_TOKEN)
         
         Args:
             token: Explicit token from CLI flag
@@ -180,27 +181,15 @@ class DNSManager:
         if token:
             return token
         
-        # Try Digital Ocean specific environment variable
+        # Try Digital Ocean API token from shell environment
         token = os.getenv("DIGITALOCEAN_API_TOKEN")
-        if token:
-            return token
-        
-        # Try generic DNS_API_TOKEN
-        token = os.getenv("DNS_API_TOKEN")
         if token:
             return token
         
         # Try loading from .env file in project root
         try:
             env_vars = load_env_from_project_root()
-            
-            # Check for DIGITALOCEAN_API_TOKEN in .env file
             token = env_vars.get("DIGITALOCEAN_API_TOKEN")
-            if token:
-                return token
-            
-            # Check for DNS_API_TOKEN in .env file
-            token = env_vars.get("DNS_API_TOKEN")
             if token:
                 return token
         except Exception:
@@ -215,14 +204,7 @@ class DNSManager:
             dockertree_env = project_root / ".dockertree" / "env.dockertree"
             if dockertree_env.exists():
                 env_vars = load_env_file(dockertree_env)
-                
-                # Check for DIGITALOCEAN_API_TOKEN in project .dockertree/env.dockertree
                 token = env_vars.get("DIGITALOCEAN_API_TOKEN")
-                if token:
-                    return token
-                
-                # Check for DNS_API_TOKEN in project .dockertree/env.dockertree
-                token = env_vars.get("DNS_API_TOKEN")
                 if token:
                     return token
         except Exception:
@@ -232,14 +214,7 @@ class DNSManager:
         # Try loading from global dockertree config file in home directory
         try:
             env_vars = load_env_from_home()
-            
-            # Check for DIGITALOCEAN_API_TOKEN in global config
             token = env_vars.get("DIGITALOCEAN_API_TOKEN")
-            if token:
-                return token
-            
-            # Check for DNS_API_TOKEN in global config
-            token = env_vars.get("DNS_API_TOKEN")
             if token:
                 return token
         except Exception:

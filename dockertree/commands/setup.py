@@ -1239,7 +1239,7 @@ environment:
   # provider: digitalocean
   
   # API token for DNS provider
-  # Can use environment variable: ${DIGITALOCEAN_API_TOKEN} or ${DNS_API_TOKEN}
+  # Can use environment variable: ${DIGITALOCEAN_API_TOKEN}
   # Priority: CLI flag > shell environment > .env file > this config file
   # api_token: ${DIGITALOCEAN_API_TOKEN}
   
@@ -1380,12 +1380,10 @@ environment:
 # ============================================================================
 
 # Digital Ocean API token (for automatic DNS management)
-# Can also be set via environment variable: DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN
+# Can also be set via environment variable: DIGITALOCEAN_API_TOKEN
 # Priority: CLI flag > shell env > .env file > this file
 # DIGITALOCEAN_API_TOKEN=your_token_here
 
-# Generic DNS API token (alternative to DIGITALOCEAN_API_TOKEN)
-# DNS_API_TOKEN=your_token_here
 
 # ============================================================================
 # Droplet/Server Configuration (for deployment)

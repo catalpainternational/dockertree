@@ -860,8 +860,8 @@ Dockertree includes a DNS provider abstraction layer for automatic DNS managemen
 
 **Token Resolution Priority** (highest to lowest):
 1. Explicit `--dns-token` CLI flag
-2. Shell environment variable (`DIGITALOCEAN_API_TOKEN` or `DNS_API_TOKEN`)
-3. `.env` file in project root (`DIGITALOCEAN_API_TOKEN` or `DNS_API_TOKEN`)
+2. Shell environment variable (`DIGITALOCEAN_API_TOKEN`)
+3. `.env` file in project root (`DIGITALOCEAN_API_TOKEN`)
 
 ### Droplet Provider Abstraction Layer
 
@@ -957,16 +957,16 @@ deployment:
 
 dns:
   provider: digitalocean
-  api_token: ${DIGITALOCEAN_API_TOKEN}  # or DNS_API_TOKEN
+  api_token: ${DIGITALOCEAN_API_TOKEN}
   default_domain: example.com
 ```
 
 **Token Resolution**:
 DNS API tokens can be provided via:
 - CLI flag: `--dns-token <token>`
-- Shell environment: `export DIGITALOCEAN_API_TOKEN=token` or `export DNS_API_TOKEN=token`
-- Project `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to project root `.env` file
-- Global config: Add `DIGITALOCEAN_API_TOKEN=token` or `DNS_API_TOKEN=token` to `~/.dockertree/env.dockertree` file
+- Shell environment: `export DIGITALOCEAN_API_TOKEN=token`
+- Project `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` to project root `.env` file
+- Global config: Add `DIGITALOCEAN_API_TOKEN=token` to `~/.dockertree/env.dockertree` file
 
 Priority order: CLI flag > shell environment > project `.env` file > global config file
 

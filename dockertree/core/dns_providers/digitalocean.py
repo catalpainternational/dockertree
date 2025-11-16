@@ -348,11 +348,101 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
         
         return None
     
+    # VPC Methods
+    
+    def list_vpcs(self, region: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all VPCs, optionally filtered by region.
+        
+        Args:
+            region: Optional region slug to filter VPCs (e.g., 'nyc1')
+            
+        Returns:
+            List of dictionaries with VPC information:
+            - id: VPC UUID
+            - name: VPC name
+            - region: Region slug
+            - default: Whether this is the default VPC
+            - ip_range: IP range for the VPC
+        """
+        response = self._make_request('GET', '/vpcs')
+        if not response:
+            return []
+        
+        try:
+            data = response.json()
+            vpcs = data.get('vpcs', [])
+            
+            if region:
+                vpcs = [vpc for vpc in vpcs if vpc.get('region') == region]
+            
+            result = []
+            for vpc in vpcs:
+                result.append({
+                    'id': vpc.get('id'),
+                    'name': vpc.get('name', ''),
+                    'region': vpc.get('region', ''),
+                    'default': vpc.get('default', False),
+                    'ip_range': vpc.get('ip_range', '')
+                })
+            
+            return result
+        except (KeyError, ValueError) as e:
+            log_warning(f"Error parsing VPCs response: {e}")
+            return []
+    
+    def get_default_vpc(self, region: str) -> str:
+        """Get the default VPC UUID for a region.
+        
+        Args:
+            region: Region slug (e.g., 'nyc1')
+            
+        Returns:
+            VPC UUID (default VPC if available, otherwise first VPC in region)
+            
+        Raises:
+            ValueError: If no VPC is found for the region
+        """
+        vpcs = self.list_vpcs(region)
+        
+        if not vpcs:
+            raise ValueError(f"No VPC found for region {region}. VPC is required for private networking.")
+        
+        # First try to find a default VPC
+        for vpc in vpcs:
+            if vpc.get('default', False):
+                vpc_id = vpc.get('id')
+                log_info(f"Found default VPC for {region}: {vpc_id}")
+                return vpc_id
+        
+        # If no default VPC, use the first VPC in the region
+        vpc_id = vpcs[0].get('id')
+        log_info(f"Using first VPC for {region}: {vpc_id}")
+        return vpc_id
+    
+    def _resolve_vpc_uuid(self, region: str, vpc_uuid: Optional[str] = None) -> str:
+        """Resolve VPC UUID for droplet creation.
+        
+        Args:
+            region: Droplet region
+            vpc_uuid: Optional VPC UUID (if not provided, uses default VPC)
+            
+        Returns:
+            VPC UUID string
+            
+        Raises:
+            ValueError: If VPC cannot be resolved
+        """
+        if vpc_uuid:
+            return vpc_uuid
+        
+        return self.get_default_vpc(region)
+    
     # Droplet Provider Methods
     
     def create_droplet(self, name: str, region: str, size: str, image: str,
                       ssh_keys: Optional[List[str]] = None,
-                      tags: Optional[List[str]] = None) -> Optional[DropletInfo]:
+                      tags: Optional[List[str]] = None,
+                      vpc_uuid: Optional[str] = None) -> Optional[DropletInfo]:
         """Create a new droplet.
         
         Args:
@@ -362,16 +452,25 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             image: Droplet image (e.g., 'ubuntu-22-04-x64')
             ssh_keys: List of SSH key names (e.g., ['anders', 'peter']) - will be resolved to IDs
             tags: List of tags for the droplet
+            vpc_uuid: Optional VPC UUID. If not provided, will use default VPC for the region.
             
         Returns:
             DropletInfo if successful, None otherwise
         """
+        # Resolve VPC UUID (required for private networking)
+        try:
+            resolved_vpc_uuid = self._resolve_vpc_uuid(region, vpc_uuid)
+            log_info(f"Creating droplet in VPC: {resolved_vpc_uuid}")
+        except ValueError as e:
+            log_error(str(e))
+            return None
+        
         payload = {
             'name': name,
             'region': region,
             'size': size,
             'image': image,
-            'private_networking': True  # Enable private networking for inter-droplet communication
+            'vpc_uuid': resolved_vpc_uuid
         }
         
         if ssh_keys:

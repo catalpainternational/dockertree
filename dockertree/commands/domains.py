@@ -45,9 +45,9 @@ class DomainCommands:
             token = DNSManager.resolve_dns_token(dns_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 else:
-                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 return False
             
             # Create provider
@@ -124,9 +124,9 @@ class DomainCommands:
             token = DNSManager.resolve_dns_token(dns_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 else:
-                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 return False
             
             # Create provider
@@ -294,9 +294,9 @@ class DomainCommands:
             token = DNSManager.resolve_dns_token(dns_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 else:
-                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 return False
             
             # Create provider
@@ -386,9 +386,9 @@ class DomainCommands:
             token = DNSManager.resolve_dns_token(dns_token)
             if not token:
                 if json:
-                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    JSONOutput.print_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 else:
-                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                    log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 return False
             
             # Create provider

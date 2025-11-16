@@ -169,8 +169,10 @@ class DropletManager:
         
         Priority order (highest to lowest):
         1. Explicit token from CLI flag
-        2. Shell environment variable (DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN)
-        3. .env file in project root (DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN)
+        2. Shell environment variable (DIGITALOCEAN_API_TOKEN)
+        3. .env file in project root (DIGITALOCEAN_API_TOKEN)
+        4. .dockertree/env.dockertree in project root (DIGITALOCEAN_API_TOKEN)
+        5. ~/.dockertree/env.dockertree file (DIGITALOCEAN_API_TOKEN)
         
         Args:
             token: Explicit token from CLI flag

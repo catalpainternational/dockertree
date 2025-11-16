@@ -58,7 +58,8 @@ class PushManager:
                     resume: bool = False,
                     code_only: bool = False,
                     containers: Optional[str] = None,
-                    exclude_deps: Optional[List[str]] = None) -> bool:
+                    exclude_deps: Optional[List[str]] = None,
+                    vpc_uuid: Optional[str] = None) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -1784,7 +1785,7 @@ log_success "=== Remote import process completed ==="
             log_info("Resolving DNS API token...")
             api_token = DNSManager.resolve_dns_token(dns_token)
             if not api_token:
-                log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                log_error("DNS API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 return False
             log_info("DNS API token resolved successfully")
             
@@ -1994,7 +1995,8 @@ log_success "=== Remote import process completed ==="
                                  droplet_size: Optional[str] = None,
                                  droplet_image: Optional[str] = None,
                                  droplet_ssh_keys: Optional[list] = None,
-                                 api_token: Optional[str] = None):
+                                 api_token: Optional[str] = None,
+                                 vpc_uuid: Optional[str] = None):
         """Create a droplet for push deployment.
         
         Always waits for the droplet to be ready before returning, as the push
@@ -2018,7 +2020,7 @@ log_success "=== Remote import process completed ==="
             log_info("Resolving Digital Ocean API token...")
             token = DropletManager.resolve_droplet_token(api_token)
             if not token:
-                log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN or DNS_API_TOKEN environment variable, or use --dns-token")
+                log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --dns-token")
                 return None
             log_info("API token resolved successfully")
             
@@ -2063,7 +2065,8 @@ log_success "=== Remote import process completed ==="
                 size=size,
                 image=image,
                 ssh_keys=ssh_keys if ssh_keys else None,
-                tags=None
+                tags=None,
+                vpc_uuid=vpc_uuid
             )
             
             if not droplet:
