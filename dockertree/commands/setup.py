@@ -20,7 +20,8 @@ from ..utils.file_utils import (
     add_to_cursorindexignore,
     check_gitignore_entry,
     replace_gitignore_entry,
-    remove_gitignore_entry
+    remove_gitignore_entry,
+    clean_compose_version_field
 )
 
 
@@ -550,8 +551,7 @@ services:
                 return False
             
             # Remove version field if it's null (Docker Compose v2 doesn't require it)
-            if 'version' in compose_data and compose_data.get('version') is None:
-                compose_data.pop('version', None)
+            clean_compose_version_field(compose_data)
             
             # Write transformed compose file
             with open(target_compose, 'w') as f:

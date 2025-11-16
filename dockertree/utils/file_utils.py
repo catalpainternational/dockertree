@@ -6,7 +6,7 @@ This module provides utilities for file operations including .gitignore manageme
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from .logging import log_info, log_success, log_warning, log_error
 
@@ -312,3 +312,16 @@ def prompt_compose_file_choice(compose_files: list[Path]) -> Optional[Path]:
     except ValueError:
         log_error(f"Invalid choice: {choice}")
         return None
+
+
+def clean_compose_version_field(compose_data: Dict[str, Any]) -> None:
+    """Remove version field from compose data if it's null.
+    
+    Docker Compose v2 doesn't require the version field, so null values
+    should be removed to prevent validation errors.
+    
+    Args:
+        compose_data: Docker Compose data dictionary (modified in place)
+    """
+    if 'version' in compose_data and compose_data.get('version') is None:
+        compose_data.pop('version', None)
