@@ -510,11 +510,6 @@ class PackageManager:
             # Restore environment files
             self._restore_environment_files(package_dir, target_directory)
             
-            # Configure worker environment if metadata indicates worker deployment
-            if metadata.get('vpc_deployment', {}).get('is_worker'):
-                log_info("Detected worker deployment, configuring environment variables...")
-                self._configure_worker_environment(target_directory, metadata)
-            
             # Create worktree for the imported branch
             branch_name = metadata.get("branch_name")
             if branch_name:
@@ -525,6 +520,14 @@ class PackageManager:
                     log_warning(f"Failed to create worktree for branch '{branch_name}': {create_result.get('error')}")
                 else:
                     log_success(f"Created worktree for branch '{branch_name}'")
+                    
+                    # Configure worker environment if metadata indicates worker deployment
+                    # Must be done after worktree is created so we can configure the worktree's compose file
+                    if metadata.get('vpc_deployment', {}).get('is_worker'):
+                        worktree_path = Path(target_directory) / "worktrees" / branch_name
+                        if worktree_path.exists():
+                            log_info("Detected worker deployment, configuring environment variables...")
+                            self._configure_worker_environment(worktree_path, metadata)
                     
                     # Apply domain overrides to worktree if provided
                     if domain or ip:
@@ -701,13 +704,7 @@ class PackageManager:
             if container_filter:
                 worktree_compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
                 if worktree_compose_file.exists():
-                    # Extract exclude_deps from container_filter if present
-                    exclude_deps = None
-                    for selection in container_filter:
-                        if 'exclude_deps' in selection:
-                            exclude_deps = selection.get('exclude_deps')
-                            break
-                    
+                    # Use exclude_deps parameter (already passed to this method)
                     filtered_compose = self._filter_compose_services(
                         worktree_compose_file, container_filter, worktree_path, exclude_deps
                     )
