@@ -922,6 +922,7 @@ def droplet():
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server')
+@click.option('--build', is_flag=True, default=False, help='Rebuild Docker images after code update (only works with --code-only)')
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
 @click.option('--vpc-uuid', help='VPC UUID for the droplet. If not provided, will use the default VPC for the region.')
@@ -933,7 +934,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                     create_only: bool, scp_target: Optional[str],
                     output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool,
                     domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool,
-                    code_only: bool, containers: Optional[str], exclude_deps: Optional[str],
+                    code_only: bool, build: bool, containers: Optional[str], exclude_deps: Optional[str],
                     vpc_uuid: Optional[str], central_droplet_name: Optional[str]):
     """Create a new DigitalOcean droplet and optionally push dockertree environment.
 
@@ -1234,6 +1235,17 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 error_exit("Options --domain and --ip are mutually exclusive")
             return
         
+        # Validate --build is only used with --code-only
+        if build and not code_only:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
+            if json:
+                JSONOutput.print_error("--build can only be used with --code-only")
+            else:
+                error_exit("--build can only be used with --code-only")
+            return
+        
         push_manager = PushManager()
         # ssh_keys_list is already a list from line 1034, so we can use it directly
         droplet_ssh_keys_list = ssh_keys_list if ssh_keys_list else None
@@ -1263,6 +1275,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 droplet_ssh_keys=droplet_ssh_keys_list,
                 resume=resume,
                 code_only=code_only,
+                build=build,
                 droplet_info=droplet,
                 central_droplet_info=central_droplet_info
             )
@@ -2000,11 +2013,12 @@ def validate_package(package_file: str, json: bool):
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed (skips export/transfer if package exists, skips server prep if already done)')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)')
+@click.option('--build', is_flag=True, default=False, help='Rebuild Docker images after code update (only works with --code-only)')
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
 @add_json_option
 @add_verbose_option
-def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool, code_only: bool, containers: Optional[str], exclude_deps: Optional[str], json: bool):
+def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_dir: str, keep_package: bool, no_auto_import: bool, prepare_server: bool, domain: str, ip: str, dns_token: str, skip_dns_check: bool, resume: bool, code_only: bool, build: bool, containers: Optional[str], exclude_deps: Optional[str], json: bool):
     """Push dockertree package to remote server via SCP.
 
     Exports a complete dockertree environment package and transfers it to a
@@ -2033,6 +2047,9 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
 
         # Code-only update with explicit arguments
         dockertree droplet push feature-auth user@server:/path/to/packages --code-only
+
+        # Code-only update with image rebuild
+        dockertree droplet push --code-only --build
 
         # Push with domain configuration
         dockertree droplet push feature-auth user@server:/path/to/packages --domain app.example.com
@@ -2071,6 +2088,17 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
                 error_exit("scp_target is required")
             return
         
+        # Validate --build is only used with --code-only
+        if build and not code_only:
+            elapsed_time = time.time() - start_time
+            if not json:
+                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
+            if json:
+                JSONOutput.print_error("--build can only be used with --code-only")
+            else:
+                error_exit("--build can only be used with --code-only")
+            return
+        
         push_manager = PushManager()
         # Parse exclude_deps from comma-separated string to list
         exclude_deps_list = [d.strip() for d in exclude_deps.split(',')] if exclude_deps else None
@@ -2094,6 +2122,7 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
             droplet_ssh_keys=None,
             resume=resume,
             code_only=code_only,
+            build=build,
             containers=containers,
             exclude_deps=exclude_deps_list
         )

@@ -57,6 +57,7 @@ class PushManager:
                     droplet_ssh_keys: Optional[list] = None,
                     resume: bool = False,
                     code_only: bool = False,
+                    build: bool = False,
                     containers: Optional[str] = None,
                     exclude_deps: Optional[List[str]] = None,
                     vpc_uuid: Optional[str] = None,
@@ -82,7 +83,7 @@ class PushManager:
             if code_only:
                 if output_dir is None:
                     output_dir = self.project_root / "packages"
-                return self._push_code_only(branch_name, scp_target, domain, ip, output_dir)
+                return self._push_code_only(branch_name, scp_target, domain, ip, output_dir, build)
             
             # Auto-detect branch name if not provided
             if not branch_name:
@@ -2344,7 +2345,7 @@ log_success "=== Remote import process completed ==="
                 return None
     
     def _compose_code_update_script(self, branch_name: str, remote_file: str, 
-                                    storage_method: str, code_volumes: Optional[list] = None) -> str:
+                                    storage_method: str, code_volumes: Optional[list] = None, build: bool = False) -> str:
         """Compose unified remote script for code update.
         
         Args:
@@ -2352,6 +2353,7 @@ log_success "=== Remote import process completed ==="
             remote_file: Path to update file on remote server
             storage_method: 'volume' or 'bind_mount'
             code_volumes: List of code volume names (for volume method)
+            build: Whether to rebuild Docker images after code update
             
         Returns:
             Bash script string for remote execution
@@ -2441,6 +2443,21 @@ fi
 log_success "Code archive extracted successfully"
 '''
         
+        # Build section - only included if build is True
+        if build:
+            build_section = f'''
+# Rebuild Docker images
+log "Rebuilding Docker images for branch: {branch_name}"
+if "$DTBIN" "{branch_name}" build; then
+  log_success "Images rebuilt successfully"
+else
+  log_error "Failed to rebuild images"
+  exit 1
+fi
+'''
+        else:
+            build_section = ''
+        
         script = f"""
 set -euo pipefail
 
@@ -2518,6 +2535,8 @@ fi
 log "Updating code..."
 {update_command}
 
+{build_section}
+
 # Restart containers
 log "Restarting containers for branch: {branch_name}"
 if "$DTBIN" "{branch_name}" up -d; then
@@ -2573,7 +2592,7 @@ log_success "=== Code update process completed ==="
         return True
     
     def _push_code_only(self, branch_name: Optional[str], scp_target: Optional[str],
-                       domain: Optional[str], ip: Optional[str], output_dir: Path) -> bool:
+                       domain: Optional[str], ip: Optional[str], output_dir: Path, build: bool = False) -> bool:
         """Push code-only update to remote server.
         
         Args:
@@ -2582,6 +2601,7 @@ log_success "=== Code update process completed ==="
             domain: Domain override (optional)
             ip: IP override (optional)
             output_dir: Directory for temporary files
+            build: Whether to rebuild Docker images after code update
             
         Returns:
             True if successful, False otherwise
@@ -2632,13 +2652,16 @@ log_success "=== Code update process completed ==="
             log_success(f"Update file transferred successfully")
             
             # Compose and execute remote script
-            script = self._compose_code_update_script(resolved_branch, remote_file_path, storage_method, code_volumes)
+            script = self._compose_code_update_script(resolved_branch, remote_file_path, storage_method, code_volumes, build)
             
             exec_cmd = "cat > /tmp/dtcodeupdate.sh && chmod +x /tmp/dtcodeupdate.sh && /tmp/dtcodeupdate.sh && rm -f /tmp/dtcodeupdate.sh"
             cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
             
             log_info("Executing remote code update script...")
-            log_info("This will: stop containers, update code, and restart containers")
+            if build:
+                log_info("This will: stop containers, update code, rebuild images, and restart containers")
+            else:
+                log_info("This will: stop containers, update code, and restart containers")
             
             # Use streaming execution (reuse pattern from _run_remote_import)
             from ..utils.streaming import execute_with_streaming

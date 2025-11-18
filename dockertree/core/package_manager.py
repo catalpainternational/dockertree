@@ -1136,8 +1136,8 @@ class PackageManager:
                     with open(compose_file, 'w') as f:
                         yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
                     log_success(f"Updated docker-compose.worktree.yml with worker configuration")
-                    return True
-                
+                return True
+            
             except Exception as e:
                 log_warning(f"Failed to update docker-compose.worktree.yml: {e}")
                 # Don't fail the whole operation, env.dockertree update is still useful
