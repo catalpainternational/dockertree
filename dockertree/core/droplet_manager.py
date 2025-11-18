@@ -113,6 +113,14 @@ class DropletProvider(ABC):
         # Default implementation returns empty list
         # Providers should override this method
         return []
+    
+    def list_regions(self) -> List[Dict[str, Any]]:
+        """List available droplet regions.
+        
+        Returns:
+            List of dictionaries with region information (slug, name, available, features, sizes)
+        """
+        return []
 
 
 class DropletManager:

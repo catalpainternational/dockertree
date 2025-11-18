@@ -779,8 +779,63 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
         log_warning(f"Timeout waiting for droplet {droplet_id} to be ready (waited {timeout}s)")
         return False
     
+    def list_regions(self) -> List[Dict[str, Any]]:
+        """List available droplet regions from DigitalOcean API.
+        
+        Handles pagination to retrieve all regions.
+        
+        Returns:
+            List of dictionaries with region information:
+            - slug: Region slug (e.g., 'nyc1')
+            - name: Human-readable name
+            - available: Whether region currently accepts new droplets
+            - sizes: List of size slugs supported in the region
+            - features: List of supported features
+        """
+        all_regions = []
+        page = 1
+        per_page = 200
+        
+        while True:
+            response = self._make_request('GET', f'/regions?page={page}&per_page={per_page}')
+            if not response:
+                break
+            
+            try:
+                data = response.json()
+                regions_data = data.get('regions', [])
+                
+                if not regions_data:
+                    break
+                
+                for region_data in regions_data:
+                    all_regions.append({
+                        'slug': region_data.get('slug', 'unknown'),
+                        'name': region_data.get('name', ''),
+                        'available': region_data.get('available', False),
+                        'sizes': region_data.get('sizes', []),
+                        'features': region_data.get('features', [])
+                    })
+                
+                if len(regions_data) < per_page:
+                    break
+                
+                links = data.get('links', {})
+                pages = links.get('pages', {})
+                if pages.get('next'):
+                    page += 1
+                else:
+                    break
+            except (KeyError, ValueError) as e:
+                log_warning(f"Error parsing regions response: {e}")
+                break
+        
+        return all_regions
+    
     def list_sizes(self) -> List[Dict[str, Any]]:
         """List available droplet sizes from DigitalOcean API.
+        
+        Handles pagination to retrieve all sizes exhaustively.
         
         Returns:
             List of dictionaries with size information:
@@ -791,39 +846,65 @@ class DigitalOceanProvider(DNSProvider, DropletProvider):
             - price_monthly: Monthly price in USD
             - price_hourly: Hourly price in USD
             - available: Whether size is available
+            - regions: List of regions where size is available
         """
-        response = self._make_request('GET', '/sizes')
-        if not response:
-            return []
+        all_sizes = []
+        page = 1
+        per_page = 200  # Maximum per DigitalOcean API
         
-        try:
-            data = response.json()
-            sizes_data = data.get('sizes', [])
+        while True:
+            # Request with pagination parameters
+            response = self._make_request('GET', f'/sizes?page={page}&per_page={per_page}')
+            if not response:
+                break
             
-            sizes = []
-            for size_data in sizes_data:
-                # Extract price information
-                price_monthly = None
-                price_hourly = None
-                if 'price_monthly' in size_data:
-                    price_monthly = size_data['price_monthly']
-                if 'price_hourly' in size_data:
-                    price_hourly = size_data['price_hourly']
+            try:
+                data = response.json()
+                sizes_data = data.get('sizes', [])
                 
-                size_info = {
-                    'slug': size_data.get('slug', 'unknown'),
-                    'memory': size_data.get('memory', 0),
-                    'vcpus': size_data.get('vcpus', 0),
-                    'disk': size_data.get('disk', 0),
-                    'price_monthly': price_monthly,
-                    'price_hourly': price_hourly,
-                    'available': size_data.get('available', False),
-                    'regions': size_data.get('regions', [])
-                }
-                sizes.append(size_info)
-            
-            return sizes
-        except (KeyError, ValueError) as e:
-            log_warning(f"Error parsing sizes response: {e}")
-            return []
+                if not sizes_data:
+                    break
+                
+                for size_data in sizes_data:
+                    # Extract price information
+                    price_monthly = None
+                    price_hourly = None
+                    if 'price_monthly' in size_data:
+                        price_monthly = size_data['price_monthly']
+                    if 'price_hourly' in size_data:
+                        price_hourly = size_data['price_hourly']
+                    
+                    size_info = {
+                        'slug': size_data.get('slug', 'unknown'),
+                        'memory': size_data.get('memory', 0),
+                        'vcpus': size_data.get('vcpus', 0),
+                        'disk': size_data.get('disk', 0),
+                        'price_monthly': price_monthly,
+                        'price_hourly': price_hourly,
+                        'available': size_data.get('available', False),
+                        'regions': size_data.get('regions', [])
+                    }
+                    all_sizes.append(size_info)
+                
+                # Check if there are more pages
+                # DigitalOcean API returns 'links' with 'pages' info
+                links = data.get('links', {})
+                pages = links.get('pages', {})
+                
+                # If we got fewer results than per_page, we're on the last page
+                if len(sizes_data) < per_page:
+                    break
+                
+                # Check if there's a next page link
+                if pages.get('next'):
+                    page += 1
+                else:
+                    # No next page, we're done
+                    break
+                    
+            except (KeyError, ValueError) as e:
+                log_warning(f"Error parsing sizes response: {e}")
+                break
+        
+        return all_sizes
 

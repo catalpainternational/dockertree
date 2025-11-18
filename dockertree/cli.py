@@ -1075,7 +1075,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         
         # Resolve VPC UUID from central droplet if specified
         resolved_vpc_uuid = vpc_uuid
-        central_droplet = None
+        central_droplet = None  # Initialize outside conditional block
         if central_droplet_name and not vpc_uuid:
             if not json:
                 log_info("Resolving VPC configuration...")
@@ -1108,6 +1108,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         elif not json and not vpc_uuid:
             log_info("Resolving VPC configuration...")
             log_info(f"Using default VPC for region {resolved_region}")
+        
+        # Store central droplet info for later use in package export (for worker deployments)
+        central_droplet_info = central_droplet if central_droplet_name and central_droplet else None
         
         # Create droplet (always wait when pushing)
         wait_for_push = not create_only
@@ -1261,7 +1264,7 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 resume=resume,
                 code_only=code_only,
                 droplet_info=droplet,
-                central_droplet_info=central_droplet
+                central_droplet_info=central_droplet_info
             )
         except click.exceptions.ClickException as e:
             # Catch Click-specific exceptions

@@ -5,7 +5,7 @@ This module provides commands for managing Digital Ocean droplets including
 creating, listing, and destroying droplets.
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict
 from ..core.droplet_manager import DropletManager
 from ..core.dns_manager import DNSManager
 from ..core import dns_providers  # noqa: F401 - Import to trigger registration
@@ -680,13 +680,15 @@ class DropletCommands:
                 log_error(f"Error getting droplet info: {e}")
             return False
     
-    def list_sizes(self, api_token: Optional[str] = None, json: bool = False, csv: bool = False) -> bool:
-        """List available droplet sizes.
+    def list_sizes(self, api_token: Optional[str] = None, json: bool = False, csv: bool = False, 
+                   show_all: bool = False) -> bool:
+        """List droplet sizes.
         
         Args:
             api_token: Digital Ocean API token
             json: Output as JSON
             csv: Output as CSV
+            show_all: Show all sizes including unavailable (default: show only available)
             
         Returns:
             True if successful, False otherwise
@@ -710,7 +712,7 @@ class DropletCommands:
                     log_error("Failed to create droplet provider")
                 return False
             
-            # List sizes
+            # List sizes (now handles pagination exhaustively)
             sizes = provider.list_sizes()
             
             if not sizes:
@@ -720,9 +722,12 @@ class DropletCommands:
                     log_error("No sizes found or failed to retrieve sizes")
                 return False
             
-            # Filter to only available sizes and sort by price
-            available_sizes = [s for s in sizes if s.get('available', False)]
-            available_sizes.sort(key=lambda x: (x.get('price_monthly') or 0, x.get('memory', 0)))
+            # Filter to only available sizes by default (unless show_all is True)
+            if not show_all:
+                sizes = [s for s in sizes if s.get('available', False)]
+            
+            # Sort by price and memory
+            sizes.sort(key=lambda x: (x.get('price_monthly') or 0, x.get('memory', 0)))
             
             if csv:
                 # Output as CSV
@@ -730,35 +735,53 @@ class DropletCommands:
                 import sys
                 writer = csv.writer(sys.stdout)
                 # Write header
-                writer.writerow(["Slug", "Memory (MB)", "vCPUs", "Disk (GB)", "Price/Month", "Price/Hour"])
+                header = ["Slug", "Memory (MB)", "vCPUs", "Disk (GB)", "Price/Month", "Price/Hour"]
+                if show_all:
+                    header.append("Available")
+                writer.writerow(header)
                 # Write rows
-                for s in available_sizes:
+                for s in sizes:
                     price_monthly = f"${s.get('price_monthly', 0):.2f}" if s.get('price_monthly') else "N/A"
                     price_hourly = f"${s.get('price_hourly', 0):.6f}" if s.get('price_hourly') else "N/A"
-                    writer.writerow([
+                    row = [
                         s.get('slug', ''),
                         s.get('memory', 0),
                         s.get('vcpus', 0),
                         s.get('disk', 0),
                         price_monthly,
                         price_hourly
-                    ])
+                    ]
+                    if show_all:
+                        row.append('Yes' if s.get('available', False) else 'No')
+                    writer.writerow(row)
                 return True
             elif json:
                 result = {
                     "success": True,
-                    "sizes": available_sizes
+                    "sizes": sizes,
+                    "total": len(sizes),
+                    "available": len([s for s in sizes if s.get('available', False)])
                 }
                 JSONOutput.print_json(result)
             else:
-                if not available_sizes:
-                    print_plain("No available sizes found")
+                if not sizes:
+                    print_plain("No sizes found")
                     return True
                 
                 # Create a formatted table
                 console = Console()
+                if show_all:
+                    # Count available sizes when showing all
+                    available_count = len([s for s in sizes if s.get('available', False)])
+                    title = f"Available Droplet Sizes ({len(sizes)} total, {available_count} available)"
+                    # Add Available column when showing all
+                    add_available_column = True
+                else:
+                    title = f"Available Droplet Sizes ({len(sizes)})"
+                    add_available_column = False
+                
                 table = Table(
-                    title=f"Available Droplet Sizes ({len(available_sizes)})",
+                    title=title,
                     show_header=True,
                     header_style="bold",
                     box=None,
@@ -771,8 +794,10 @@ class DropletCommands:
                 table.add_column("Disk", style="blue", min_width=8, justify="right")
                 table.add_column("Price/Month", style="magenta", min_width=12, justify="right")
                 table.add_column("Price/Hour", style="white", min_width=12, justify="right")
+                if add_available_column:
+                    table.add_column("Available", style="dim white", min_width=9, justify="center")
                 
-                for size in available_sizes:
+                for size in sizes:
                     # Format memory
                     memory_mb = size.get('memory', 0)
                     if memory_mb >= 1024:
@@ -791,14 +816,23 @@ class DropletCommands:
                     price_hourly = size.get('price_hourly')
                     price_hourly_str = f"${price_hourly:.6f}" if price_hourly else "N/A"
                     
-                    table.add_row(
+                    # Build row
+                    row_data = [
                         size.get('slug', 'unknown'),
                         memory_str,
                         str(size.get('vcpus', 0)),
                         disk_str,
                         price_monthly_str,
                         price_hourly_str
-                    )
+                    ]
+                    
+                    # Add availability column only when showing all
+                    if add_available_column:
+                        is_available = size.get('available', False)
+                        available_str = "[green]Yes[/green]" if is_available else "[red]No[/red]"
+                        row_data.append(available_str)
+                    
+                    table.add_row(*row_data)
                 
                 console.print(table)
             
@@ -809,5 +843,120 @@ class DropletCommands:
                 JSONOutput.print_error(f"Error listing sizes: {e}")
             else:
                 log_error(f"Error listing sizes: {e}")
+            return False
+    
+    def list_regions(self, api_token: Optional[str] = None, json: bool = False, csv: bool = False,
+                     show_all: bool = False) -> bool:
+        """List droplet regions.
+        
+        Args:
+            api_token: Digital Ocean API token
+            json: Output as JSON
+            csv: Output as CSV
+            show_all: Show unavailable regions as well
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            token = DropletManager.resolve_droplet_token(api_token)
+            if not token:
+                if json:
+                    JSONOutput.print_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
+                else:
+                    log_error("Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token")
+                return False
+            
+            provider = DropletManager.create_provider('digitalocean', token)
+            if not provider:
+                if json:
+                    JSONOutput.print_error("Failed to create droplet provider")
+                else:
+                    log_error("Failed to create droplet provider")
+                return False
+            
+            all_regions = provider.list_regions()
+            if all_regions is None:
+                all_regions = []
+            
+            available_regions = [r for r in all_regions if r.get('available', False)]
+            regions = all_regions if show_all else available_regions
+            
+            # Sort regions by slug then name
+            regions.sort(key=lambda r: (r.get('slug') or '', r.get('name') or ''))
+            
+            if csv:
+                import csv
+                import sys
+                writer = csv.writer(sys.stdout)
+                writer.writerow(["Slug", "Name", "Available", "Features", "Sizes"])
+                for region in regions:
+                    features = ', '.join(region.get('features') or [])
+                    writer.writerow([
+                        region.get('slug', ''),
+                        region.get('name', ''),
+                        'Yes' if region.get('available', False) else 'No',
+                        features,
+                        len(region.get('sizes') or [])
+                    ])
+                return True
+            elif json:
+                result = {
+                    "success": True,
+                    "regions": regions,
+                    "total": len(regions),
+                    "available": len([r for r in regions if r.get('available', False)])
+                }
+                JSONOutput.print_json(result)
+            else:
+                if not regions:
+                    if show_all:
+                        print_plain("No regions found")
+                    else:
+                        print_plain("No available regions found (use --show-all to include unavailable regions)")
+                    return True
+                
+                console = Console()
+                if show_all:
+                    title = f"DigitalOcean Regions ({len(regions)} total, {len([r for r in regions if r.get('available', False)])} available)"
+                else:
+                    title = f"Available DigitalOcean Regions ({len(regions)})"
+                
+                table = Table(
+                    title=title,
+                    show_header=True,
+                    header_style="bold",
+                    box=None,
+                    padding=(0, 1)
+                )
+                
+                table.add_column("Slug", style="cyan", no_wrap=True, min_width=10)
+                table.add_column("Name", style="green", min_width=18)
+                table.add_column("Status", style="magenta", min_width=10)
+                table.add_column("Features", style="yellow", min_width=20, overflow="ellipsis")
+                table.add_column("Sizes", style="blue", justify="right", min_width=5)
+                
+                for region in regions:
+                    status = "[green]Available[/green]" if region.get('available', False) else "[red]Unavailable[/red]"
+                    features = ', '.join(region.get('features') or []) or "—"
+                    size_count = len(region.get('sizes') or [])
+                    
+                    table.add_row(
+                        region.get('slug', 'unknown'),
+                        region.get('name', 'N/A'),
+                        status,
+                        features,
+                        str(size_count)
+                    )
+                
+                console.print(table)
+            
+            return True
+        
+        except Exception as e:
+            if json:
+                JSONOutput.print_error(f"Error listing regions: {e}")
+            else:
+                log_error(f"Error listing regions: {e}")
             return False
 

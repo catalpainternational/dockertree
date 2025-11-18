@@ -179,6 +179,8 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 | `droplet list` | List all droplets (formatted table) | `dockertree droplet list` |
 | `droplet list --as-json` | List droplets as JSON | `dockertree droplet list --as-json` |
 | `droplet list --as-csv` | List droplets as CSV | `dockertree droplet list --as-csv` |
+| `droplet regions` | List available Digital Ocean regions | `dockertree droplet regions` |
+| `droplet regions --show-all` | Include unavailable regions in region list | `dockertree droplet regions --show-all` |
 | `droplet info <id>` | Get droplet information | `dockertree droplet info 12345678` |
 | `droplet destroy <id>` | Destroy a droplet (supports comma-separated IDs) | `dockertree droplet destroy 12345678` or `dockertree droplet destroy 123,456,789` |
 | `droplet push [<branch>] <scp_target>` | Push dockertree package to remote server | `dockertree droplet push feature-auth user@server:/path` |
@@ -203,6 +205,12 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 - Otherwise: uses branch/worktree name as droplet name (auto-detected if not provided)
 
 **Droplet List Options:**
+- `--as-json` or `--json` - Output as JSON format
+- `--as-csv` - Output as CSV format
+- `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
+
+**Droplet Regions Options:**
+- `--show-all` - Include unavailable regions
 - `--as-json` or `--json` - Output as JSON format
 - `--as-csv` - Output as CSV format
 - `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
