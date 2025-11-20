@@ -473,6 +473,7 @@ class PushManager:
                     "--progress",  # show progress
                     "--partial",  # keep partial transfers
                     "--inplace",  # update in-place for faster completion
+                    "-e", "ssh -o StrictHostKeyChecking=accept-new",  # Auto-accept new host keys
                     str(package_path),
                     remote_file_path
                 ]
@@ -514,6 +515,7 @@ class PushManager:
             cmd = [
                 "scp",
                 "-C",  # Enable compression
+                "-o", "StrictHostKeyChecking=accept-new",  # Auto-accept new host keys
                 str(package_path),
                 remote_file_path
             ]
@@ -571,7 +573,9 @@ class PushManager:
             add_ssh_host_key(server)
             
             cmd = [
-                "ssh", f"{username}@{server}",
+                "ssh",
+                "-o", "StrictHostKeyChecking=accept-new",  # Auto-accept new host keys
+                f"{username}@{server}",
                 f"bash -lc 'test -f {remote_file_path} && echo EXISTS || echo NOT_FOUND'"
             ]
             result = subprocess.run(
@@ -608,7 +612,9 @@ class PushManager:
             
             # Search for dockertree package files matching the branch name
             cmd = [
-                "ssh", f"{username}@{server}",
+                "ssh",
+                "-o", "StrictHostKeyChecking=accept-new",  # Auto-accept new host keys
+                f"{username}@{server}",
                 f"bash -lc 'find {remote_path} -maxdepth 1 -type f -name \"*{branch_name}*.dockertree-package.tar.gz\" 2>/dev/null | head -1'"
             ]
             result = subprocess.run(
@@ -635,7 +641,9 @@ class PushManager:
             add_ssh_host_key(server)
             
             cmd = [
-                "ssh", f"{username}@{server}",
+                "ssh",
+                "-o", "StrictHostKeyChecking=accept-new",  # Auto-accept new host keys
+                f"{username}@{server}",
                 f"bash -lc 'mkdir -p {remote_dir}'"
             ]
             log_info(f"Ensuring remote directory exists: {remote_dir}")
