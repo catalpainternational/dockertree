@@ -677,6 +677,7 @@ class PackageManager:
             package_dir: Path to package directory
             container_filter: Optional list of dicts with 'worktree' and 'container' keys
                              to filter which services to include in compose file
+            exclude_deps: Optional list of service names to exclude from dependency resolution
         """
         try:
             env_dir = package_dir / "environment"
@@ -701,13 +702,6 @@ class PackageManager:
             if container_filter:
                 worktree_compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
                 if worktree_compose_file.exists():
-                    # Extract exclude_deps from container_filter if present
-                    exclude_deps = None
-                    for selection in container_filter:
-                        if 'exclude_deps' in selection:
-                            exclude_deps = selection.get('exclude_deps')
-                            break
-                    
                     filtered_compose = self._filter_compose_services(
                         worktree_compose_file, container_filter, worktree_path, exclude_deps
                     )

@@ -2448,12 +2448,39 @@ log_success "Code archive extracted successfully"
             build_section = f'''
 # Rebuild Docker images
 log "Rebuilding Docker images for branch: {branch_name}"
+
+# Clear BuildKit cache to avoid corruption issues after code extraction
+log "Clearing Docker BuildKit cache to prevent corruption..."
+if docker builder prune -f --filter type=exec.cachemount >/dev/null 2>&1; then
+  log_success "BuildKit cache cleared successfully"
+elif docker builder prune -f >/dev/null 2>&1; then
+  log_success "BuildKit cache cleared (fallback method)"
+else
+  log_warning "Failed to clear BuildKit cache, continuing with build anyway"
+fi
+
+# Attempt build with cache first, fallback to --no-cache if needed
+log "Building Docker images..."
+BUILD_SUCCESS=false
 if "$DTBIN" "{branch_name}" build; then
   log_success "Images rebuilt successfully"
+  BUILD_SUCCESS=true
 else
-  log_error "Failed to rebuild images"
+  log_warning "Build failed, retrying with --no-cache flag..."
+  if "$DTBIN" "{branch_name}" build --no-cache; then
+    log_success "Images rebuilt successfully (without cache)"
+    BUILD_SUCCESS=true
+  else
+    log_error "Failed to rebuild images even with --no-cache"
+    BUILD_SUCCESS=false
+  fi
+fi
+
+if [ "$BUILD_SUCCESS" != "true" ]; then
   exit 1
 fi
+
+log_success "Build process completed successfully"
 '''
         else:
             build_section = ''
