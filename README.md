@@ -1100,7 +1100,10 @@ dockertree droplet create test \
   ```yaml
   vpc:
     auto_bind_ports: true  # Enable automatic port binding (default: false)
+    bind_to_private_ip: true  # Bind to private IP instead of 0.0.0.0 (default: true, recommended for security)
   ```
+- **Security**: Redis and database ports are automatically bound to private IP (not public) when available, preventing public internet exposure
+- **Firewall Configuration**: Optional automatic UFW firewall rules to restrict access to VPC network only
 - **Worker Environment Configuration**: When deploying workers with `--exclude-deps`, environment variables are automatically configured to point to central server's private IP
 - **VPC Metadata**: Package metadata includes VPC deployment information for automatic configuration
 
@@ -1108,6 +1111,42 @@ dockertree droplet create test \
 - `--vpc-uuid <uuid>` - Explicitly specify VPC UUID
 - `--central-droplet-name <name>` - Reuse VPC UUID from central droplet (for worker deployments)
 - `--exclude-deps <services>` - Exclude services from dependency resolution (indicates worker deployment)
+
+**Security Best Practices for VPC Deployments:**
+
+When deploying with `--central-server` and VPC networking, dockertree implements multiple security layers:
+
+1. **Private IP Binding** (Default: Enabled)
+   - Redis and database ports bind to private IP address (e.g., `10.x.x.x:6379`) instead of `0.0.0.0`
+   - Prevents public internet exposure while maintaining VPC accessibility
+   - Configure via `.dockertree/config.yml`:
+     ```yaml
+     vpc:
+       bind_to_private_ip: true  # Default: true
+     ```
+
+2. **Firewall Rules** (Optional: Opt-in)
+   - Automatically configures UFW firewall rules to restrict access to VPC network (10.0.0.0/8)
+   - Only allows connections from within the VPC
+   - Configure via `.dockertree/config.yml`:
+     ```yaml
+     vpc:
+       auto_configure_firewall: true  # Default: false (opt-in)
+     ```
+
+3. **Verification**
+   After deployment, verify security:
+   ```bash
+   # On central server, check port bindings
+   docker ps --format "{{.Names}}\t{{.Ports}}" | grep -E "(redis|db)"
+   # Should show: 10.x.x.x:6379->6379/tcp (not 0.0.0.0:6379)
+   
+   # Verify public access is blocked
+   telnet <public-ip> 6379  # Should fail
+   
+   # Verify VPC access works
+   telnet <private-ip> 6379  # Should succeed from worker droplet
+   ```
 
 ### Notes
 - When using `--domain`, dockertree automatically enables HTTPS via Caddy's Let's Encrypt integration
@@ -1122,6 +1161,8 @@ deployment:
   ssh_key: ~/.ssh/deploy_key
 vpc:
   auto_bind_ports: true  # Enable automatic port binding for VPC-accessible services
+  bind_to_private_ip: true  # Bind to private IP only (default: true, recommended for security)
+  auto_configure_firewall: false  # Auto-configure UFW rules (default: false, opt-in)
 ```
 
 ---

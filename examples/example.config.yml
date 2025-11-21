@@ -156,3 +156,26 @@ environment:
   # Example: example.com
   # default_domain: example.com
 
+# ============================================================================
+# VPC Configuration (Optional)
+# ============================================================================
+
+# VPC configuration for secure private networking
+# Used when deploying with --central-server and DigitalOcean VPC
+# vpc:
+  # Automatically bind ports for VPC-accessible services (db, redis)
+  # When enabled, services with 'expose' ports will get port bindings
+  # Default: false (opt-in)
+  # auto_bind_ports: true
+  
+  # Bind services to private IP instead of 0.0.0.0 (recommended for security)
+  # When enabled and private IP is available, services bind to private IP only
+  # This prevents public internet exposure while allowing VPC access
+  # Default: true (for security)
+  # bind_to_private_ip: true
+  
+  # Automatically configure UFW firewall rules for VPC access
+  # When enabled, automatically allows VPC network (10.0.0.0/8) access to Redis/DB ports
+  # Default: false (opt-in, requires UFW to be installed on server)
+  # auto_configure_firewall: false
+

@@ -107,7 +107,7 @@ class PackageManager:
             temp_package_dir.mkdir(exist_ok=True)
             
             # 4. Copy environment files
-            env_success = self._copy_environment_files(worktree_path, temp_package_dir, container_filter, exclude_deps)
+            env_success = self._copy_environment_files(worktree_path, temp_package_dir, container_filter, exclude_deps, droplet_info)
             if not env_success:
                 return {
                     "success": False,
@@ -669,7 +669,8 @@ class PackageManager:
     
     def _copy_environment_files(self, worktree_path: Path, package_dir: Path, 
                                 container_filter: Optional[List[Dict[str, str]]] = None,
-                                exclude_deps: Optional[List[str]] = None) -> bool:
+                                exclude_deps: Optional[List[str]] = None,
+                                droplet_info: Optional[DropletInfo] = None) -> bool:
         """Copy environment files to package directory.
         
         Args:
@@ -678,6 +679,7 @@ class PackageManager:
             container_filter: Optional list of dicts with 'worktree' and 'container' keys
                              to filter which services to include in compose file
             exclude_deps: Optional list of service names to exclude from dependency resolution
+            droplet_info: Optional droplet info containing private IP for VPC port bindings
         """
         try:
             env_dir = package_dir / "environment"
@@ -698,12 +700,17 @@ class PackageManager:
             if compose_file.exists():
                 shutil.copy2(compose_file, env_dir / "docker-compose.dockertree.yml")
             
+            # Extract private IP from droplet info if available
+            private_ip = None
+            if droplet_info:
+                private_ip = getattr(droplet_info, 'private_ip_address', None)
+            
             # If container_filter is provided, create filtered compose file
             if container_filter:
                 worktree_compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
                 if worktree_compose_file.exists():
                     filtered_compose = self._filter_compose_services(
-                        worktree_compose_file, container_filter, worktree_path, exclude_deps
+                        worktree_compose_file, container_filter, worktree_path, exclude_deps, private_ip
                     )
                     if filtered_compose:
                         # Remove version field if it's null (Docker Compose v2 doesn't require it)
@@ -751,7 +758,8 @@ class PackageManager:
     
     def _configure_vpc_port_bindings(self, compose_data: Dict[str, Any], 
                                      selected_services: List[str],
-                                     worktree_path: Path) -> bool:
+                                     worktree_path: Path,
+                                     private_ip: Optional[str] = None) -> bool:
         """Configure port bindings for VPC-accessible services.
         
         Only activates when:
@@ -763,6 +771,7 @@ class PackageManager:
             compose_data: Docker compose data dictionary (will be modified)
             selected_services: List of service names to configure
             worktree_path: Path to worktree directory (for config access)
+            private_ip: Optional private IP address to bind to (defaults to 0.0.0.0 if not provided)
             
         Returns:
             True if any ports were configured, False otherwise
@@ -770,6 +779,7 @@ class PackageManager:
         # Check if VPC port binding is enabled in config
         config_path = worktree_path / ".dockertree" / "config.yml"
         auto_bind_ports = False
+        bind_to_private_ip = True  # Default to true for security
         
         if config_path.exists():
             try:
@@ -777,6 +787,7 @@ class PackageManager:
                     config = yaml.safe_load(f) or {}
                     vpc_config = config.get('vpc', {})
                     auto_bind_ports = vpc_config.get('auto_bind_ports', False)
+                    bind_to_private_ip = vpc_config.get('bind_to_private_ip', True)
             except Exception:
                 pass
         
@@ -785,6 +796,15 @@ class PackageManager:
         
         services = compose_data.get('services', {})
         configured = False
+        
+        # Determine bind address
+        bind_address = "0.0.0.0"
+        if bind_to_private_ip and private_ip:
+            bind_address = private_ip
+            log_info(f"Binding VPC services to private IP: {private_ip}")
+        elif bind_to_private_ip and not private_ip:
+            log_warning("bind_to_private_ip is enabled but no private IP available, falling back to 0.0.0.0")
+            log_warning("This may expose services to the public internet. Consider configuring firewall rules.")
         
         for service_name in selected_services:
             if service_name not in services:
@@ -800,10 +820,10 @@ class PackageManager:
             exposed_ports = self._detect_service_ports(compose_data, service_name)
             
             if exposed_ports:
-                # Add port bindings: 0.0.0.0:{container_port}:{container_port}
+                # Add port bindings: {bind_address}:{container_port}:{container_port}
                 port_bindings = []
                 for port in exposed_ports:
-                    port_bindings.append(f"0.0.0.0:{port}:{port}")
+                    port_bindings.append(f"{bind_address}:{port}:{port}")
                 
                 service['ports'] = port_bindings
                 log_info(f"Configured VPC port bindings for {service_name}: {', '.join(port_bindings)}")
@@ -814,7 +834,8 @@ class PackageManager:
     def _filter_compose_services(self, compose_file: Path, 
                                  container_filter: List[Dict[str, str]],
                                  worktree_path: Path,
-                                 exclude_deps: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+                                 exclude_deps: Optional[List[str]] = None,
+                                 private_ip: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Filter compose file to include only selected services and their dependencies.
         
         Args:
@@ -822,6 +843,7 @@ class PackageManager:
             container_filter: List of dicts with 'worktree' and 'container' keys
             worktree_path: Path to worktree directory (for finding branch name)
             exclude_deps: Optional list of service names to exclude from dependency resolution
+            private_ip: Optional private IP address for VPC port bindings
             
         Returns:
             Filtered compose data dict, or None if filtering fails
@@ -860,7 +882,7 @@ class PackageManager:
             log_info(f"Including services with dependencies: {', '.join(services_to_include)}")
             
             # Configure VPC port bindings if enabled (before filtering)
-            self._configure_vpc_port_bindings(compose_data, services_to_include, worktree_path)
+            self._configure_vpc_port_bindings(compose_data, services_to_include, worktree_path, private_ip)
             
             # Create filtered compose data
             filtered_compose = {

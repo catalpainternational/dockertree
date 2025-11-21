@@ -922,7 +922,7 @@ def droplet():
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server')
-@click.option('--build', is_flag=True, default=False, help='Rebuild Docker images after code update (only works with --code-only)')
+@click.option('--build', is_flag=True, default=False, help='Rebuild Docker images on the remote server after deployment')
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
 @click.option('--vpc-uuid', help='VPC UUID for the droplet. If not provided, will use the default VPC for the region.')
@@ -1233,17 +1233,6 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
             else:
                 error_exit("Options --domain and --ip are mutually exclusive")
-            return
-        
-        # Validate --build is only used with --code-only
-        if build and not code_only:
-            elapsed_time = time.time() - start_time
-            if not json:
-                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
-            if json:
-                JSONOutput.print_error("--build can only be used with --code-only")
-            else:
-                error_exit("--build can only be used with --code-only")
             return
         
         push_manager = PushManager()
@@ -2013,7 +2002,7 @@ def validate_package(package_file: str, json: bool):
 @click.option('--skip-dns-check', is_flag=True, default=False, help='Skip DNS validation and management')
 @click.option('--resume', is_flag=True, default=False, help='Resume a failed push operation by detecting what\'s already completed (skips export/transfer if package exists, skips server prep if already done)')
 @click.option('--code-only', is_flag=True, default=False, help='Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)')
-@click.option('--build', is_flag=True, default=False, help='Rebuild Docker images after code update (only works with --code-only)')
+@click.option('--build', is_flag=True, default=False, help='Rebuild Docker images on the remote server after deployment')
 @click.option('--containers', help='Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)')
 @click.option('--exclude-deps', help='Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.')
 @add_json_option
@@ -2051,6 +2040,9 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
         # Code-only update with image rebuild
         dockertree droplet push --code-only --build
 
+        # Full push (export + import) with image rebuild
+        dockertree droplet push feature-auth user@server:/path --build
+
         # Push with domain configuration
         dockertree droplet push feature-auth user@server:/path/to/packages --domain app.example.com
 
@@ -2086,17 +2078,6 @@ def droplet_push(branch_name: Optional[str], scp_target: Optional[str], output_d
                 JSONOutput.print_error("scp_target is required")
             else:
                 error_exit("scp_target is required")
-            return
-        
-        # Validate --build is only used with --code-only
-        if build and not code_only:
-            elapsed_time = time.time() - start_time
-            if not json:
-                print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
-            if json:
-                JSONOutput.print_error("--build can only be used with --code-only")
-            else:
-                error_exit("--build can only be used with --code-only")
             return
         
         push_manager = PushManager()

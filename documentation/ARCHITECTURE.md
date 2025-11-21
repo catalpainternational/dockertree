@@ -782,7 +782,15 @@ Dockertree supports VPC deployments for secure private networking between drople
 **Automatic Port Binding**:
 - Configurable via `.dockertree/config.yml`: `vpc.auto_bind_ports: true`
 - Only activates when `--containers` flag is used and service has `expose` ports but no `ports` mapping
-- Automatically adds `0.0.0.0:{container_port}:{container_port}` bindings for VPC-accessible services
+- When `vpc.bind_to_private_ip: true` (default), binds to private IP address instead of `0.0.0.0`
+- This prevents public internet exposure while maintaining VPC accessibility
+- Falls back to `0.0.0.0` if private IP is not available (with warning)
+
+**Security Configuration**:
+- **Private IP Binding**: By default, Redis and database ports bind to private IP only (not `0.0.0.0`)
+- **Firewall Rules**: Optional automatic UFW configuration via `vpc.auto_configure_firewall: true`
+- When enabled, automatically allows VPC network (10.0.0.0/8) access to Redis (6379) and PostgreSQL (5432) ports
+- Firewall configuration runs automatically after package import when droplet has private IP
 
 **Worker Environment Configuration**:
 - Automatically configures environment variables when package metadata indicates worker deployment

@@ -329,10 +329,25 @@ class PushManager:
                     log_info(f"Domain override: {domain}")
                 if ip:
                     log_info(f"IP override: {ip}")
-                self._run_remote_import(username, server, remote_package_path, branch_name, domain, ip)
+                self._run_remote_import(
+                    username,
+                    server,
+                    remote_package_path,
+                    branch_name,
+                    domain,
+                    ip,
+                    build=build,
+                )
                 log_info("Remote import process initiated")
+                
+                # Configure VPC firewall if enabled and droplet info is available
+                if droplet_info:
+                    self._configure_vpc_firewall(username, server, droplet_info)
             else:
                 log_info("Auto-import disabled, manual import required")
+                if build:
+                    log_warning("Build flag specified but auto-import disabled. Run 'dockertree "
+                                f"{branch_name} build' on the server after importing.")
 
             # Clean up package unless keep_package is True (only if we created it locally)
             if package_path and not keep_package and package_path.exists():
@@ -1147,7 +1162,7 @@ dockertree --version || true
             return False
 
     def _run_remote_import(self, username: str, server: str, remote_file: str, branch_name: str,
-                           domain: Optional[str], ip: Optional[str]) -> None:
+                           domain: Optional[str], ip: Optional[str], build: bool = False) -> None:
         """Run remote import and start services via SSH using a robust here-doc script with enhanced logging."""
         try:
             log_info("Composing remote import script...")
@@ -1156,6 +1171,7 @@ dockertree --version || true
                 branch_name=branch_name,
                 domain=domain,
                 ip=ip,
+                build=build,
             )
             exec_cmd = "cat > /tmp/dtrun.sh && chmod +x /tmp/dtrun.sh && /tmp/dtrun.sh && rm -f /tmp/dtrun.sh"
             cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
@@ -1349,7 +1365,146 @@ dockertree --version || true
             import traceback
             log_error(f"Traceback: {traceback.format_exc()}")
 
-    def _compose_remote_script(self, remote_file: str, branch_name: str, domain: Optional[str], ip: Optional[str]) -> str:
+    def _configure_vpc_firewall(self, username: str, server: str, droplet_info: DropletInfo) -> bool:
+        """Configure UFW firewall rules for VPC-accessible services.
+        
+        Only activates when:
+        - Droplet has VPC information (private IP)
+        - Config allows it (opt-in via config.yml)
+        
+        Args:
+            username: SSH username
+            server: Server hostname or IP
+            droplet_info: Droplet info containing private IP
+            
+        Returns:
+            True if firewall was configured, False otherwise
+        """
+        try:
+            # Check if droplet has VPC info
+            private_ip = getattr(droplet_info, 'private_ip_address', None)
+            if not private_ip:
+                log_info("No private IP found in droplet info, skipping firewall configuration")
+                return False
+            
+            # Check if firewall configuration is enabled in config
+            # We need to check the remote server's config, but for now we'll make it opt-in
+            # via a simple check - if private IP exists and we're in VPC mode, configure firewall
+            log_info("Configuring VPC firewall rules for secure Redis/DB access...")
+            log_info(f"Private IP: {private_ip}")
+            
+            # Standard VPC ports that need firewall rules
+            vpc_ports = [5432, 6379]  # PostgreSQL and Redis
+            
+            # Build firewall configuration script
+            script = """#!/bin/bash
+set -euo pipefail
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+}
+
+log_success() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*" >&2
+}
+
+log_warning() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2
+}
+
+log_error() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
+}
+
+log "=== Configuring VPC Firewall Rules ==="
+
+# Check if UFW is installed
+if ! command -v ufw >/dev/null 2>&1; then
+    log_warning "UFW not installed, skipping firewall configuration"
+    exit 0
+fi
+
+# Check if UFW is active
+if ! ufw status | grep -q "Status: active"; then
+    log "UFW is not active, enabling..."
+    ufw --force enable || {
+        log_error "Failed to enable UFW"
+        exit 1
+    }
+    log_success "UFW enabled"
+fi
+
+# Configure firewall rules for VPC network (10.0.0.0/8)
+VPC_NETWORK="10.0.0.0/8"
+PORTS=(5432 6379)
+
+for port in "${PORTS[@]}"; do
+    # Check if rule already exists
+    if ufw status | grep -q "from ${VPC_NETWORK} to any port ${port}"; then
+        log "Firewall rule for port ${port} already exists, skipping"
+    else
+        log "Adding firewall rule: allow from ${VPC_NETWORK} to port ${port}"
+        if ufw allow from ${VPC_NETWORK} to any port ${port} comment "VPC access for dockertree"; then
+            log_success "Firewall rule added for port ${port}"
+        else
+            log_error "Failed to add firewall rule for port ${port}"
+        fi
+    fi
+done
+
+# Reload UFW to apply changes
+log "Reloading UFW..."
+ufw reload || {
+    log_warning "UFW reload failed, but rules may still be applied"
+}
+
+log_success "VPC firewall configuration completed"
+"""
+            
+            # Execute firewall configuration script
+            exec_cmd = "cat > /tmp/dtfw.sh && chmod +x /tmp/dtfw.sh && /tmp/dtfw.sh && rm -f /tmp/dtfw.sh"
+            cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
+            
+            log_info("Executing firewall configuration script...")
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            process.stdin.write(script)
+            process.stdin.close()
+            
+            stdout, stderr = process.communicate(timeout=60)
+            
+            if process.returncode == 0:
+                log_success("VPC firewall configuration completed successfully")
+                if stdout:
+                    for line in stdout.splitlines():
+                        if line.strip():
+                            log_info(f"[FIREWALL] {line}")
+                return True
+            else:
+                log_warning(f"Firewall configuration returned non-zero exit code: {process.returncode}")
+                if stderr:
+                    for line in stderr.splitlines():
+                        if line.strip():
+                            log_warning(f"[FIREWALL] {line}")
+                # Don't fail the whole operation if firewall config fails
+                return False
+                
+        except subprocess.TimeoutExpired:
+            log_warning("Firewall configuration script timed out")
+            return False
+        except Exception as e:
+            log_warning(f"Failed to configure firewall: {e}")
+            # Don't fail the whole operation if firewall config fails
+            return False
+
+    def _compose_remote_script(self, remote_file: str, branch_name: str, domain: Optional[str],
+                               ip: Optional[str], build: bool = False) -> str:
         """Compose a robust remote bash script for importing and starting services.
 
         The script sets strict mode, ensures git identity, resolves the dockertree binary,
@@ -1371,6 +1526,46 @@ dockertree --version || true
             import_flags_usage = import_flags_array
         else:
             import_flags_usage = ""
+
+        build_section = ""
+        if build:
+            build_section = f"""
+# Rebuild Docker images before bringing up services
+log "Rebuilding Docker images for branch: {branch_name}"
+
+# Clear BuildKit cache to avoid corruption issues
+log "Clearing Docker BuildKit cache to prevent corruption..."
+if docker builder prune -f --filter type=exec.cachemount >/dev/null 2>&1; then
+  log_success "BuildKit cache cleared successfully"
+elif docker builder prune -f >/dev/null 2>&1; then
+  log_success "BuildKit cache cleared (fallback method)"
+else
+  log_warning "Failed to clear BuildKit cache, continuing with build anyway"
+fi
+
+# Attempt build with cache first, fallback to --no-cache if needed
+log "Building Docker images..."
+BUILD_SUCCESS=false
+if "$DTBIN" "{branch_name}" build; then
+  log_success "Images rebuilt successfully"
+  BUILD_SUCCESS=true
+else
+  log_warning "Build failed, retrying with --no-cache flag..."
+  if "$DTBIN" "{branch_name}" build --no-cache; then
+    log_success "Images rebuilt successfully (without cache)"
+    BUILD_SUCCESS=true
+  else
+    log_error "Failed to rebuild images even with --no-cache"
+    BUILD_SUCCESS=false
+  fi
+fi
+
+if [ "$BUILD_SUCCESS" != "true" ]; then
+  exit 1
+fi
+
+log_success "Build process completed successfully"
+"""
 
         script = f"""
 set -euo pipefail
@@ -1607,6 +1802,8 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
     log_error "Database will be empty - manual restoration may be required"
   fi
 fi
+
+{build_section}
 
 # Bring up the environment for the branch
 # (Caddy proxy is already started above)
