@@ -167,9 +167,11 @@ class DNSManager:
         Priority order (highest to lowest):
         1. Explicit token from CLI flag
         2. Shell environment variable (DIGITALOCEAN_API_TOKEN)
-        3. .env file in project root (DIGITALOCEAN_API_TOKEN)
-        4. .dockertree/env.dockertree in project root (DIGITALOCEAN_API_TOKEN)
-        5. ~/.dockertree/env.dockertree file (DIGITALOCEAN_API_TOKEN)
+        3. .env file in current directory (worktree or project root)
+        4. .dockertree/env.dockertree in current directory (worktree or project root)
+        5. .env file in parent project root (if in worktree)
+        6. .dockertree/env.dockertree in parent project root (if in worktree)
+        7. ~/.dockertree/env.dockertree file (global)
         
         Args:
             token: Explicit token from CLI flag
@@ -209,6 +211,31 @@ class DNSManager:
                     return token
         except Exception:
             # Silently continue if project .dockertree/env.dockertree loading fails
+            pass
+        
+        # If token still not found, check parent project root if we're in a worktree
+        try:
+            from ..utils.path_utils import get_parent_project_root
+            from ..utils.env_loader import load_env_file
+            parent_root = get_parent_project_root()
+            if parent_root:
+                # Try loading from .env file in parent project root
+                parent_env = parent_root / ".env"
+                if parent_env.exists():
+                    env_vars = load_env_file(parent_env)
+                    token = env_vars.get("DIGITALOCEAN_API_TOKEN")
+                    if token:
+                        return token
+                
+                # Try loading from .dockertree/env.dockertree in parent project root
+                parent_dockertree_env = parent_root / ".dockertree" / "env.dockertree"
+                if parent_dockertree_env.exists():
+                    env_vars = load_env_file(parent_dockertree_env)
+                    token = env_vars.get("DIGITALOCEAN_API_TOKEN")
+                    if token:
+                        return token
+        except Exception:
+            # Silently continue if parent project root loading fails
             pass
         
         # Try loading from global dockertree config file in home directory

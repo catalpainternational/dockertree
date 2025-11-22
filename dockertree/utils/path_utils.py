@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple
 
-from ..config.settings import get_project_root, get_worktree_paths
+from ..config.settings import get_project_root, get_worktree_paths, get_worktree_dir
 
 
 def get_compose_override_path(worktree_path: Optional[Path] = None) -> Optional[Path]:
@@ -226,3 +226,32 @@ def detect_execution_context() -> tuple[Optional[Path], Optional[str], bool]:
     except ValueError:
         # Not in worktrees directory, we're in git root
         return None, None, False
+
+
+def get_parent_project_root() -> Optional[Path]:
+    """Get the parent project root directory when running from a worktree.
+    
+    This function detects if we're in a worktree context and finds the parent
+    project root (the directory containing the worktrees/ directory).
+    
+    Returns:
+        Path to parent project root if in worktree, None otherwise
+    """
+    worktree_path, branch_name, is_worktree = detect_execution_context()
+    
+    if not is_worktree or worktree_path is None:
+        return None
+    
+    # Walk up from the worktree path to find the directory containing worktrees/
+    worktree_dir_name = get_worktree_dir()
+    
+    current = worktree_path.resolve()
+    
+    # Check each parent directory for the worktrees directory
+    for parent in current.parents:
+        worktrees_path = parent / worktree_dir_name
+        if worktrees_path.exists() and worktrees_path.is_dir():
+            # Found the parent project root
+            return parent
+    
+    return None

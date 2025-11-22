@@ -221,21 +221,21 @@ class DropletCommands:
                 # Write header
                 writer.writerow(["ID", "Name", "IP Address", "Domain", "Status", "Region", "Size", "Image", "Tags", "Created At"])
                 # Write rows
-                for d in droplets:
-                    tags_str = ', '.join(d.tags) if d.tags else ""
-                    created_at_str = d.created_at.isoformat() if d.created_at else ""
+                for droplet in droplets:
+                    tags_str = ', '.join(droplet.tags) if droplet.tags else ""
+                    created_at_str = droplet.created_at.isoformat() if droplet.created_at else ""
                     # Format domains as comma-separated string
-                    domains = droplet_domains.get(d.id, [])
+                    domains = droplet_domains.get(droplet.id, [])
                     domain_str = ', '.join(domains) if domains else ""
                     writer.writerow([
-                        d.id,
-                        d.name,
-                        d.ip_address or "",
+                        droplet.id,
+                        droplet.name,
+                        droplet.ip_address or "",
                         domain_str,
-                        d.status,
-                        d.region,
-                        d.size,
-                        d.image or "",
+                        droplet.status,
+                        droplet.region,
+                        droplet.size,
+                        droplet.image or "",
                         tags_str,
                         created_at_str
                     ])
@@ -245,20 +245,20 @@ class DropletCommands:
                     "success": True,
                     "droplets": [
                         {
-                            "id": d.id,
-                            "name": d.name,
-                            "ip_address": d.ip_address,
-                            "domains": droplet_domains.get(d.id, []) or None,
-                            "status": d.status,
-                            "region": d.region,
-                            "size": d.size,
-                            "image": d.image,
-                            "tags": d.tags,
-                            "created_at": d.created_at.isoformat() if d.created_at else None,
-                            "private_ip_address": d.private_ip_address,
-                            "vpc_uuid": d.vpc_uuid
+                            "id": droplet.id,
+                            "name": droplet.name,
+                            "ip_address": droplet.ip_address,
+                            "domains": droplet_domains.get(droplet.id, []) or None,
+                            "status": droplet.status,
+                            "region": droplet.region,
+                            "size": droplet.size,
+                            "image": droplet.image,
+                            "tags": droplet.tags,
+                            "created_at": droplet.created_at.isoformat() if droplet.created_at else None,
+                            "private_ip_address": droplet.private_ip_address,
+                            "vpc_uuid": droplet.vpc_uuid
                         }
-                        for d in droplets
+                        for droplet in droplets
                     ]
                 }
                 JSONOutput.print_json(result)

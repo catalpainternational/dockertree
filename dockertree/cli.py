@@ -901,6 +901,33 @@ def droplet():
     pass
 
 
+def _generate_unique_droplet_name(base_name: str, provider) -> str:
+    """Generate a unique droplet name by appending a number suffix if needed.
+    
+    Args:
+        base_name: Base name for the droplet (e.g., 'test')
+        provider: DropletProvider instance to check existing droplets
+        
+    Returns:
+        Unique droplet name (e.g., 'test', 'test-1', 'test-2', etc.)
+    """
+    # Get all existing droplets
+    existing_droplets = provider.list_droplets()
+    existing_names = {droplet.name for droplet in existing_droplets}
+    
+    # If base name is available, use it
+    if base_name not in existing_names:
+        return base_name
+    
+    # Otherwise, try base_name-1, base_name-2, etc.
+    counter = 1
+    while True:
+        candidate_name = f"{base_name}-{counter}"
+        if candidate_name not in existing_names:
+            return candidate_name
+        counter += 1
+
+
 @droplet.command('create')
 @click.argument('branch_name', required=False)
 @click.option('--region', help='Droplet region (default: nyc1 or from DIGITALOCEAN_REGION env var)')
@@ -1077,6 +1104,8 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         # Resolve VPC UUID from central droplet if specified
         resolved_vpc_uuid = vpc_uuid
         central_droplet = None  # Initialize outside conditional block
+        provider = None  # Initialize for potential reuse
+        token = None  # Initialize for potential reuse
         if central_droplet_name and not vpc_uuid:
             if not json:
                 log_info("Resolving VPC configuration...")
@@ -1087,9 +1116,9 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
                 provider = DropletManager.create_provider('digitalocean', token)
                 if provider:
                     droplets = provider.list_droplets()
-                    for d in droplets:
-                        if d.name == central_droplet_name:
-                            central_droplet = d
+                    for droplet in droplets:
+                        if droplet.name == central_droplet_name:
+                            central_droplet = droplet
                             break
                     
                     if central_droplet and central_droplet.vpc_uuid:
@@ -1112,6 +1141,20 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         
         # Store central droplet info for later use in package export (for worker deployments)
         central_droplet_info = central_droplet if central_droplet_name and central_droplet else None
+        
+        # Generate unique droplet name to avoid conflicts
+        # Reuse provider if it was already created for central droplet lookup, otherwise create it
+        if not provider:
+            token = DropletManager.resolve_droplet_token(api_token or dns_token)
+            if token:
+                provider = DropletManager.create_provider('digitalocean', token)
+        
+        if provider:
+            unique_droplet_name = _generate_unique_droplet_name(droplet_name, provider)
+            if unique_droplet_name != droplet_name:
+                if not json:
+                    log_info(f"Droplet name '{droplet_name}' already exists, using '{unique_droplet_name}' instead")
+                droplet_name = unique_droplet_name
         
         # Create droplet (always wait when pushing)
         wait_for_push = not create_only
@@ -1183,11 +1226,13 @@ def droplet_create(branch_name: Optional[str], region: Optional[str], size: Opti
         
         # Find droplet by name to get IP
         droplets = provider.list_droplets()
-        droplet = None
-        for d in droplets:
-            if d.name == droplet_name:
-                droplet = d
+        found_droplet = None
+        for droplet in droplets:
+            if droplet.name == droplet_name:
+                found_droplet = droplet
                 break
+        
+        droplet = found_droplet
         
         if not droplet or not droplet.ip_address:
             elapsed_time = time.time() - start_time
