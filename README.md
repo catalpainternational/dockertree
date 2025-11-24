@@ -182,7 +182,7 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 | `droplet regions` | List available Digital Ocean regions | `dockertree droplet regions` |
 | `droplet regions --show-all` | Include unavailable regions in region list | `dockertree droplet regions --show-all` |
 | `droplet info <id>` | Get droplet information | `dockertree droplet info 12345678` |
-| `droplet destroy <id>` | Destroy a droplet (supports comma-separated IDs) | `dockertree droplet destroy 12345678` or `dockertree droplet destroy 123,456,789` |
+| `droplet destroy <id>` | Destroy a droplet (supports ID or name, comma-separated) | `dockertree droplet destroy 12345678` or `dockertree droplet destroy my-droplet` or `dockertree droplet destroy 123,456,789` |
 | `droplet push [<branch>] <scp_target>` | Push dockertree package to remote server | `dockertree droplet push feature-auth user@server:/path` |
 
 **Droplet Creation Options:**
@@ -216,7 +216,7 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 - `--api-token <token>` - Digital Ocean API token (or use DIGITALOCEAN_API_TOKEN env var)
 
 **Droplet Destroy Options:**
-- `<id>` - Single droplet ID or comma-separated list of IDs (e.g., `123,456,789`)
+- `<id>` - Single droplet ID or name, or comma-separated list of IDs/names (e.g., `123,456,789` or `my-droplet,another-droplet,123`)
 - `--force` - Skip confirmation (destroys without typing droplet name)
 - `--only-droplet` - Only destroy droplet, skip DNS deletion
 - `--only-domain` - Only destroy DNS records, skip droplet deletion
@@ -227,7 +227,8 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 
 **Droplet Destroy Behavior:**
 - **Default**: Destroys droplet only (backward compatible)
-- **Multiple Droplets**: Accepts comma-separated IDs (e.g., `123,456,789`) and processes all droplets sequentially
+- **Multiple Droplets**: Accepts comma-separated IDs or names (e.g., `123,456,789` or `my-droplet,another-droplet,123`) and processes all droplets sequentially
+- **Name Resolution**: Automatically resolves droplet names to IDs. If multiple droplets share the same name, use the droplet ID instead.
 - **Error Handling**: Continues destroying remaining droplets even if one fails
 - **Summary Output**: Shows summary of destroyed/failed droplets when processing multiple IDs
 - **Confirmation**: Requires typing the exact droplet name to confirm (unless `--force`) - each droplet requires confirmation separately
@@ -486,7 +487,7 @@ Error: Docker is not running. Please start Docker and try again.
 Error: invalid primary checkpoint record
 Error: could not locate a valid checkpoint record
 ```
-**Solution**: This has been fixed! Dockertree now uses safe database snapshots with `pg_dump` when the source database is running, preventing corruption. The system automatically detects if your source database is running and uses the appropriate backup method.
+**Solution**: This has been fixed! Dockertree now stops the original database container before copying volumes, then restarts it after copying. This ensures data consistency and prevents corruption.
 
 **Worktree already exists**
 ```bash

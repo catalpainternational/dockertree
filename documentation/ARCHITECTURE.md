@@ -174,8 +174,8 @@ The system uses a fallback hierarchy:
 
 **Key Methods**:
 - `create_network()` - Create external `dockertree_caddy_proxy` network
-- `copy_volume()` - Copy data between volumes with safe PostgreSQL handling
-- `copy_postgres_volume_safely()` - Safe PostgreSQL backup using pg_dump
+- `copy_volume()` - Copy data between volumes using file-level copy
+- `_copy_volume_files()` - Generic file copy method for all volume types
 - `create_worktree_volumes()` - Create branch-specific volumes
 - `run_compose_command()` - Execute Docker Compose commands
 - `backup_volumes()` / `restore_volumes()` - Volume management
@@ -183,8 +183,8 @@ The system uses a fallback hierarchy:
 **Key Features**:
 - **Multi-project Support**: Accepts `project_root` parameter for operation on different projects
 - **MCP Compatibility**: Supports structured output for programmatic access
-- **Safe Database Copying**: Prevents PostgreSQL corruption by using pg_dump when source database is running
-- **Automatic Detection**: Detects if source containers are running and chooses appropriate backup method
+- **Safe Database Copying**: Prevents PostgreSQL corruption by stopping containers before file operations
+- **Shared Container Management**: Common methods for stopping/starting containers before volume operations
 
 **Dependencies**: Docker daemon, Docker Compose, PostgreSQL tools
 **External Interactions**: Docker API, volume operations, network management, PostgreSQL backup/restore
@@ -457,36 +457,36 @@ This ensures each worktree gets isolated volumes:
 
 ### Safe Volume Copying Architecture
 
-Dockertree implements intelligent volume copying to prevent database corruption:
+Dockertree implements safe volume copying to prevent database corruption:
 
 #### PostgreSQL Volume Safety
 
 **Problem**: Copying PostgreSQL data files while the database is running causes corruption due to inconsistent WAL logs and checkpoint records.
 
-**Solution**: Automatic detection and safe backup methods:
+**Solution**: Stop containers before file operations, then restart them:
 
-1. **Container Detection**: `get_containers_using_volume()` and `are_containers_running()` detect if source database is running
-2. **Safe Backup Strategy**:
-   - **Running Database**: Uses `pg_dumpall` to create consistent SQL backup, then restores to new volume
-   - **Stopped Database**: Uses fast file copy (safe when database is stopped)
-3. **Automatic Routing**: `copy_volume()` detects PostgreSQL volumes and routes to `copy_postgres_volume_safely()`
+1. **Container Management**: `_ensure_containers_stopped_for_volume_operation()` stops containers using volumes before operations
+2. **File Copy Strategy**: Uses generic `_copy_volume_files()` method for all volume types (PostgreSQL, Redis, media)
+3. **Container Restart**: `_restart_container()` restarts containers after operations complete
 
 #### Implementation Flow
 
 ```
-Volume Copy Request
+Volume Copy Request (create_worktree_volumes)
     ↓
-Is PostgreSQL Volume?
-    ↓ YES                    ↓ NO
-Detect Source Status        Use Fast Copy
-    ↓                           ↓
-Running?                    Copy Files
-    ↓ YES        ↓ NO           ↓
-Use pg_dump    Copy Files   Complete
+For PostgreSQL volumes:
     ↓
-Create SQL Backup
+_ensure_containers_stopped_for_volume_operation()
     ↓
-Restore to New Volume
+Stop original container (if running)
+    ↓
+copy_volume() → _copy_volume_files()
+    ↓
+Copy files using Alpine container
+    ↓
+_restart_container()
+    ↓
+Restart original container
     ↓
 Complete
 ```
@@ -494,9 +494,9 @@ Complete
 #### Benefits
 
 - **Eliminates Corruption**: No more "invalid checkpoint record" errors
-- **Works While Running**: Create worktrees without stopping main database
-- **Transparent**: Automatic detection and appropriate method selection
-- **Backwards Compatible**: Existing worktrees unaffected
+- **Consistent Approach**: Same file copy method for all volume types
+- **DRY Principle**: Shared container management methods between copy and archive operations
+- **Simple and Reliable**: Single code path, easier to maintain
 
 ### Network Architecture
 
@@ -894,7 +894,13 @@ Dockertree includes a DNS provider abstraction layer for automatic DNS managemen
 **Token Resolution Priority** (highest to lowest):
 1. Explicit `--dns-token` CLI flag
 2. Shell environment variable (`DIGITALOCEAN_API_TOKEN`)
-3. `.env` file in project root (`DIGITALOCEAN_API_TOKEN`)
+3. `.env` file in current directory (worktree or project root)
+4. `.dockertree/env.dockertree` in current directory (worktree or project root)
+5. `.env` file in parent project root (if in worktree)
+6. `.dockertree/env.dockertree` in parent project root (if in worktree)
+7. `~/.dockertree/env.dockertree` file (global)
+
+**Fractal Token Resolution**: When running dockertree commands from within a worktree, if the token is not found in the worktree's `.env` or `.dockertree/env.dockertree` files, dockertree automatically falls back to checking the parent project root's files. This enables worktrees to inherit API tokens from the main project while still allowing worktree-specific overrides.
 
 ### Droplet Provider Abstraction Layer
 
@@ -935,7 +941,7 @@ Dockertree includes a droplet provider abstraction layer for cloud server manage
 - `--central-droplet-name` flag enables VPC UUID reuse for worker deployments
 - Automatic VPC detection and configuration for multi-droplet setups
 
-**Token Resolution**: Reuses `DNSManager.resolve_dns_token()` since both use the same Digital Ocean API token
+**Token Resolution**: Reuses `DNSManager.resolve_dns_token()` since both use the same Digital Ocean API token. Supports fractal token resolution with fallback to parent project root when running from worktrees.
 
 **Default Configuration** (from `.env` or `.dockertree/env.dockertree`):
 - `DROPLET_DEFAULT_REGION` (default: `nyc1`)
@@ -1006,9 +1012,14 @@ DNS API tokens can be provided via:
 - CLI flag: `--dns-token <token>`
 - Shell environment: `export DIGITALOCEAN_API_TOKEN=token`
 - Project `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` to project root `.env` file
+- Worktree `.env` file: Add `DIGITALOCEAN_API_TOKEN=token` to worktree `.env` file (overrides project root)
+- Project `.dockertree/env.dockertree`: Add `DIGITALOCEAN_API_TOKEN=token` to project root `.dockertree/env.dockertree` file
+- Worktree `.dockertree/env.dockertree`: Add `DIGITALOCEAN_API_TOKEN=token` to worktree `.dockertree/env.dockertree` file (overrides project root)
 - Global config: Add `DIGITALOCEAN_API_TOKEN=token` to `~/.dockertree/env.dockertree` file
 
-Priority order: CLI flag > shell environment > project `.env` file > global config file
+Priority order: CLI flag > shell environment > current directory (worktree or project root) `.env` > current directory `.dockertree/env.dockertree` > parent project root `.env` (if in worktree) > parent project root `.dockertree/env.dockertree` (if in worktree) > global config file
+
+**Fractal Token Resolution**: When running from a worktree, dockertree first checks the worktree's configuration files, then falls back to the parent project root's files if the token is not found. This allows worktrees to inherit tokens from the main project while supporting worktree-specific overrides.
 
 These are read via helper functions in `config/settings.py` and are entirely optional to preserve Phase 1 behavior.
 

@@ -5,8 +5,8 @@ This module provides commands for managing Digital Ocean droplets including
 creating, listing, and destroying droplets.
 """
 
-from typing import Optional, List, Dict
-from ..core.droplet_manager import DropletManager
+from typing import Optional, List, Dict, Tuple, Any
+from ..core.droplet_manager import DropletManager, DropletProvider, DropletInfo
 from ..core.dns_manager import DNSManager
 from ..core import dns_providers  # noqa: F401 - Import to trigger registration
 from ..utils.logging import log_info, log_success, log_warning, log_error, print_plain
@@ -22,6 +22,156 @@ class DropletCommands:
     def __init__(self):
         """Initialize droplet commands."""
         pass
+    
+    def _get_provider(self, api_token: Optional[str] = None, json: bool = False) -> Tuple[Optional[DropletProvider], Optional[str]]:
+        """Get a droplet provider instance with centralized error handling.
+        
+        Args:
+            api_token: Digital Ocean API token
+            json: Output as JSON
+            
+        Returns:
+            Tuple of (provider, error_message). If successful, provider is set and error_message is None.
+            If failed, provider is None and error_message contains the error.
+        """
+        # Resolve API token
+        token = DropletManager.resolve_droplet_token(api_token)
+        if not token:
+            error_msg = "Digital Ocean API token not found. Set DIGITALOCEAN_API_TOKEN environment variable, or use --api-token"
+            if json:
+                JSONOutput.print_error(error_msg)
+            else:
+                log_error(error_msg)
+            return None, error_msg
+        
+        # Create provider
+        provider = DropletManager.create_provider('digitalocean', token)
+        if not provider:
+            error_msg = "Failed to create droplet provider"
+            if json:
+                JSONOutput.print_error(error_msg)
+            else:
+                log_error(error_msg)
+            return None, error_msg
+        
+        return provider, None
+    
+    def _find_droplet_by_name(self, name: str, provider: DropletProvider) -> Optional[DropletInfo]:
+        """Find a droplet by name.
+        
+        Args:
+            name: Droplet name to search for
+            provider: DropletProvider instance
+            
+        Returns:
+            DropletInfo if exactly one match found, None otherwise (caller handles multiple matches)
+        """
+        droplets = provider.list_droplets()
+        matches = [droplet for droplet in droplets if droplet.name == name]
+        
+        if len(matches) == 0:
+            return None
+        elif len(matches) == 1:
+            return matches[0]
+        else:
+            # Multiple matches - return None, caller will handle error
+            return None
+    
+    def _resolve_droplet_identifier(self, identifier: str, api_token: Optional[str] = None, json: bool = False) -> Tuple[Optional[int], Optional[str]]:
+        """Resolve a droplet identifier (ID or name) to a droplet ID.
+        
+        Args:
+            identifier: Droplet ID (numeric string) or name (non-numeric string)
+            api_token: Digital Ocean API token
+            json: Output as JSON
+            
+        Returns:
+            Tuple of (droplet_id, error_message). If successful, droplet_id is set and error_message is None.
+            If failed, droplet_id is None and error_message contains the error.
+        """
+        # Check if identifier is numeric (ID) or non-numeric (name)
+        identifier = identifier.strip()
+        
+        # Try to parse as integer (ID)
+        try:
+            droplet_id = int(identifier)
+            # Validate that the ID exists
+            provider, error_msg = self._get_provider(api_token, json)
+            if error_msg:
+                return None, error_msg
+            
+            droplet = provider.get_droplet(droplet_id)
+            if not droplet:
+                error_msg = f"Droplet {droplet_id} not found"
+                if json:
+                    JSONOutput.print_error(error_msg)
+                else:
+                    log_error(error_msg)
+                return None, error_msg
+            
+            return droplet_id, None
+        except ValueError:
+            # Not a numeric ID, treat as name
+            pass
+        
+        # Resolve by name
+        provider, error_msg = self._get_provider(api_token, json)
+        if error_msg:
+            return None, error_msg
+        
+        droplet = self._find_droplet_by_name(identifier, provider)
+        if not droplet:
+            # Check if there were multiple matches
+            droplets = provider.list_droplets()
+            matches = [d for d in droplets if d.name == identifier]
+            if len(matches) > 1:
+                error_msg = f"Multiple droplets found with name '{identifier}'. Please use droplet ID instead."
+            else:
+                error_msg = f"Droplet '{identifier}' not found"
+            
+            if json:
+                JSONOutput.print_error(error_msg)
+            else:
+                log_error(error_msg)
+            return None, error_msg
+        
+        return droplet.id, None
+    
+    def _resolve_droplet_identifiers(self, identifiers: str, api_token: Optional[str] = None, json: bool = False) -> Tuple[List[int], List[Dict[str, Any]]]:
+        """Resolve comma-separated droplet identifiers (IDs or names) to droplet IDs.
+        
+        Args:
+            identifiers: Comma-separated string of droplet IDs or names
+            api_token: Digital Ocean API token
+            json: Output as JSON
+            
+        Returns:
+            Tuple of (resolved_ids, errors). resolved_ids contains successfully resolved IDs.
+            errors contains list of dicts with 'identifier' and 'error' keys for failed resolutions.
+        """
+        resolved_ids = []
+        errors = []
+        
+        # Parse comma-separated identifiers
+        identifier_list = [id_str.strip() for id_str in identifiers.split(',') if id_str.strip()]
+        
+        if not identifier_list:
+            error_msg = "No valid droplet identifiers provided"
+            if json:
+                JSONOutput.print_error(error_msg)
+            else:
+                log_error(error_msg)
+            return [], [{"identifier": "", "error": error_msg}]
+        
+        # Resolve each identifier
+        for identifier in identifier_list:
+            droplet_id, error_msg = self._resolve_droplet_identifier(identifier, api_token, json)
+            if error_msg:
+                errors.append({"identifier": identifier, "error": error_msg})
+            else:
+                resolved_ids.append(droplet_id)
+        
+        return resolved_ids, errors
     
     def create_droplet(self, name: str, region: Optional[str] = None,
                       size: Optional[str] = None, image: Optional[str] = None,

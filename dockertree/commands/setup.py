@@ -1329,6 +1329,11 @@ environment:
 # Used to detect HTTPS when behind a reverse proxy
 # SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https
 
+# Secure cookie settings (automatically set by Dockertree)
+# For HTTPS domain deployments: USE_SECURE_COOKIES=True
+# For HTTP localhost/IP deployments: USE_SECURE_COOKIES=False
+# USE_SECURE_COOKIES=True
+
 # ============================================================================
 # Database Configuration (PostgreSQL)
 # ============================================================================

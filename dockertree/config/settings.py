@@ -286,6 +286,7 @@ ALLOWED_HOSTS={allowed_hosts}
 DEBUG=True
 USE_X_FORWARDED_HOST=True
 CSRF_TRUSTED_ORIGINS=http://{site_domain}
+USE_SECURE_COOKIES=False
 """
 
 # Volume naming

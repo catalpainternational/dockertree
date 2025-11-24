@@ -22,6 +22,7 @@ from ..utils.path_utils import (
     get_env_compose_file_path,
     copy_env_file
 )
+from ..core.dns_manager import is_domain
 
 
 class EnvironmentManager:
@@ -243,6 +244,36 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
             return len(content.strip()) > 0
         except Exception:
             return False
+    
+    def _should_use_secure_cookies(self, site_domain: str) -> bool:
+        """Determine if secure cookies should be used based on SITE_DOMAIN.
+        
+        Args:
+            site_domain: SITE_DOMAIN value (may include http:// or https:// prefix)
+            
+        Returns:
+            True if secure cookies should be used (HTTPS/production),
+            False for HTTP/localhost/IP deployments
+        """
+        # Strip protocol prefix if present
+        domain = site_domain
+        if domain.startswith('https://'):
+            return True
+        elif domain.startswith('http://'):
+            return False
+        
+        # Check if it's a localhost domain
+        if domain.endswith('.localhost') or domain == 'localhost' or domain.startswith('127.0.0.1'):
+            return False
+        
+        # Check if it's an IP address
+        import re
+        if re.match(r'^\d+\.\d+\.\d+\.\d+', domain):
+            return False
+        
+        # For production domains (not localhost, not IP), use secure cookies
+        # This handles cases where SITE_DOMAIN is just the domain without protocol
+        return is_domain(domain)
     
     def get_domain_name(self, branch_name: str) -> str:
         """Get the domain name for a worktree.
@@ -517,6 +548,9 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
             log_warning("This email is used for Let's Encrypt certificate notifications.")
             log_warning("To customize, add CADDY_EMAIL=your-email@example.com to .dockertree/env.dockertree")
         
+        # Determine secure cookie setting
+        use_secure_cookies = self._should_use_secure_cookies(site_domain)
+        
         return f"""# Dockertree environment configuration for {branch_name}
 # Domain override: {domain}
 COMPOSE_PROJECT_NAME={compose_project_name}
@@ -526,6 +560,7 @@ ALLOWED_HOSTS={allowed_hosts}
 DEBUG=False
 USE_X_FORWARDED_HOST=True
 CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
+USE_SECURE_COOKIES={str(use_secure_cookies)}
 CADDY_EMAIL={caddy_email}
 """
     
@@ -610,6 +645,13 @@ CADDY_EMAIL={caddy_email}
                 else:
                     content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
                 
+                # USE_SECURE_COOKIES (HTTPS domain deployments require secure cookies)
+                use_secure_cookies = self._should_use_secure_cookies(https_url)
+                if 'USE_SECURE_COOKIES=' in content:
+                    content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
+                
                 # Replace any localhost references in URLs
                 project_name = sanitize_project_name(get_project_name())
                 localhost_domain = f"{project_name}-.*\\.localhost"
@@ -684,6 +726,13 @@ CADDY_EMAIL={caddy_email}
                     content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
                 else:
                     content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
+                
+                # USE_SECURE_COOKIES (HTTPS domain deployments require secure cookies)
+                use_secure_cookies = self._should_use_secure_cookies(https_url)
+                if 'USE_SECURE_COOKIES=' in content:
+                    content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
                 
                 env_dockertree.write_text(content)
                 log_info(f"Applied domain overrides to env.dockertree: {domain}")
@@ -775,6 +824,13 @@ CADDY_EMAIL={caddy_email}
                     content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
                 else:
                     content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
+                
+                # USE_SECURE_COOKIES (IP deployments are HTTP-only, no secure cookies)
+                use_secure_cookies = self._should_use_secure_cookies(http_url)
+                if 'USE_SECURE_COOKIES=' in content:
+                    content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
 
                 env_file.write_text(content)
                 log_info(f"Applied IP overrides to .env file: {ip}")
@@ -786,6 +842,13 @@ CADDY_EMAIL={caddy_email}
                 content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
                 content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS=localhost,127.0.0.1,{ip},web', content, flags=re.MULTILINE)
                 content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
+                
+                # USE_SECURE_COOKIES (IP deployments are HTTP-only, no secure cookies)
+                use_secure_cookies = self._should_use_secure_cookies(http_url)
+                if 'USE_SECURE_COOKIES=' in content:
+                    content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
                 if 'USE_X_FORWARDED_HOST=' in content:
                     content = re.sub(r'USE_X_FORWARDED_HOST=.*', 'USE_X_FORWARDED_HOST=True', content, flags=re.MULTILINE)
                 else:
@@ -795,6 +858,14 @@ CADDY_EMAIL={caddy_email}
                     content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
                 else:
                     content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
+                
+                # USE_SECURE_COOKIES (IP deployments are HTTP-only, no secure cookies)
+                use_secure_cookies = self._should_use_secure_cookies(http_url)
+                if 'USE_SECURE_COOKIES=' in content:
+                    content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
+                else:
+                    content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
+                
                 env_dockertree.write_text(content)
                 log_info(f"Applied IP overrides to env.dockertree: {ip}")
             

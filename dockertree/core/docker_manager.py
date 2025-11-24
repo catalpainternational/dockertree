@@ -80,7 +80,20 @@ class DockerManager:
             return False
     
     def copy_volume(self, source_volume: str, target_volume: str, source_project_name: str = None) -> bool:
-        """Copy volume data from source to target with safe PostgreSQL handling."""
+        """Copy volume data from source to target using file-level copy.
+        
+        This method works for all volume types (PostgreSQL, Redis, media, etc.).
+        The caller is responsible for ensuring containers are stopped before calling
+        this method to ensure data consistency.
+        
+        Args:
+            source_volume: Source volume name
+            target_volume: Target volume name
+            source_project_name: Project name (unused, kept for backward compatibility)
+            
+        Returns:
+            True if copy succeeded, False otherwise
+        """
         log_info(f"Copying volume {source_volume} to {target_volume}...")
         
         # Check if source volume exists
@@ -92,145 +105,8 @@ class DockerManager:
         if not self._create_volume(target_volume):
             return False
         
-        # Detect if this is a PostgreSQL volume and handle safely
-        if self._is_postgres_volume(source_volume) and source_project_name:
-            return self.copy_postgres_volume_safely(source_volume, target_volume, source_project_name)
-        
-        # For non-PostgreSQL volumes (redis, media), use the existing fast copy method
-        try:
-            subprocess.run([
-                "docker", "run", "--rm",
-                "-v", f"{source_volume}:/source:ro",
-                "-v", f"{target_volume}:/dest",
-                "alpine", "sh", "-c", "cp -r /source/* /dest/ 2>/dev/null || true"
-            ], check=True, capture_output=True)
-            log_success(f"Volume copy completed: {source_volume} -> {target_volume}")
-            return True
-        except subprocess.CalledProcessError:
-            log_warning("Volume copy had issues, but continuing with empty volume")
-            return True
-    
-    def _is_postgres_volume(self, volume_name: str) -> bool:
-        """Check if a volume is a PostgreSQL data volume."""
-        return 'postgres' in volume_name.lower() and 'data' in volume_name.lower()
-    
-    def _get_postgres_auth_env(self, container_name: str, branch_name: Optional[str] = None) -> Dict[str, str]:
-        """Get PostgreSQL authentication environment variables.
-        
-        This method tries multiple sources in order:
-        1. Container environment variables (POSTGRES_USER, POSTGRES_PASSWORD)
-        2. Worktree env.dockertree file
-        3. Project root env.dockertree file
-        4. System environment variables
-        
-        Args:
-            container_name: Name of the PostgreSQL container
-            branch_name: Optional branch name to check worktree env files
-            
-        Returns:
-            Dictionary with 'user' and 'password' keys
-        """
-        import os
-        
-        # First, try to get from container environment
-        try:
-            env_result = subprocess.run(
-                ["docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", container_name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                timeout=10
-            )
-            
-            postgres_user = None
-            postgres_password = None
-            
-            if env_result.returncode == 0:
-                for line in env_result.stdout.split('\n'):
-                    if line.startswith('POSTGRES_USER='):
-                        postgres_user = line.split('=', 1)[1]
-                    elif line.startswith('POSTGRES_PASSWORD='):
-                        postgres_password = line.split('=', 1)[1]
-        except Exception as e:
-            log_warning(f"Failed to extract PostgreSQL auth from container {container_name}: {e}")
-        
-        # If not found in container, try environment files
-        if not postgres_user or not postgres_password:
-            from ..utils.env_loader import get_env_compose_file_path, load_env_file
-            from ..config.settings import get_worktree_paths, get_project_root
-            
-            env_vars = {}
-            
-            # Try worktree env file first
-            if branch_name:
-                worktree_path, _ = get_worktree_paths(branch_name)
-                env_file = get_env_compose_file_path(worktree_path)
-                if env_file.exists():
-                    env_vars.update(load_env_file(env_file))
-            
-            # Fallback to project root env file
-            if not env_vars.get('POSTGRES_USER'):
-                project_root = get_project_root()
-                root_env_file = project_root / ".dockertree" / "env.dockertree"
-                if root_env_file.exists():
-                    env_vars.update(load_env_file(root_env_file))
-            
-            # Use values from env files if found
-            if not postgres_user:
-                postgres_user = env_vars.get('POSTGRES_USER') or os.getenv('POSTGRES_USER')
-            if not postgres_password:
-                postgres_password = env_vars.get('POSTGRES_PASSWORD') or os.getenv('POSTGRES_PASSWORD')
-        
-        # Final fallback: use defaults only if absolutely necessary
-        # This should rarely happen if environment is properly configured
-        if not postgres_user:
-            postgres_user = "postgres"  # PostgreSQL default user
-            log_warning("POSTGRES_USER not found, using default 'postgres'")
-        if not postgres_password:
-            postgres_password = ""
-            log_warning("POSTGRES_PASSWORD not found, using empty password (trust auth)")
-        
-        return {
-            'user': postgres_user,
-            'password': postgres_password
-        }
-    
-    def _build_postgres_command(self, container_name: str, base_cmd: str, 
-                                use_password: bool = True, branch_name: Optional[str] = None) -> str:
-        """Build a PostgreSQL command with proper authentication.
-        
-        This method creates a command string that handles PostgreSQL authentication
-        by trying multiple strategies:
-        1. Use PGPASSWORD if password is available
-        2. Try trust authentication (no password)
-        3. Try peer authentication (for local connections)
-        
-        Args:
-            container_name: Name of the PostgreSQL container
-            base_cmd: Base PostgreSQL command (e.g., "psql -U postgres -c 'SELECT 1'")
-            use_password: Whether to attempt password authentication
-            branch_name: Optional branch name to help locate environment files
-            
-        Returns:
-            Command string with authentication handling
-        """
-        auth_env = self._get_postgres_auth_env(container_name, branch_name)
-        user = auth_env['user']
-        password = auth_env['password']
-        
-        # Replace user in command if needed
-        if '-U ' in base_cmd:
-            base_cmd = base_cmd.replace('-U postgres', f"-U {user}")
-            base_cmd = base_cmd.replace('-U postgres ', f"-U {user} ")
-        
-        if use_password and password:
-            # Use PGPASSWORD environment variable
-            return f"PGPASSWORD='{password}' {base_cmd}"
-        else:
-            # Try without password (trust auth) - most PostgreSQL Docker images use this
-            # If that fails, try with empty password as fallback
-            return f"{base_cmd} || PGPASSWORD='' {base_cmd}"
+        # Use generic file copy for all volume types
+        return self._copy_volume_files(source_volume, target_volume)
     
     def _get_postgres_container_name(self, branch_name: str) -> Optional[str]:
         """Get PostgreSQL container name for a branch.
@@ -257,12 +133,28 @@ class DockerManager:
             return container_name
         return None
     
-    def copy_postgres_volume_safely(self, source_volume: str, target_volume: str, source_project_name: str) -> bool:
-        """Safely copy PostgreSQL volume using pg_dump when database is running."""
-        log_info("Detecting source database status...")
+    def _ensure_containers_stopped_for_volume_operation(
+        self, volume_name: str, project_name: str, operation_type: str = "operation"
+    ) -> Optional[str]:
+        """Stop containers using a volume before volume operations.
         
+        This is a shared method used by both volume copying and archiving operations.
+        It finds the container using the volume and stops it if running.
+        
+        Args:
+            volume_name: Volume name to find containers for
+            project_name: Project name for finding the container
+            operation_type: Description of operation (for logging)
+            
+        Returns:
+            Container name if stopped, None if not found or already stopped
+        """
         # Find the PostgreSQL container using this volume
-        postgres_container = get_postgres_container_for_volume(source_volume, source_project_name)
+        postgres_container = get_postgres_container_for_volume(volume_name, project_name)
+        
+        if not postgres_container:
+            log_info(f"No container found using volume {volume_name}")
+            return None
         
         # Check if container is running
         result = subprocess.run(
@@ -273,93 +165,70 @@ class DockerManager:
         )
         is_running = result.stdout.strip() == postgres_container
         
-        if postgres_container and is_running:
-            log_info("Source database is running, creating consistent snapshot using pg_dump...")
-            return self._copy_postgres_with_dump(source_volume, target_volume, postgres_container)
-        else:
-            log_info("Source database is stopped, using fast file copy...")
-            return self._copy_postgres_files(source_volume, target_volume)
-    
-    def _copy_postgres_with_dump(self, source_volume: str, target_volume: str, postgres_container: str) -> bool:
-        """Copy PostgreSQL data using pg_dump for consistency."""
-        import tempfile
-        import os
+        if not is_running:
+            log_info(f"Container {postgres_container} is already stopped")
+            return postgres_container
         
-        try:
-            # Create temporary backup file
-            with tempfile.NamedTemporaryFile(mode='w+', suffix='.sql', delete=False) as backup_file:
-                backup_path = backup_file.name
-            
-            # Export database using pg_dumpall from the running container
-            log_info("Creating database backup...")
-            # Try to extract branch_name from container name
-            branch_name = None
-            if '-' in postgres_container:
-                parts = postgres_container.split('-')
-                if len(parts) >= 2:
-                    branch_name = parts[-2] if parts[-1] == 'db' else parts[-1]
-            
-            auth_env = self._get_postgres_auth_env(postgres_container, branch_name)
-            dump_cmd = self._build_postgres_command(
-                postgres_container,
-                f"pg_dumpall -U {auth_env['user']} -c",
-                use_password=True,
-                branch_name=branch_name
-            )
-            
-            with open(backup_path, 'w') as f:
-                result = subprocess.run(
-                    ["docker", "exec", postgres_container, "sh", "-c", dump_cmd],
-                    stdout=f,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False
-                )
-                if result.returncode != 0:
-                    log_error(f"pg_dumpall failed: {result.stderr}")
-                    return False
-            
-            # Create target volume and restore data
-            log_info("Restoring database to new volume...")
-            restore_cmd = [
-                "docker", "run", "--rm",
-                "-v", f"{target_volume}:/var/lib/postgresql/data",
-                "-v", f"{backup_path}:/backup.sql",
-                "postgres:latest",
-                "sh", "-c", """
-                    # Initialize database
-                    initdb -D /var/lib/postgresql/data
-                    # Start postgres in background
-                    postgres -D /var/lib/postgresql/data &
-                    PG_PID=$!
-                    # Wait for postgres to start
-                    sleep 3
-                    # Restore data
-                    psql -U postgres -f /backup.sql
-                    # Stop postgres
-                    kill $PG_PID
-                    wait $PG_PID
-                """
-            ]
-            
-            result = subprocess.run(restore_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                log_error(f"Database restore failed: {result.stderr}")
-                return False
-            
-            log_success("Database snapshot complete, safe to start worktree")
-            return True
-            
-        except Exception as e:
-            log_error(f"Failed to copy PostgreSQL volume safely: {e}")
-            return False
-        finally:
-            # Clean up backup file
-            if 'backup_path' in locals() and os.path.exists(backup_path):
-                os.unlink(backup_path)
+        log_info(f"Stopping container {postgres_container} before {operation_type}...")
+        
+        # Stop using docker stop (works for any container)
+        result = subprocess.run(
+            ["docker", "stop", postgres_container],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            log_success(f"Container {postgres_container} stopped successfully")
+            return postgres_container
+        else:
+            log_warning(f"Failed to stop container {postgres_container}: {result.stderr}")
+            return None
     
-    def _copy_postgres_files(self, source_volume: str, target_volume: str) -> bool:
-        """Copy PostgreSQL files directly (safe when database is stopped)."""
+    def _restart_container(self, container_name: str) -> bool:
+        """Restart a container by name.
+        
+        This is a shared method used by both volume copying and archiving operations.
+        
+        Args:
+            container_name: Name of the container to restart
+            
+        Returns:
+            True if started successfully, False otherwise
+        """
+        log_info(f"Starting container {container_name}...")
+        
+        result = subprocess.run(
+            ["docker", "start", container_name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            log_success(f"Container {container_name} started successfully")
+            return True
+        else:
+            log_warning(f"Failed to start container {container_name}: {result.stderr}")
+            return False
+    
+    def _copy_volume_files(self, source_volume: str, target_volume: str) -> bool:
+        """Copy volume files using Alpine container (works for all volume types).
+        
+        This is a generic file copy method that works for PostgreSQL, Redis, media files,
+        and any other volume type. The container must be stopped before calling this method
+        to ensure data consistency.
+        
+        Args:
+            source_volume: Source volume name
+            target_volume: Target volume name
+            
+        Returns:
+            True if copy succeeded, False otherwise
+        """
         try:
             subprocess.run([
                 "docker", "run", "--rm",
@@ -367,10 +236,10 @@ class DockerManager:
                 "-v", f"{target_volume}:/dest",
                 "alpine", "sh", "-c", "cp -r /source/* /dest/ 2>/dev/null || true"
             ], check=True, capture_output=True)
-            log_success("Database files copied successfully")
+            log_success(f"Volume files copied successfully: {source_volume} -> {target_volume}")
             return True
         except subprocess.CalledProcessError as e:
-            log_error(f"Failed to copy PostgreSQL files: {e}")
+            log_error(f"Failed to copy volume files: {e}")
             return False
     
     def _create_volume(self, volume_name: str) -> bool:
@@ -388,6 +257,9 @@ class DockerManager:
     
     def create_worktree_volumes(self, branch_name: str, project_name: str = None, force_copy: bool = False) -> bool:
         """Create worktree-specific volumes, copying only if needed.
+        
+        For PostgreSQL volumes, this method will stop the original database container
+        before copying to ensure data consistency, then restart it after copying.
         
         Note: Only creates postgres, redis, and media volumes. Caddy volumes 
         are shared globally across all worktrees and should not be copied.
@@ -440,8 +312,13 @@ class DockerManager:
         else:
             log_info(f"Creating worktree-specific volumes for {branch_name}")
         
-        # Add database-specific logging
+        # For PostgreSQL volumes, stop the original container before copying
+        original_db_container = None
         if 'postgres' in project_volumes:
+            source_postgres_volume = project_volumes['postgres']
+            original_db_container = self._ensure_containers_stopped_for_volume_operation(
+                source_postgres_volume, project_name, "volume copy"
+            )
             log_info("PostgreSQL volumes will be copied safely to prevent database corruption")
         
         success = True
@@ -449,6 +326,10 @@ class DockerManager:
             target_volume = volume_names[volume_type]
             if not self.copy_volume(source_volume, target_volume, project_name):
                 success = False
+        
+        # Restart the original database container if we stopped it
+        if original_db_container:
+            self._restart_container(original_db_container)
         
         if success:
             log_success(f"Worktree volumes created for {branch_name}")
@@ -1650,3 +1531,41 @@ class DockerManager:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+    
+    def get_worktree_containers_sync(self, branch_name: str) -> List[Dict[str, Any]]:
+        """Get container status for a worktree synchronously.
+        
+        This is a synchronous wrapper around the async get_worktree_containers() method.
+        Used by WorktreeOrchestrator.get_worktree_info() which is synchronous.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            List of container dictionaries with name, status, state, ports, and image
+        """
+        import asyncio
+        try:
+            return asyncio.run(self.get_worktree_containers(branch_name))
+        except Exception as e:
+            log_warning(f"Failed to get containers synchronously: {e}")
+            return []
+    
+    def get_worktree_volumes_sync(self, branch_name: str) -> List[Dict[str, Any]]:
+        """Get volumes for a worktree synchronously.
+        
+        This is a synchronous wrapper around the async get_worktree_volumes() method.
+        Used by WorktreeOrchestrator.get_worktree_info() which is synchronous.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            List of volume dictionaries with name, type, branch, and exists status
+        """
+        import asyncio
+        try:
+            return asyncio.run(self.get_worktree_volumes(branch_name))
+        except Exception as e:
+            log_warning(f"Failed to get volumes synchronously: {e}")
+            return []

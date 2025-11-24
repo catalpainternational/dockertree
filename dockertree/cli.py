@@ -1440,7 +1440,8 @@ def droplet_destroy(droplet_ids: str, force: bool, only_droplet: bool, only_doma
                     domain: Optional[str], api_token: Optional[str], dns_token: Optional[str], json: bool):
     """Destroy DigitalOcean droplet(s) and/or associated DNS records.
 
-    Accepts a single droplet ID or comma-separated list of IDs (e.g., 123,456,789).
+    Accepts a single droplet ID or name, or comma-separated list of IDs/names
+    (e.g., 123,456,789 or my-droplet,another-droplet,123).
     By default, destroys only the droplet(s). Use --only-domain to destroy
     DNS records only, or omit flags to destroy both droplet and DNS records.
 
@@ -1452,9 +1453,14 @@ def droplet_destroy(droplet_ids: str, force: bool, only_droplet: bool, only_doma
 
         dockertree droplet destroy 123456789
 
+        dockertree droplet destroy my-droplet
+
         dockertree droplet destroy 123,456,789
 
+        dockertree droplet destroy my-droplet,another-droplet,123
+
         dockertree droplet destroy 123456789 --force
+        dockertree droplet destroy my-droplet --force
         dockertree droplet destroy 123,456,789 --force
         dockertree droplet destroy 123456789 --only-domain
     """
@@ -1467,25 +1473,39 @@ def droplet_destroy(droplet_ids: str, force: bool, only_droplet: bool, only_doma
                 error_exit("Cannot specify both --only-droplet and --only-domain")
             return
         
-        # Parse comma-separated droplet IDs
-        try:
-            droplet_id_list = [int(id_str.strip()) for id_str in droplet_ids.split(',') if id_str.strip()]
-        except ValueError as e:
-            if json:
-                JSONOutput.print_error(f"Invalid droplet ID format. All IDs must be integers. Got: {droplet_ids}")
-            else:
-                error_exit(f"Invalid droplet ID format. All IDs must be integers. Got: {droplet_ids}")
-            return
+        check_prerequisites_no_git()  # Don't require git for droplet operations
+        droplet_commands = DropletCommands()
+        
+        # Resolve droplet identifiers (IDs or names) to IDs
+        droplet_id_list, resolution_errors = droplet_commands._resolve_droplet_identifiers(
+            droplet_ids, api_token, json
+        )
+        
+        # Handle resolution errors
+        if resolution_errors:
+            # If all identifiers failed to resolve, exit early
+            if not droplet_id_list:
+                if json:
+                    error_summary = {
+                        "success": False,
+                        "error": "Failed to resolve any droplet identifiers",
+                        "errors": resolution_errors
+                    }
+                    JSONOutput.print_json(error_summary)
+                else:
+                    error_exit(f"Failed to resolve droplet identifiers: {', '.join([e['error'] for e in resolution_errors])}")
+                return
+            # If some failed, log warnings but continue with resolved IDs
+            elif not json:
+                for error_info in resolution_errors:
+                    log_error(f"Failed to resolve '{error_info['identifier']}': {error_info['error']}")
         
         if not droplet_id_list:
             if json:
-                JSONOutput.print_error("No valid droplet IDs provided")
+                JSONOutput.print_error("No valid droplet identifiers provided")
             else:
-                error_exit("No valid droplet IDs provided")
+                error_exit("No valid droplet identifiers provided")
             return
-        
-        check_prerequisites_no_git()  # Don't require git for droplet operations
-        droplet_commands = DropletCommands()
         
         # Track results for each droplet
         results = []
