@@ -15,6 +15,7 @@ from ..config.settings import (
     CADDY_NETWORK, 
     get_compose_command, 
     get_volume_names,
+    get_source_volume_names,
     DEFAULT_ENV_VARS,
     get_project_root,
     get_project_name,
@@ -263,39 +264,19 @@ class DockerManager:
         
         Note: Only creates postgres, redis, and media volumes. Caddy volumes 
         are shared globally across all worktrees and should not be copied.
+        
+        Uses centralized volume naming functions for consistency and DRY principles.
         """
-        # Determine project name from self.project_root (not current directory)
+        # Get target volumes using centralized function (worktree volumes use sanitized names)
+        volume_names = get_volume_names(branch_name)
+        
+        # Get source volumes using centralized function (master volumes use original format)
+        project_volumes = get_source_volume_names()
+        
+        # Determine sanitized project name for container name matching
         if project_name is None:
-            # Get project name from config in self.project_root
-            from ..config.settings import DOCKERTREE_DIR, sanitize_project_name
-            import yaml
-            config_path = self.project_root / DOCKERTREE_DIR / "config.yml"
-            if config_path.exists():
-                try:
-                    with open(config_path) as f:
-                        config = yaml.safe_load(f) or {}
-                        project_name = config.get("project_name")
-                except Exception:
-                    pass
-            
-            # Fallback to project root directory name if config doesn't have project_name
-            if not project_name:
-                project_name = self.project_root.name
-            
-            project_name = sanitize_project_name(project_name)
-        
-        # Get volume names using the determined project name
-        volume_names = {
-            "postgres": f"{project_name}-{branch_name}_postgres_data",
-            "redis": f"{project_name}-{branch_name}_redis_data",
-            "media": f"{project_name}-{branch_name}_media_files",
-        }
-        
-        project_volumes = {
-            "postgres": f"{project_name}_{volume_names['postgres'].split('_', 1)[1]}",
-            "redis": f"{project_name}_{volume_names['redis'].split('_', 1)[1]}",
-            "media": f"{project_name}_{volume_names['media'].split('_', 1)[1]}",
-        }
+            project_name = sanitize_project_name(get_project_name())
+        # If project_name is provided, use it as-is (assumed to be sanitized)
         
         # Check if all volumes already exist
         all_volumes_exist = all(validate_volume_exists(vol_name) for vol_name in volume_names.values())

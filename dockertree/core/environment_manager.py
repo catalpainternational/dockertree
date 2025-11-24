@@ -578,12 +578,46 @@ CADDY_EMAIL={caddy_email}
             True if successful, False otherwise
         """
         try:
-            from ..config.settings import sanitize_project_name, get_project_name
+            from ..config.settings import build_allowed_hosts_with_container
+            from ..utils.path_utils import get_worktree_branch_name
+            from ..config.settings import get_env_compose_file_path
             import re
+            
+            # Extract branch name from worktree path
+            branch_name = get_worktree_branch_name(worktree_path)
+            
+            # Fallback: Try to extract from COMPOSE_PROJECT_NAME in env.dockertree
+            if not branch_name:
+                env_dockertree = get_env_compose_file_path(worktree_path)
+                if env_dockertree.exists():
+                    content = env_dockertree.read_text()
+                    for line in content.splitlines():
+                        if line.startswith('COMPOSE_PROJECT_NAME='):
+                            compose_project_name = line.split('=', 1)[1].strip().strip('"\'')
+                            # Extract branch name: {project-name}-{branch} -> {branch}
+                            parts = compose_project_name.rsplit('-', 1)
+                            if len(parts) == 2:
+                                branch_name = parts[1]
+                                break
+            
+            # If still no branch name, log warning and use existing behavior
+            if not branch_name:
+                log_warning(f"Could not determine branch name for worktree at {worktree_path}, using existing ALLOWED_HOSTS format without container name")
+                branch_name = None
             
             # Construct URLs from domain
             http_url = f"http://{domain}"
             https_url = f"https://{domain}"
+            
+            # Extract base domain
+            base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+            
+            # Build ALLOWED_HOSTS with container name if branch_name is available
+            if branch_name:
+                allowed_hosts = build_allowed_hosts_with_container(branch_name, [domain, f"*.{base_domain}"])
+            else:
+                # Fallback to existing format
+                allowed_hosts = f"localhost,127.0.0.1,{domain},*.{base_domain},web"
             
             # Update .env file if it exists
             env_file = worktree_path / ".env"
@@ -598,22 +632,18 @@ CADDY_EMAIL={caddy_email}
                     flags=re.MULTILINE
                 )
                 
-                # Update ALLOWED_HOSTS to include domain
-                # Extract base domain
-                base_domain = domain.split('.', 1)[1] if '.' in domain else domain
-                
-                # Build new ALLOWED_HOSTS
+                # Update ALLOWED_HOSTS
                 if 'ALLOWED_HOSTS=' in content:
                     # Replace existing ALLOWED_HOSTS
                     content = re.sub(
                         r'ALLOWED_HOSTS=.*',
-                        f'ALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.{base_domain},web',
+                        f'ALLOWED_HOSTS={allowed_hosts}',
                         content,
                         flags=re.MULTILINE
                     )
                 else:
                     # Add ALLOWED_HOSTS if missing
-                    content += f"\nALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.{base_domain},web\n"
+                    content += f"\nALLOWED_HOSTS={allowed_hosts}\n"
                 
                 # Set DEBUG=False for production
                 content = re.sub(
@@ -653,6 +683,7 @@ CADDY_EMAIL={caddy_email}
                     content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
                 
                 # Replace any localhost references in URLs
+                from ..config.settings import sanitize_project_name, get_project_name
                 project_name = sanitize_project_name(get_project_name())
                 localhost_domain = f"{project_name}-.*\\.localhost"
                 content = re.sub(
@@ -691,11 +722,10 @@ CADDY_EMAIL={caddy_email}
                     flags=re.MULTILINE
                 )
                 
-                # Update ALLOWED_HOSTS
-                base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+                # Update ALLOWED_HOSTS (use same allowed_hosts variable from above)
                 content = re.sub(
                     r'ALLOWED_HOSTS=.*',
-                    f'ALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.{base_domain},web',
+                    f'ALLOWED_HOSTS={allowed_hosts}',
                     content,
                     flags=re.MULTILINE
                 )
@@ -794,9 +824,40 @@ CADDY_EMAIL={caddy_email}
         the IP, and forces DEBUG=False.
         """
         try:
+            from ..config.settings import build_allowed_hosts_with_container, get_env_compose_file_path
+            from ..utils.path_utils import get_worktree_branch_name
             import re
 
+            # Extract branch name from worktree path
+            branch_name = get_worktree_branch_name(worktree_path)
+            
+            # Fallback: Try to extract from COMPOSE_PROJECT_NAME in env.dockertree
+            if not branch_name:
+                env_dockertree = get_env_compose_file_path(worktree_path)
+                if env_dockertree.exists():
+                    content = env_dockertree.read_text()
+                    for line in content.splitlines():
+                        if line.startswith('COMPOSE_PROJECT_NAME='):
+                            compose_project_name = line.split('=', 1)[1].strip().strip('"\'')
+                            # Extract branch name: {project-name}-{branch} -> {branch}
+                            parts = compose_project_name.rsplit('-', 1)
+                            if len(parts) == 2:
+                                branch_name = parts[1]
+                                break
+            
+            # If still no branch name, log warning and use existing behavior
+            if not branch_name:
+                log_warning(f"Could not determine branch name for worktree at {worktree_path}, using existing ALLOWED_HOSTS format without container name")
+                branch_name = None
+
             http_url = f"http://{ip}"
+            
+            # Build ALLOWED_HOSTS with container name if branch_name is available
+            if branch_name:
+                allowed_hosts = build_allowed_hosts_with_container(branch_name, [ip])
+            else:
+                # Fallback to existing format
+                allowed_hosts = f"localhost,127.0.0.1,{ip},web"
 
             # Update .env file
             env_file = worktree_path / ".env"
@@ -806,9 +867,9 @@ CADDY_EMAIL={caddy_email}
                 content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
 
                 if 'ALLOWED_HOSTS=' in content:
-                    content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS=localhost,127.0.0.1,{ip},web', content, flags=re.MULTILINE)
+                    content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS={allowed_hosts}', content, flags=re.MULTILINE)
                 else:
-                    content += f"\nALLOWED_HOSTS=localhost,127.0.0.1,{ip},web\n"
+                    content += f"\nALLOWED_HOSTS={allowed_hosts}\n"
 
                 content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
 
@@ -840,7 +901,7 @@ CADDY_EMAIL={caddy_email}
             if env_dockertree.exists():
                 content = env_dockertree.read_text()
                 content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
-                content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS=localhost,127.0.0.1,{ip},web', content, flags=re.MULTILINE)
+                content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS={allowed_hosts}', content, flags=re.MULTILINE)
                 content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
                 
                 # USE_SECURE_COOKIES (IP deployments are HTTP-only, no secure cookies)

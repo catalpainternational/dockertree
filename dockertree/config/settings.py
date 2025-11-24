@@ -8,7 +8,7 @@ the dockertree CLI application.
 import os
 import yaml
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 # Version information
 VERSION = "0.9.4"
@@ -246,6 +246,56 @@ def get_worktree_paths(branch_name: str) -> tuple[Path, Path]:
     legacy_path = repo_root.parent / branch_name
     return new_path, legacy_path
 
+def get_container_name_for_worktree(branch_name: str) -> str:
+    """Get the container name for a worktree's web service.
+    
+    Container name format: {project-name}-{branch}-web
+    
+    Args:
+        branch_name: Branch name for the worktree
+        
+    Returns:
+        Container name string
+        
+    Example:
+        For project 'business_intelligence' and branch 'test':
+        Returns: 'business-intelligence-test-web'
+    """
+    project_name = sanitize_project_name(get_project_name())
+    return f"{project_name}-{branch_name}-web"
+
+def build_allowed_hosts_with_container(branch_name: str, additional_hosts: Optional[List[str]] = None) -> str:
+    """Build ALLOWED_HOSTS string with container name included.
+    
+    This is a DRY helper function that ensures container names are always
+    included in ALLOWED_HOSTS for Caddy proxy routing.
+    
+    Args:
+        branch_name: Branch name for the worktree
+        additional_hosts: Optional list of additional hostnames to include
+        
+    Returns:
+        Comma-separated ALLOWED_HOSTS string with format:
+        localhost,127.0.0.1,[additional_hosts...],{container-name},web
+        
+    Example:
+        build_allowed_hosts_with_container('test', ['example.com', '*.example.com'])
+        Returns: 'localhost,127.0.0.1,example.com,*.example.com,business-intelligence-test-web,web'
+    """
+    container_name = get_container_name_for_worktree(branch_name)
+    
+    # Base hosts always included
+    hosts = ["localhost", "127.0.0.1"]
+    
+    # Add additional hosts if provided
+    if additional_hosts:
+        hosts.extend(additional_hosts)
+    
+    # Always append container name and 'web' for inter-container communication
+    hosts.extend([container_name, "web"])
+    
+    return ",".join(hosts)
+
 def get_allowed_hosts_for_worktree(branch_name: str) -> str:
     """Generate ALLOWED_HOSTS string for a worktree with explicit subdomain.
     
@@ -253,6 +303,7 @@ def get_allowed_hosts_for_worktree(branch_name: str) -> str:
     - localhost, 127.0.0.1 for local access
     - {project-name}-{branch}.localhost for the specific worktree subdomain
     - *.localhost as a wildcard fallback
+    - {container-name} for Caddy proxy routing
     - web for inter-container communication
     
     Args:
@@ -263,11 +314,11 @@ def get_allowed_hosts_for_worktree(branch_name: str) -> str:
         
     Example:
         For project 'business_intelligence' and branch 'beta':
-        Returns: 'localhost,127.0.0.1,business-intelligence-beta.localhost,*.localhost,web'
+        Returns: 'localhost,127.0.0.1,business-intelligence-beta.localhost,*.localhost,business-intelligence-beta-web,web'
     """
     project_name = sanitize_project_name(get_project_name())
     subdomain = f"{project_name}-{branch_name}.localhost"
-    return f"localhost,127.0.0.1,{subdomain},*.localhost,web"
+    return build_allowed_hosts_with_container(branch_name, [subdomain, "*.localhost"])
 
 # Environment file generation
 def generate_env_compose_content(branch_name: str) -> str:
@@ -305,4 +356,40 @@ def get_volume_names(branch_name: str) -> dict[str, str]:
         "postgres": get_volume_name(branch_name, POSTGRES_VOLUME_SUFFIX),
         "redis": get_volume_name(branch_name, REDIS_VOLUME_SUFFIX),
         "media": get_volume_name(branch_name, MEDIA_VOLUME_SUFFIX),
+    }
+
+def get_source_volume_name(volume_type: str) -> str:
+    """Get master/project root volume name using original (unsanitized) project name.
+    
+    These are the source volumes that worktree volumes are copied from.
+    They use the original project name format (with underscores) as defined
+    in docker-compose.yml.
+    
+    Args:
+        volume_type: Volume type suffix (e.g., POSTGRES_VOLUME_SUFFIX)
+        
+    Returns:
+        Volume name in format: {original_project_name}_{volume_type}
+    """
+    original_project_name = get_project_name()  # Unsanitized
+    return f"{original_project_name}_{volume_type}"
+
+def get_source_volume_names() -> dict[str, str]:
+    """Get all master/project root volume names.
+    
+    Returns volume names for the project root (master branch) volumes
+    that are used as sources when copying to new worktrees.
+    
+    Returns:
+        Dictionary mapping volume types to volume names:
+        {
+            "postgres": "{original_project_name}_postgres_data",
+            "redis": "{original_project_name}_redis_data",
+            "media": "{original_project_name}_media_files"
+        }
+    """
+    return {
+        "postgres": get_source_volume_name(POSTGRES_VOLUME_SUFFIX),
+        "redis": get_source_volume_name(REDIS_VOLUME_SUFFIX),
+        "media": get_source_volume_name(MEDIA_VOLUME_SUFFIX),
     }
