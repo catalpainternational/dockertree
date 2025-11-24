@@ -383,12 +383,17 @@ class PackageManager:
                 self._configure_worker_environment(worktree_path, metadata)
             
             # Apply domain/ip overrides if provided
+            # This must happen AFTER environment files are restored so the compose file exists
             if domain:
                 log_info(f"Applying domain overrides: {domain}")
-                self.env_manager.apply_domain_overrides(worktree_path, domain)
+                success = self.env_manager.apply_domain_overrides(worktree_path, domain)
+                if not success:
+                    log_warning(f"Failed to apply domain overrides to worktree. Manual intervention may be required.")
             elif ip:
                 log_info(f"Applying IP overrides: {ip}")
-                self.env_manager.apply_ip_overrides(worktree_path, ip)
+                success = self.env_manager.apply_ip_overrides(worktree_path, ip)
+                if not success:
+                    log_warning(f"Failed to apply IP overrides to worktree. Manual intervention may be required.")
             
             # Restore volumes if requested
             # restore_volumes() handles stopping containers safely before restore
@@ -508,6 +513,8 @@ class PackageManager:
                 }
             
             # Restore environment files
+            # NOTE: This restores files from package, which may overwrite domain/IP settings
+            # We'll re-apply domain/IP overrides after worktree creation
             self._restore_environment_files(package_dir, target_directory)
             
             # Configure worker environment if metadata indicates worker deployment
@@ -526,17 +533,24 @@ class PackageManager:
                 else:
                     log_success(f"Created worktree for branch '{branch_name}'")
                     
-                    # Apply domain overrides to worktree if provided
+                    # Apply domain/IP overrides to worktree if provided
+                    # This must happen AFTER worktree creation so the compose file exists
                     if domain or ip:
                         worktree_path = Path(target_directory) / "worktrees" / branch_name
                         if worktree_path.exists():
                             env_manager = EnvironmentManager(project_root=target_directory)
                             if domain:
                                 log_info(f"Applying domain overrides to worktree: {domain}")
-                                env_manager.apply_domain_overrides(worktree_path, domain)
+                                success = env_manager.apply_domain_overrides(worktree_path, domain)
+                                if not success:
+                                    log_warning(f"Failed to apply domain overrides to worktree. Manual intervention may be required.")
                             elif ip:
                                 log_info(f"Applying IP overrides to worktree: {ip}")
-                                env_manager.apply_ip_overrides(worktree_path, ip)
+                                success = env_manager.apply_ip_overrides(worktree_path, ip)
+                                if not success:
+                                    log_warning(f"Failed to apply IP overrides to worktree. Manual intervention may be required.")
+                        else:
+                            log_warning(f"Worktree path not found: {worktree_path}. Cannot apply domain/IP overrides.")
             
             # Restore volumes if requested
             # IMPORTANT: Stop any running containers first to ensure volumes can be restored safely.

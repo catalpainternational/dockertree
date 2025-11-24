@@ -10,6 +10,9 @@ from typing import Optional, Tuple, Dict, Any
 
 from ..config.settings import get_project_root, get_script_dir, COMPOSE_WORKTREE
 from ..core.worktree_orchestrator import WorktreeOrchestrator
+from ..core.docker_manager import DockerManager as CoreDockerManager
+from ..core.git_manager import GitManager as CoreGitManager
+from ..core.environment_manager import EnvironmentManager as CoreEnvironmentManager
 from ..utils.logging import log_info, log_success, log_warning, log_error
 from ..utils.path_utils import (
     get_compose_override_path, 
@@ -22,14 +25,41 @@ from ..utils.pattern_matcher import has_wildcard, get_matching_branches
 from ..utils.confirmation import confirm_batch_operation, confirm_use_existing_worktree
 
 
+DockerManager = CoreDockerManager  # Backwards-compatible export for legacy tests
+GitManager = CoreGitManager
+EnvironmentManager = CoreEnvironmentManager
+
+
 class WorktreeManager:
     """CLI interface to worktree orchestration."""
 
-    def __init__(self):
+    def __init__(self, project_root: Optional[Path] = None):
         """Initialize worktree manager."""
-        self.project_root = get_project_root()
+        self.project_root = (
+            Path(project_root).resolve()
+            if project_root
+            else None
+        )
+        self.orchestrator: Optional[WorktreeOrchestrator] = None
+        self.git_manager = None
+        self.docker_manager = None
+        self.env_manager = None
+
+    def _ensure_orchestrator(self) -> None:
+        """Lazily create the orchestrator and dependent managers.
+
+        Legacy unit tests patch module-level dependencies (e.g., GitManager)
+        before setting ``project_root``. Deferring initialization prevents git
+        subprocess calls from running with placeholder paths.
+        """
+        if self.orchestrator is not None:
+            return
+
+        root = self.project_root or get_project_root()
+        if not isinstance(root, Path):
+            root = Path(root)
+        self.project_root = root.resolve()
         self.orchestrator = WorktreeOrchestrator(self.project_root)
-        # Expose managers for CLI convenience
         self.git_manager = self.orchestrator.git_manager
         self.docker_manager = self.orchestrator.docker_manager
         self.env_manager = self.orchestrator.env_manager
@@ -37,6 +67,7 @@ class WorktreeManager:
     
     def create_worktree(self, branch_name: str, interactive: bool = True) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """Create a new worktree - CLI interface."""
+        self._ensure_orchestrator()
         log_info(f"Creating worktree for branch: {branch_name}")
         
         result = self.orchestrator.create_worktree(branch_name)
@@ -85,6 +116,7 @@ class WorktreeManager:
             branch_name: Name of the branch/worktree to start
             profile: Optional Docker Compose profile to use
         """
+        self._ensure_orchestrator()
         if profile:
             log_info(f"Starting worktree environment for branch: {branch_name} with profile: {profile}")
         else:
@@ -115,6 +147,7 @@ class WorktreeManager:
     
     def stop_worktree(self, branch_name: str, remove_images: bool = False) -> bool:
         """Stop worktree environment - CLI interface."""
+        self._ensure_orchestrator()
         log_info(f"Stopping worktree environment for branch: {branch_name}")
         
         result = self.orchestrator.stop_worktree(branch_name, remove_images)
@@ -136,6 +169,7 @@ class WorktreeManager:
     
     def remove_worktree(self, branch_name: str, force: bool = False, delete_branch: bool = True) -> bool:
         """Remove worktree completely - CLI interface."""
+        self._ensure_orchestrator()
         if not branch_name:
             log_error("Branch name is required")
             return False
@@ -166,6 +200,7 @@ class WorktreeManager:
     
     def list_worktrees(self) -> list:
         """List active worktrees - CLI interface."""
+        self._ensure_orchestrator()
         log_info("Active worktrees:")
         
         result = self.orchestrator.list_worktrees()
@@ -181,12 +216,14 @@ class WorktreeManager:
     
     def prune_worktrees(self) -> int:
         """Prune worktrees."""
+        self._ensure_orchestrator()
         log_info("Pruning worktrees...")
         pruned_count = self.git_manager.prune_worktrees()
         return pruned_count
     
     def remove_all_worktrees(self, force: bool = False, delete_branch: bool = True) -> bool:
         """Remove all worktrees, containers, and volumes."""
+        self._ensure_orchestrator()
         # Ensure we're in the main repository directory
         ensure_main_repo()
         
@@ -250,6 +287,7 @@ class WorktreeManager:
     
     def get_worktree_info(self, branch_name: str) -> dict:
         """Get information about a worktree - CLI interface."""
+        self._ensure_orchestrator()
         result = self.orchestrator.get_worktree_info(branch_name)
         
         if result['success']:
@@ -273,6 +311,7 @@ class WorktreeManager:
         Returns:
             True if all operations succeeded, False if any failed
         """
+        self._ensure_orchestrator()
         if not pattern:
             log_error("Pattern is required")
             return False

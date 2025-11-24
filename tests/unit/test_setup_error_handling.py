@@ -47,50 +47,65 @@ class TestSetupErrorHandling:
             mock_check.return_value = True
             yield mock_check
     
-    def test_error_001_permission_errors(self, setup_manager, mock_prerequisites_success):
+    @pytest.fixture
+    def mock_prompts(self):
+        """Mock user prompts to avoid stdin issues in tests."""
+        with patch('dockertree.utils.file_utils.prompt_compose_file_choice') as mock_compose, \
+             patch('dockertree.utils.file_utils.prompt_user_input') as mock_input:
+            mock_compose.return_value = None
+            mock_input.return_value = "1"
+            yield mock_compose, mock_input
+    
+    @patch('dockertree.utils.file_utils.prompt_compose_file_choice')
+    @patch('dockertree.utils.file_utils.prompt_user_input')
+    def test_error_001_permission_errors(self, mock_prompt_input, mock_prompt_compose, setup_manager, mock_prerequisites_success):
         """Test ID: ERROR-001 - Permission errors."""
+        # Mock prompts to avoid stdin issues
+        mock_prompt_compose.return_value = None
+        mock_prompt_input.return_value = "1"
+        
         # Test directory creation permission error
         with patch('pathlib.Path.mkdir') as mock_mkdir:
             mock_mkdir.side_effect = PermissionError("Permission denied")
             
-            result = setup_manager.setup_project()
+            result = setup_manager.setup_project(non_interactive=True)
             assert result is False
         
         # Test file writing permission error
         with patch('pathlib.Path.write_text') as mock_write:
             mock_write.side_effect = PermissionError("Permission denied")
             
-            result = setup_manager.setup_project()
+            result = setup_manager.setup_project(non_interactive=True)
             assert result is False
         
         # Test file reading permission error
         with patch('pathlib.Path.read_text') as mock_read:
             mock_read.side_effect = PermissionError("Permission denied")
             
-            result = setup_manager.setup_project()
+            result = setup_manager.setup_project(non_interactive=True)
             assert result is False
     
-    def test_error_002_invalid_docker_compose(self, setup_manager, mock_prerequisites_success):
+    def test_error_002_invalid_docker_compose(self, setup_manager, mock_prerequisites_success, mock_prompts):
         """Test ID: ERROR-002 - Invalid docker-compose.yml."""
         # Test invalid YAML syntax
         invalid_yaml = setup_manager.project_root / "docker-compose.yml"
         invalid_yaml.write_text("invalid: yaml: content: [")
         
-        result = setup_manager.setup_project()
+        result = setup_manager.setup_project(non_interactive=True)
         assert result is False
         
         # Test empty compose file
         empty_compose = setup_manager.project_root / "docker-compose.yml"
         empty_compose.write_text("")
         
-        result = setup_manager.setup_project()
+        result = setup_manager.setup_project(non_interactive=True)
         assert result is False
         
         # Test compose file without services
         no_services_compose = setup_manager.project_root / "docker-compose.yml"
         no_services_compose.write_text("version: '3.8'")
         
-        result = setup_manager.setup_project()
+        result = setup_manager.setup_project(non_interactive=True)
         assert result is False
         
         # Test compose file with invalid structure
@@ -103,7 +118,7 @@ class TestSetupErrorHandling:
         with open(invalid_compose, 'w') as f:
             yaml.dump(invalid_structure, f)
         
-        result = setup_manager.setup_project()
+        result = setup_manager.setup_project(non_interactive=True)
         assert result is False
     
     def test_error_003_missing_dependencies(self, setup_manager):

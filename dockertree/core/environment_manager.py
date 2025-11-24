@@ -579,8 +579,7 @@ CADDY_EMAIL={caddy_email}
         """
         try:
             from ..config.settings import build_allowed_hosts_with_container
-            from ..utils.path_utils import get_worktree_branch_name
-            from ..config.settings import get_env_compose_file_path
+            from ..utils.path_utils import get_worktree_branch_name, get_env_compose_file_path
             import re
             
             # Extract branch name from worktree path
@@ -770,15 +769,25 @@ CADDY_EMAIL={caddy_email}
             # Update docker-compose.worktree.yml to replace localhost patterns with domain
             from ..utils.path_utils import get_compose_override_path
             compose_file = get_compose_override_path(worktree_path)
-            if compose_file and compose_file.exists():
+            if not compose_file:
+                log_warning(f"Could not find docker-compose.worktree.yml for worktree at {worktree_path}")
+            elif not compose_file.exists():
+                log_warning(f"Docker Compose file does not exist: {compose_file}")
+            else:
                 try:
                     import yaml
                     compose_content = compose_file.read_text()
                     compose_data = yaml.safe_load(compose_content)
                     
-                    if compose_data and 'services' in compose_data:
+                    if not compose_data:
+                        log_warning(f"Docker Compose file is empty or invalid: {compose_file}")
+                    elif 'services' not in compose_data:
+                        log_warning(f"Docker Compose file has no 'services' section: {compose_file}")
+                    else:
                         updated = False
+                        services_checked = 0
                         for service_name, service_config in compose_data['services'].items():
+                            services_checked += 1
                             if 'labels' in service_config:
                                 labels = service_config['labels']
                                 # Handle both list and dict formats
@@ -808,8 +817,14 @@ CADDY_EMAIL={caddy_email}
                             compose_file.write_text(yaml_content)
                             log_info(f"Updated docker-compose.worktree.yml with domain: {domain}")
                             log_info(f"Caddy will route {domain} to containers when they start")
+                        elif services_checked > 0:
+                            log_warning(f"No Caddy labels found to update in docker-compose.worktree.yml (checked {services_checked} service(s))")
+                        else:
+                            log_warning(f"No services found in docker-compose.worktree.yml")
                 except Exception as e:
                     log_warning(f"Failed to update docker-compose.worktree.yml: {e}")
+                    import traceback
+                    log_warning(f"Traceback: {traceback.format_exc()}")
             
             return True
             
@@ -824,7 +839,8 @@ CADDY_EMAIL={caddy_email}
         the IP, and forces DEBUG=False.
         """
         try:
-            from ..config.settings import build_allowed_hosts_with_container, get_env_compose_file_path
+            from ..config.settings import build_allowed_hosts_with_container
+            from ..utils.path_utils import get_env_compose_file_path
             from ..utils.path_utils import get_worktree_branch_name
             import re
 

@@ -74,103 +74,39 @@ class TestDockertreeUpCommand:
             # This is expected since we're not in a real worktree directory
             pass
     
-    def test_worktree_manager_start_worktree_validation(self):
-        """Test WorktreeManager.start_worktree validation logic."""
-        with patch('dockertree.commands.worktree.DockerManager'), \
-             patch('dockertree.commands.worktree.GitManager'), \
-             patch('dockertree.commands.worktree.EnvironmentManager'), \
-             patch('dockertree.commands.worktree.get_project_root'):
-            
-            manager = WorktreeManager()
-            manager.docker_manager = Mock()
-            manager.git_manager = Mock()
-            manager.env_manager = Mock()
-            manager.project_root = Path("/test/project")
-            branch_name = "test-branch"
-            
-            # Test 1: Worktree doesn't exist
-            manager.git_manager.validate_worktree_exists.return_value = False
-            result = manager.start_worktree(branch_name)
-            assert result == False
-            
-            # Test 2: Worktree path not found
-            manager.git_manager.validate_worktree_exists.return_value = True
-            manager.git_manager.find_worktree_path.return_value = None
-            result = manager.start_worktree(branch_name)
-            assert result == False
-    
-    def test_worktree_manager_start_worktree_success_path(self):
-        """Test WorktreeManager.start_worktree success path."""
-        with patch('dockertree.commands.worktree.DockerManager'), \
-             patch('dockertree.commands.worktree.GitManager'), \
-             patch('dockertree.commands.worktree.EnvironmentManager'), \
-             patch('dockertree.commands.worktree.get_project_root'):
-            
-            manager = WorktreeManager()
-            manager.docker_manager = Mock()
-            manager.git_manager = Mock()
-            manager.env_manager = Mock()
-            manager.project_root = Path("/test/project")
-            branch_name = "test-branch"
-            worktree_path = Path("/test/worktree")
-            
-            # Mock git manager methods
-            manager.git_manager.validate_worktree_exists.return_value = True
-            manager.git_manager.find_worktree_path.return_value = worktree_path
-            
-            # Mock all the validation functions to return success
-            with patch('dockertree.commands.worktree.get_compose_override_path', return_value=Path("/test/compose.yml")), \
-                 patch('dockertree.commands.worktree.get_worktree_branch_name', return_value=branch_name):
-                
-                # Mock the compose file to exist
-                with patch('pathlib.Path.exists', return_value=True):
-                    # Mock all the manager methods to return success
-                    manager.docker_manager.create_worktree_volumes.return_value = True
-                    manager.docker_manager.create_network.return_value = True
-                    manager.docker_manager.run_compose_command.return_value = True
-                    
-                    with patch('dockertree.commands.worktree.WorktreeManager._configure_caddy_routes', return_value=True):
-                        result = manager.start_worktree(branch_name)
-                
-                assert result == True
-                manager.git_manager.validate_worktree_exists.assert_called_once_with(branch_name)
-                manager.git_manager.find_worktree_path.assert_called_once_with(branch_name)
-                manager.docker_manager.create_worktree_volumes.assert_called_once_with(branch_name, force_copy=False)
-                manager.docker_manager.create_network.assert_called_once()
-    
-    def test_worktree_manager_start_worktree_network_creation_failure(self):
-        """Test WorktreeManager.start_worktree when network creation fails."""
-        with patch('dockertree.commands.worktree.DockerManager'), \
-             patch('dockertree.commands.worktree.GitManager'), \
-             patch('dockertree.commands.worktree.EnvironmentManager'), \
-             patch('dockertree.commands.worktree.get_project_root'):
-            
-            manager = WorktreeManager()
-            manager.docker_manager = Mock()
-            manager.git_manager = Mock()
-            manager.env_manager = Mock()
-            manager.project_root = Path("/test/project")
-            branch_name = "test-branch"
-            worktree_path = Path("/test/worktree")
-            
-            # Mock git manager methods
-            manager.git_manager.validate_worktree_exists.return_value = True
-            manager.git_manager.find_worktree_path.return_value = worktree_path
-            
-            # Mock all the validation functions to return success
-            with patch('dockertree.commands.worktree.get_compose_override_path', return_value=Path("/test/compose.yml")), \
-                 patch('dockertree.commands.worktree.get_worktree_branch_name', return_value=branch_name):
-                
-                # Mock the compose file to exist
-                with patch('pathlib.Path.exists', return_value=True):
-                    # Mock network creation to fail
-                    manager.docker_manager.create_worktree_volumes.return_value = True
-                    manager.docker_manager.create_network.return_value = False
-                    
-                    result = manager.start_worktree(branch_name)
-                
-                assert result == False  # Should fail if network creation fails
-                manager.git_manager.validate_worktree_exists.assert_called_once_with(branch_name)
-                manager.git_manager.find_worktree_path.assert_called_once_with(branch_name)
-                manager.docker_manager.create_worktree_volumes.assert_called_once_with(branch_name, force_copy=False)
-                manager.docker_manager.create_network.assert_called_once()
+    @patch('dockertree.commands.worktree.WorktreeOrchestrator')
+    def test_worktree_manager_start_worktree_success(self, orchestrator_cls):
+        """WorktreeManager delegates start_worktree to the orchestrator."""
+        orchestrator = Mock()
+        orchestrator.start_worktree.return_value = {
+            "success": True,
+            "data": {
+                "domain_name": "feature-auth.dockertree.test",
+                "caddy_configured": True,
+            },
+        }
+        orchestrator_cls.return_value = orchestrator
+
+        provided_root = Path("/tmp/project")
+        manager = WorktreeManager(project_root=provided_root)
+        result = manager.start_worktree("feature/auth")
+
+        assert result is True
+        orchestrator_cls.assert_called_once_with(provided_root.resolve())
+        orchestrator.start_worktree.assert_called_once_with("feature/auth", profile=None)
+
+    @patch('dockertree.commands.worktree.WorktreeOrchestrator')
+    def test_worktree_manager_start_worktree_failure(self, orchestrator_cls):
+        """WorktreeManager surfaces orchestrator failures."""
+        orchestrator = Mock()
+        orchestrator.start_worktree.return_value = {
+            "success": False,
+            "error": "Failed to start",
+        }
+        orchestrator_cls.return_value = orchestrator
+
+        manager = WorktreeManager(project_root=Path("/tmp/project"))
+        result = manager.start_worktree("feature/auth")
+
+        assert result is False
+        orchestrator.start_worktree.assert_called_once()

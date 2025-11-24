@@ -39,7 +39,8 @@ def test_compose_remote_script_with_domain_and_ip(tmp_path: Path):
         domain="app.example.com",
         ip=None,
     )
-    assert "--domain 'app.example.com'" in script_domain
+    assert '--domain' in script_domain
+    assert '"app.example.com"' in script_domain
 
     # IP case
     script_ip = pm._compose_remote_script(
@@ -48,7 +49,8 @@ def test_compose_remote_script_with_domain_and_ip(tmp_path: Path):
         domain=None,
         ip="203.0.113.10",
     )
-    assert "--ip '203.0.113.10'" in script_ip
+    assert '--ip' in script_ip
+    assert '"203.0.113.10"' in script_ip
 
 
 def test_compose_remote_script_non_interactive_flag(tmp_path: Path):

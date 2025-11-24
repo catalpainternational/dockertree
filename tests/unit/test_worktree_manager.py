@@ -13,18 +13,21 @@ class TestWorktreeManager:
     """Test WorktreeManager high-level functions."""
     
     @pytest.fixture
-    def worktree_manager(self):
+    def worktree_manager(self, tmp_path):
         """Create WorktreeManager instance with mocked dependencies."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        
         with patch('dockertree.commands.worktree.DockerManager'), \
              patch('dockertree.commands.worktree.GitManager'), \
              patch('dockertree.commands.worktree.EnvironmentManager'), \
-             patch('dockertree.commands.worktree.get_project_root'):
+             patch('dockertree.commands.worktree.get_project_root', return_value=project_root):
             
-            manager = WorktreeManager()
+            manager = WorktreeManager(project_root=project_root)
             manager.docker_manager = Mock()
             manager.git_manager = Mock()
             manager.env_manager = Mock()
-            manager.project_root = Path("/test/project")
+            manager.project_root = project_root
             return manager
     
     def test_create_worktree_empty_branch_name(self, worktree_manager):
@@ -40,7 +43,7 @@ class TestWorktreeManager:
     def test_create_worktree_existing_worktree(self, worktree_manager):
         """Test create_worktree when worktree already exists."""
         branch_name = "test-branch"
-        worktree_path = Path("/test/worktrees/test-branch")
+        worktree_path = worktree_manager.project_root / "worktrees" / "test-branch"
         
         worktree_manager.git_manager.validate_worktree_exists.return_value = True
         worktree_manager.git_manager.find_worktree_path.return_value = worktree_path
@@ -55,7 +58,7 @@ class TestWorktreeManager:
     def test_create_worktree_existing_worktree_user_confirms(self, mock_confirm, worktree_manager):
         """Test create_worktree when worktree exists and user confirms to use it."""
         branch_name = "test-branch"
-        worktree_path = Path("/test/worktrees/test-branch")
+        worktree_path = worktree_manager.project_root / "worktrees" / "test-branch"
         
         # Mock orchestrator to return already_exists status
         worktree_manager.orchestrator.create_worktree.return_value = {
@@ -77,7 +80,7 @@ class TestWorktreeManager:
     def test_create_worktree_existing_worktree_user_declines(self, mock_confirm, worktree_manager):
         """Test create_worktree when worktree exists and user declines to use it."""
         branch_name = "test-branch"
-        worktree_path = Path("/test/worktrees/test-branch")
+        worktree_path = worktree_manager.project_root / "worktrees" / "test-branch"
         
         # Mock orchestrator to return already_exists status
         worktree_manager.orchestrator.create_worktree.return_value = {
@@ -153,28 +156,28 @@ class TestWorktreeManager:
         assert result == False
         worktree_manager.git_manager.create_branch.assert_called_once_with(branch_name)
     
-    def test_create_worktree_success(self, worktree_manager):
+    @patch('dockertree.commands.worktree.WorktreeOrchestrator')
+    def test_create_worktree_success(self, mock_orchestrator_class, worktree_manager):
         """Test successful worktree creation."""
         branch_name = "test-branch"
-        new_path = Path("/test/worktrees/test-branch")
-        legacy_path = Path("/test/test-branch")
+        new_path = worktree_manager.project_root / "worktrees" / "test-branch"
         
-        worktree_manager.git_manager.validate_worktree_exists.return_value = False
-        worktree_manager.git_manager.validate_worktree_creation.return_value = (True, "")
-        worktree_manager.git_manager.create_branch.return_value = True
-        worktree_manager.git_manager.get_worktree_paths.return_value = (new_path, legacy_path)
-        worktree_manager.git_manager.create_worktree.return_value = True
-        worktree_manager.docker_manager.create_worktree_volumes.return_value = True
-        worktree_manager.env_manager.create_worktree_env.return_value = True
+        # Mock orchestrator
+        mock_orchestrator = Mock()
+        mock_orchestrator.create_worktree.return_value = {
+            'success': True,
+            'data': {
+                'branch': branch_name,
+                'worktree_path': str(new_path),
+                'status': 'created'
+            }
+        }
+        mock_orchestrator_class.return_value = mock_orchestrator
         
-        result = worktree_manager.create_worktree(branch_name)
+        result, result_data = worktree_manager.create_worktree(branch_name)
         
         assert result == True
-        worktree_manager.git_manager.create_branch.assert_called_once_with(branch_name)
-        worktree_manager.git_manager.get_worktree_paths.assert_called_once_with(branch_name)
-        worktree_manager.git_manager.create_worktree.assert_called_once_with(branch_name, new_path)
-        worktree_manager.docker_manager.create_worktree_volumes.assert_called_once_with(branch_name)
-        worktree_manager.env_manager.create_worktree_env.assert_called_once_with(branch_name, new_path)
+        mock_orchestrator.create_worktree.assert_called_once_with(branch_name)
     
     def test_start_worktree_nonexistent_worktree(self, worktree_manager):
         """Test start_worktree with non-existent worktree."""

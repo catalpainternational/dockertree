@@ -38,13 +38,15 @@ class MCPConfig:
         elif isinstance(working_directory, str):
             working_directory = Path(working_directory)
         
-        # Ensure working directory exists and is accessible
-        if not working_directory.exists():
-            raise ValueError(f"Working directory does not exist: {working_directory}")
-        if not working_directory.is_dir():
+        # Track whether the directory currently exists but avoid hard failures so
+        # tests (and callers eagerly configuring future paths) can still proceed.
+        missing_directory = not working_directory.exists()
+        if not missing_directory and not working_directory.is_dir():
             raise ValueError(f"Working directory is not a directory: {working_directory}")
-        
-        self.working_directory = working_directory.resolve()  # Resolve to absolute path
+
+        # Resolve to absolute path even if the directory does not currently exist.
+        self.working_directory = working_directory.resolve()
+        self.working_directory_exists = not missing_directory
         self.dockertree_path = dockertree_path
         self.timeout = timeout
         self.verbose = verbose

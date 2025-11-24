@@ -309,33 +309,32 @@ The system uses a fallback hierarchy:
 - **Domain Confirmation**: Requires typing domain name for DNS deletion (unless `--force`)
 - **Multiple Output Formats**: Table (default), JSON (`--as-json`), CSV (`--as-csv`)
 - **Domain Display**: Lists associated domains for each droplet in list output
+- **Helper Pipeline**: CLI helpers `_auto_detect_branch_name()`, `_resolve_droplet_name()`, and `_log_creation_context()` keep `droplet create` readable while centralizing branch detection, naming, and logging logic.
+- **Wrapper Integration**: All droplet CLI commands now use the shared `command_wrapper`, ensuring consistent prerequisite checks and JSON/human output without bespoke `try/except` blocks.
 
 **Dependencies**: DropletManager, DNSManager
 **External Interactions**: Digital Ocean API, droplet lifecycle management, DNS record management
 
 ### CLI Interface Layer
 
-#### DockertreeCLI (`cli.py`)
-**Responsibility**: Command-line interface and argument handling
+#### Modular CLI Surface (`cli.py` + `cli_commands/`)
+**Responsibility**: Provide a thin root CLI plus feature-specific registrars.
 
 **Key Features**:
-- Click-based command routing
-- Argument validation and parsing
-- Error handling and user feedback
-- Command aliases (`-D` for delete, `-r` for remove, `start` for start-proxy, `stop` for stop-proxy)
+- `dockertree/cli.py` now focuses solely on argument parsing (worktree-first transformations, passthrough detection, alias handling) and delegates real command registration to `register_all_commands`.
+- Each feature area registers its commands from `dockertree/cli_commands/<feature>.py` via a `register_commands(cli)` hook. Adding a new feature no longer bloats `cli.py`.
+- Shared decorators in `dockertree/cli/helpers.py` expose `add_verbose_option`, `add_json_option`, and a `command_wrapper` that performs prerequisite checks and formats results.
+- Commands raise `DockertreeCommandError` (from `dockertree/exceptions.py`) on failure; the wrapper converts these into consistent human and JSON responses.
 
-**Command Structure**:
+**Command Wrapper Flow**:
 ```python
-@cli.command('start-proxy')
-def start_proxy():
-    """Start global Caddy proxy container."""
-    # Implementation
-
-@cli.command('start')
-def start():
-    """Start global Caddy proxy container (alias for start-proxy)."""
-    # Implementation
+@command_wrapper(require_setup=True, require_prerequisites=True)
+def create(..., json: bool):
+    ...
+    if not success:
+        raise DockertreeCommandError("Failure message", error_code="create_failed")
 ```
+This eliminates duplicated `try/except` blocks and guarantees uniform output for both CLI users and MCP clients.
 
 ### Utilities Layer
 

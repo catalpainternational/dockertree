@@ -743,6 +743,33 @@ async def read_resource(uri: str) -> str:
         return json.dumps({"error": str(e)}, indent=2)
 
 
+class DockertreeMCPServer:
+    """
+    Backwards-compatible wrapper exposing the legacy MCP server class API.
+
+    The refactored module relies on module-level handlers registered against a
+    shared ``Server`` instance, but older tests (and some integrations) still
+    import ``DockertreeMCPServer``. This lightweight adapter recreates the
+    attributes those callers expect without altering the runtime wiring.
+    """
+
+    def __init__(self, config: Optional[MCPConfig] = None):
+        self.config = config or MCPConfig()
+        self.server = server
+
+        # Historical attributes verified by tests/integrations.
+        self.worktree_tools = WorktreeTools(self.config)
+        self.volume_tools = VolumeTools(self.config)
+        self.caddy_tools = CaddyTools(self.config)
+        self.package_tools = PackageTools()
+        self.push_tools = PushTools(self.config)
+        self.worktree_resources = WorktreeResources(self.config)
+
+        # Provide easy access to the registration helpers for assertions.
+        self._list_tools = getattr(self.server, "list_tools", None)
+        self._list_resources = getattr(self.server, "list_resources", None)
+
+
 async def main():
     """Main entry point for the MCP server."""
     async with stdio_server() as (read_stream, write_stream):

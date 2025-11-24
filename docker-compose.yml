@@ -1,8 +1,11 @@
+version: '3.8'
+
 services:
   web:
-    environment:
-      CUSTOM_VAR: custom_value
-      DEBUG: 'False'
-      PORT: '8080'
     image: nginx:alpine
-version: '3.8'
+    ports:
+      - "8000:80"
+    volumes:
+      - ./:/app
+    environment:
+      - DEBUG=True

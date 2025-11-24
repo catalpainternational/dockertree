@@ -1,0 +1,31 @@
+"""
+CLI command registration entry points.
+"""
+
+from __future__ import annotations
+
+from typing import Callable, List
+
+
+def register_all_commands(cli) -> None:
+    """Register every command group with the root CLI instance."""
+    for register in _collect_registrars():
+        register(cli)
+
+
+def _collect_registrars() -> List[Callable]:
+    from . import completion, domains, droplets, packages, passthrough, proxy, setup, volumes, worktrees
+
+    return [
+        proxy.register_commands,
+        worktrees.register_commands,
+        volumes.register_commands,
+        droplets.register_commands,
+        domains.register_commands,
+        packages.register_commands,
+        setup.register_commands,
+        completion.register_commands,
+        passthrough.register_commands,
+    ]
+
+
