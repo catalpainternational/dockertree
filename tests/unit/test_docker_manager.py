@@ -220,7 +220,9 @@ class TestDockerManager:
             result = docker_manager.backup_volumes(branch_name, backup_dir)
         
         assert result is not None
-        assert result.name.startswith("backup_test-branch_")
+        # The backup filename format is backup_<branch>.tar
+        assert result.name.startswith("backup_test-branch")
+        assert result.name.endswith(".tar")
         assert result.suffix == ".tar"
         mock_get_volume_names.assert_called_once_with(branch_name)
     
@@ -238,13 +240,44 @@ class TestDockerManager:
         }
         mock_run.return_value = Mock(returncode=0)
         
-        # Mock the restore process
-        with patch('pathlib.Path.exists', return_value=True), \
+        # Mock the restore process - need to mock _is_worktree_running and Path operations
+        # Create a proper mock for restore_temp_dir that supports / operator
+        from unittest.mock import MagicMock
+        mock_restore_dir = MagicMock(spec=Path)
+        mock_restore_dir.glob.return_value = []  # No nested backups found
+        mock_restore_dir.absolute.return_value = Path("/test/restore_temp")
+        mock_restore_dir.stat.return_value = Mock(st_size=1024 * 1024)
+        mock_restore_dir.mkdir.return_value = None
+        # Make restore_dir support / operator for volume backup paths
+        def mock_restore_truediv(self, other):
+            # Return a mock path for volume backup files
+            mock_vol_backup = Mock(spec=Path)
+            mock_vol_backup.exists.return_value = False  # No backup files found
+            return mock_vol_backup
+        mock_restore_dir.__truediv__ = mock_restore_truediv
+        
+        # Mock backup_file.parent to support the / operator
+        mock_backup_parent = MagicMock()
+        # When parent / "restore_temp" is called, return our mock_restore_dir
+        def mock_truediv(self, other):
+            if other == "restore_temp":
+                return mock_restore_dir
+            return Path(str(self) + "/" + str(other))
+        mock_backup_parent.__truediv__ = mock_truediv
+        
+        # Mock backup_file as a Mock so we can control its parent
+        mock_backup_file = Mock(spec=Path)
+        mock_backup_file.exists.return_value = True
+        mock_backup_file.stat.return_value = Mock(st_size=1024 * 1024)
+        mock_backup_file.name = 'backup.tar'
+        mock_backup_file.parent = mock_backup_parent
+        
+        with patch.object(docker_manager, '_is_worktree_running', return_value=False), \
              patch('pathlib.Path.unlink'), \
-             patch('pathlib.Path.mkdir'), \
-             patch('shutil.rmtree'):
+             patch('shutil.rmtree'), \
+             patch('subprocess.run', return_value=Mock(returncode=0, stderr='', stdout='')):
             
-            result = docker_manager.restore_volumes(branch_name, backup_file)
+            result = docker_manager.restore_volumes(branch_name, mock_backup_file)
         
         assert result == True
         mock_get_volume_names.assert_called_once_with(branch_name)

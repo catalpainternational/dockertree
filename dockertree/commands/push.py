@@ -1474,10 +1474,8 @@ log_success "VPC firewall configuration completed"
                 text=True
             )
             
-            process.stdin.write(script)
-            process.stdin.close()
-            
-            stdout, stderr = process.communicate(timeout=60)
+            # Use communicate() with input to avoid I/O errors from closing stdin manually
+            stdout, stderr = process.communicate(input=script, timeout=60)
             
             if process.returncode == 0:
                 log_success("VPC firewall configuration completed successfully")

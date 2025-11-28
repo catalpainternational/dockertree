@@ -72,8 +72,8 @@ class TestGitManager:
         
         result = git_manager.create_branch(branch_name)
         
-        assert result == True
-        mock_validate.assert_called_once_with(branch_name)
+        assert result is True
+        mock_validate.assert_called_once_with(branch_name, git_manager.project_root)
         mock_run.assert_not_called()
     
     @patch('dockertree.core.git_manager.validate_branch_exists')
@@ -86,8 +86,8 @@ class TestGitManager:
         
         result = git_manager.create_branch(branch_name)
         
-        assert result == True
-        mock_validate.assert_called_once_with(branch_name)
+        assert result is True
+        mock_validate.assert_called_once_with(branch_name, git_manager.project_root)
         mock_run.assert_called_once_with(
             ["git", "branch", branch_name],
             capture_output=True,
@@ -105,8 +105,8 @@ class TestGitManager:
         
         result = git_manager.create_branch(branch_name)
         
-        assert result == False
-        mock_validate.assert_called_once_with(branch_name)
+        assert result is False
+        mock_validate.assert_called_once_with(branch_name, git_manager.project_root)
         mock_run.assert_called_once_with(
             ["git", "branch", branch_name],
             capture_output=True,
@@ -126,11 +126,12 @@ class TestGitManager:
         
         # Mock path operations
         with patch.object(Path, 'mkdir', return_value=None):
-            result = git_manager.create_worktree(branch_name, worktree_path)
+            success, error = git_manager.create_worktree(branch_name, worktree_path)
         
-        assert result == True
+        assert success is True
+        assert error is None
         assert mock_run.call_count == 2  # create branch + create worktree
-        mock_validate.assert_called_once_with(branch_name)
+        mock_validate.assert_called_once_with(branch_name, git_manager.project_root)
     
     @patch('dockertree.core.git_manager.validate_branch_exists')
     @patch('subprocess.run')
@@ -144,30 +145,33 @@ class TestGitManager:
         
         # Mock path operations
         with patch.object(Path, 'mkdir', return_value=None):
-            result = git_manager.create_worktree(branch_name, worktree_path)
+            success, error = git_manager.create_worktree(branch_name, worktree_path)
         
-        assert result == True
+        assert success is True
+        assert error is None
         assert mock_run.call_count == 1  # only create worktree
-        mock_validate.assert_called_once_with(branch_name)
+        mock_validate.assert_called_once_with(branch_name, git_manager.project_root)
     
+    @patch('dockertree.core.git_manager.validate_branch_exists')
     @patch('subprocess.run')
-    def test_create_worktree_failure(self, mock_run, git_manager):
+    def test_create_worktree_failure(self, mock_run, mock_validate, git_manager):
         """Test worktree creation failure."""
         branch_name = "test-branch"
         worktree_path = Path("/test/worktrees/test-branch")
         
-        # Mock validate_branch_exists call and worktree creation failure
-        mock_run.side_effect = [
-            Mock(returncode=0),  # validate_branch_exists
-            subprocess.CalledProcessError(1, "git", "Worktree creation failed")  # worktree creation
-        ]
+        mock_validate.return_value = True
+        # Mock worktree creation failure - need to provide stderr as bytes or string
+        error = subprocess.CalledProcessError(1, "git", "Worktree creation failed")
+        error.stderr = b"Worktree creation failed"
+        mock_run.side_effect = error
         
         # Mock path operations
         with patch.object(Path, 'mkdir', return_value=None):
-            result = git_manager.create_worktree(branch_name, worktree_path)
+            success, error_type = git_manager.create_worktree(branch_name, worktree_path)
         
-        assert result == False
-        assert mock_run.call_count == 2
+        assert success is False
+        assert error_type is not None
+        assert mock_run.call_count == 1
     
     @patch('subprocess.run')
     def test_remove_worktree_success(self, mock_run, git_manager):
@@ -177,11 +181,11 @@ class TestGitManager:
         
         result = git_manager.remove_worktree(worktree_path)
         
-        assert result == True
+        assert result is True
         mock_run.assert_called_once_with(
             ["git", "worktree", "remove", str(worktree_path)],
             capture_output=True,
-            check=True,
+            text=True,
             cwd=git_manager.project_root
         )
     
@@ -193,11 +197,11 @@ class TestGitManager:
         
         result = git_manager.remove_worktree(worktree_path, force=True)
         
-        assert result == True
+        assert result is True
         mock_run.assert_called_once_with(
             ["git", "worktree", "remove", "--force", str(worktree_path)],
             capture_output=True,
-            check=True,
+            text=True,
             cwd=git_manager.project_root
         )
     
@@ -267,26 +271,26 @@ class TestGitManager:
         mock_run.assert_called_once()
     
     @patch('dockertree.core.git_manager.validate_worktree_exists')
-    def test_validate_worktree_exists_true(self, mock_validate, git_manager):
+    def test_validate_worktree_exists_true(self, mock_validate_func, git_manager):
         """Test worktree existence validation when worktree exists."""
         branch_name = "test-branch"
-        mock_validate.return_value = True
+        mock_validate_func.return_value = True
         
         result = git_manager.validate_worktree_exists(branch_name)
         
-        assert result == True
-        mock_validate.assert_called_once_with(branch_name)
+        assert result is True
+        mock_validate_func.assert_called_once_with(branch_name, git_manager.project_root)
     
     @patch('dockertree.core.git_manager.validate_worktree_exists')
-    def test_validate_worktree_exists_false(self, mock_validate, git_manager):
+    def test_validate_worktree_exists_false(self, mock_validate_func, git_manager):
         """Test worktree existence validation when worktree doesn't exist."""
         branch_name = "test-branch"
-        mock_validate.return_value = False
+        mock_validate_func.return_value = False
         
         result = git_manager.validate_worktree_exists(branch_name)
         
-        assert result == False
-        mock_validate.assert_called_once_with(branch_name)
+        assert result is False
+        mock_validate_func.assert_called_once_with(branch_name, git_manager.project_root)
     
     @patch('subprocess.run')
     def test_find_worktree_path_success(self, mock_run, git_manager):
@@ -346,9 +350,9 @@ class TestGitManager:
         
         can_create, error_msg = git_manager.validate_worktree_creation(branch_name)
         
-        assert can_create == True
+        assert can_create is True
         assert error_msg == ""
-        mock_exists.assert_called_once_with(branch_name)
+        mock_exists.assert_called_once_with(branch_name, git_manager.project_root)
         mock_current.assert_called_once()
         mock_protection.assert_called_once_with(branch_name)
     
@@ -388,26 +392,35 @@ class TestGitManager:
     
     @patch('dockertree.core.git_manager.validate_branch_merged')
     @patch('dockertree.core.git_manager.validate_branch_protection')
+    @patch('dockertree.core.git_manager.validate_branch_exists')
+    @patch('dockertree.core.git_manager.validate_current_branch')
     @patch('subprocess.run')
-    def test_delete_branch_safely_merged(self, mock_run, mock_protection, mock_merged, git_manager):
+    def test_delete_branch_safely_merged(self, mock_run, mock_current, mock_exists, mock_protection, mock_merged, git_manager):
         """Test safe branch deletion when branch is merged."""
         branch_name = "merged-branch"
         
+        mock_exists.return_value = True
         mock_protection.return_value = False
         mock_merged.return_value = True
-        # Mock get_current_branch call, validate_branch_merged call, and delete branch call
-        mock_run.side_effect = [
-            Mock(returncode=0, stdout="main"),  # get_current_branch
-            Mock(returncode=0),  # validate_branch_merged (git branch -d)
-            Mock(returncode=0)  # delete branch with -d
-        ]
+        mock_current.return_value = "main"
+        # Mock delete branch call
+        mock_run.return_value = Mock(returncode=0)
         
         result = git_manager.delete_branch_safely(branch_name)
         
-        assert result == True
+        assert result is True
+        mock_exists.assert_called_once_with(branch_name, git_manager.project_root)
         mock_protection.assert_called_once_with(branch_name)
-        mock_merged.assert_called_once_with(branch_name)
-        assert mock_run.call_count == 3
+        mock_merged.assert_called_once_with(branch_name, git_manager.project_root)
+        # Should be called once for delete (validate_branch_exists doesn't use subprocess.run)
+        assert mock_run.call_count == 1
+        # Check that the call was the delete
+        mock_run.assert_called_once_with(
+            ["git", "branch", "-d", branch_name],
+            capture_output=True,
+            check=True,
+            cwd=git_manager.project_root
+        )
     
     @patch('dockertree.core.git_manager.validate_branch_protection')
     @patch('subprocess.run')

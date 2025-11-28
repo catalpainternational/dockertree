@@ -373,7 +373,9 @@ class PackageManager:
                 }
             
             # Restore environment files
-            env_success = self._restore_environment_files(package_dir, worktree_path)
+            # Preserve domain settings if domain/IP is provided (safety net)
+            preserve_domain = domain is not None or ip is not None
+            env_success = self._restore_environment_files(package_dir, worktree_path, preserve_domain_settings=preserve_domain)
             if not env_success:
                 log_warning("Failed to restore some environment files")
             
@@ -386,14 +388,33 @@ class PackageManager:
             # This must happen AFTER environment files are restored so the compose file exists
             if domain:
                 log_info(f"Applying domain overrides: {domain}")
+                log_info(f"Worktree path: {worktree_path}")
                 success = self.env_manager.apply_domain_overrides(worktree_path, domain)
                 if not success:
-                    log_warning(f"Failed to apply domain overrides to worktree. Manual intervention may be required.")
+                    log_error(f"Failed to apply domain overrides to worktree at {worktree_path}")
+                    log_error(f"This may cause containers to use localhost domain instead of {domain}")
+                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
+                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set domain to {domain}")
+                else:
+                    # Verify domain configuration was applied correctly
+                    log_info("Verifying domain configuration...")
+                    verification = self.env_manager.verify_domain_configuration(worktree_path, domain)
+                    if verification.get("compose_labels") and verification.get("env_variables"):
+                        log_success("Domain configuration verified: compose labels and env variables updated correctly")
+                    else:
+                        if not verification.get("compose_labels"):
+                            log_warning("Domain configuration verification: compose labels not found or incorrect")
+                        if not verification.get("env_variables"):
+                            log_warning("Domain configuration verification: env variables not found or incorrect")
             elif ip:
                 log_info(f"Applying IP overrides: {ip}")
+                log_info(f"Worktree path: {worktree_path}")
                 success = self.env_manager.apply_ip_overrides(worktree_path, ip)
                 if not success:
-                    log_warning(f"Failed to apply IP overrides to worktree. Manual intervention may be required.")
+                    log_error(f"Failed to apply IP overrides to worktree at {worktree_path}")
+                    log_error(f"This may cause containers to use localhost domain instead of {ip}")
+                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
+                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set IP to {ip}")
             
             # Restore volumes if requested
             # restore_volumes() handles stopping containers safely before restore
@@ -504,6 +525,10 @@ class PackageManager:
             # Initialize dockertree setup
             log_info("Initializing dockertree configuration...")
             original_project_name = metadata.get("project_name")
+            if original_project_name:
+                log_info(f"Using project name from package metadata: {original_project_name}")
+            else:
+                log_warning("No project name in package metadata, will use directory name")
             from ..commands.setup import SetupManager
             setup_manager = SetupManager(project_root=target_directory)
             if not setup_manager.setup_project(project_name=original_project_name, domain=domain, ip=ip, non_interactive=non_interactive):
@@ -512,10 +537,20 @@ class PackageManager:
                     "error": "Failed to initialize dockertree setup"
                 }
             
+            # Verify project name was set correctly
+            from ..config.settings import get_project_name
+            actual_project_name = get_project_name()
+            log_info(f"Project name after setup: {actual_project_name}")
+            if original_project_name and actual_project_name != original_project_name:
+                log_warning(f"Project name mismatch: expected {original_project_name}, got {actual_project_name}")
+                log_warning("This may cause volume name mismatches")
+            
             # Restore environment files
             # NOTE: This restores files from package, which may overwrite domain/IP settings
             # We'll re-apply domain/IP overrides after worktree creation
-            self._restore_environment_files(package_dir, target_directory)
+            # Preserve domain settings if domain/IP is provided (safety net)
+            preserve_domain = domain is not None or ip is not None
+            self._restore_environment_files(package_dir, target_directory, preserve_domain_settings=preserve_domain)
             
             # Configure worker environment if metadata indicates worker deployment
             if metadata.get('vpc_deployment', {}).get('is_worker'):
@@ -541,16 +576,36 @@ class PackageManager:
                             env_manager = EnvironmentManager(project_root=target_directory)
                             if domain:
                                 log_info(f"Applying domain overrides to worktree: {domain}")
+                                log_info(f"Worktree path: {worktree_path}")
                                 success = env_manager.apply_domain_overrides(worktree_path, domain)
                                 if not success:
-                                    log_warning(f"Failed to apply domain overrides to worktree. Manual intervention may be required.")
+                                    log_error(f"Failed to apply domain overrides to worktree at {worktree_path}")
+                                    log_error(f"This may cause containers to use localhost domain instead of {domain}")
+                                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
+                                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set domain to {domain}")
+                                else:
+                                    # Verify domain configuration was applied correctly
+                                    log_info("Verifying domain configuration...")
+                                    verification = env_manager.verify_domain_configuration(worktree_path, domain)
+                                    if verification.get("compose_labels") and verification.get("env_variables"):
+                                        log_success("Domain configuration verified: compose labels and env variables updated correctly")
+                                    else:
+                                        if not verification.get("compose_labels"):
+                                            log_warning("Domain configuration verification: compose labels not found or incorrect")
+                                        if not verification.get("env_variables"):
+                                            log_warning("Domain configuration verification: env variables not found or incorrect")
                             elif ip:
                                 log_info(f"Applying IP overrides to worktree: {ip}")
+                                log_info(f"Worktree path: {worktree_path}")
                                 success = env_manager.apply_ip_overrides(worktree_path, ip)
                                 if not success:
-                                    log_warning(f"Failed to apply IP overrides to worktree. Manual intervention may be required.")
+                                    log_error(f"Failed to apply IP overrides to worktree at {worktree_path}")
+                                    log_error(f"This may cause containers to use localhost domain instead of {ip}")
+                                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
+                                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set IP to {ip}")
                         else:
-                            log_warning(f"Worktree path not found: {worktree_path}. Cannot apply domain/IP overrides.")
+                            log_error(f"Worktree path not found: {worktree_path}. Cannot apply domain/IP overrides.")
+                            log_error(f"Domain/IP override will not be applied - deployment may fail.")
             
             # Restore volumes if requested
             # IMPORTANT: Stop any running containers first to ensure volumes can be restored safely.
@@ -1178,8 +1233,15 @@ class PackageManager:
             log_error(f"Failed to update worker environment: {e}")
             return False
     
-    def _restore_environment_files(self, package_dir: Path, worktree_path: Path) -> bool:
-        """Restore environment files from package to worktree."""
+    def _restore_environment_files(self, package_dir: Path, worktree_path: Path, preserve_domain_settings: bool = False) -> bool:
+        """Restore environment files from package to worktree.
+        
+        Args:
+            package_dir: Directory containing package files
+            worktree_path: Path to worktree directory
+            preserve_domain_settings: If True, preserve compose file if it has domain/IP settings
+                                      (used when domain/IP override will be applied after restore)
+        """
         try:
             env_dir = package_dir / "environment"
             if not env_dir.exists():
@@ -1194,9 +1256,64 @@ class PackageManager:
             dockertree_src = env_dir / ".dockertree"
             dockertree_dst = worktree_path / ".dockertree"
             if dockertree_src.exists():
+                # If preserving domain settings, check if existing compose file has domain/IP labels
+                existing_compose_file = dockertree_dst / "docker-compose.worktree.yml"
+                preserve_compose = False
+                if preserve_domain_settings and existing_compose_file.exists():
+                    try:
+                        import yaml
+                        with open(existing_compose_file) as f:
+                            existing_data = yaml.safe_load(f) or {}
+                        # Check if compose file has domain/IP in labels (not localhost)
+                        if 'services' in existing_data:
+                            for svc_config in existing_data['services'].values():
+                                if 'labels' in svc_config:
+                                    labels = svc_config['labels']
+                                    if isinstance(labels, list):
+                                        for label in labels:
+                                            if isinstance(label, str) and 'caddy.proxy=' in label:
+                                                if '.localhost' not in label and 'localhost' not in label.lower():
+                                                    preserve_compose = True
+                                                    log_info("Preserving existing compose file with domain/IP settings")
+                                                    break
+                                    elif isinstance(labels, dict):
+                                        proxy_val = labels.get('caddy.proxy', '')
+                                        if '.localhost' not in str(proxy_val) and 'localhost' not in str(proxy_val).lower():
+                                            preserve_compose = True
+                                            log_info("Preserving existing compose file with domain/IP settings")
+                                            break
+                                if preserve_compose:
+                                    break
+                    except Exception:
+                        # If we can't read the file, don't preserve it
+                        pass
+                
+                backup_compose_path = None
                 if dockertree_dst.exists():
+                    # If preserving compose, backup it first
+                    if preserve_compose and existing_compose_file.exists():
+                        import tempfile
+                        backup_compose = tempfile.NamedTemporaryFile(delete=False, suffix='.yml')
+                        backup_compose_path = backup_compose.name
+                        backup_compose.close()
+                        shutil.copy2(existing_compose_file, backup_compose_path)
+                        log_info(f"Backed up existing compose file before restore")
+                    
                     shutil.rmtree(dockertree_dst)
+                
                 shutil.copytree(dockertree_src, dockertree_dst)
+                
+                # Restore preserved compose file if we backed it up
+                if preserve_compose and backup_compose_path:
+                    try:
+                        restored_compose_file = dockertree_dst / "docker-compose.worktree.yml"
+                        shutil.copy2(backup_compose_path, restored_compose_file)
+                        log_info("Restored preserved compose file with domain/IP settings")
+                        os.unlink(backup_compose_path)
+                    except Exception as e:
+                        log_warning(f"Failed to restore preserved compose file: {e}")
+                        if backup_compose_path and os.path.exists(backup_compose_path):
+                            os.unlink(backup_compose_path)
             
             # Check for filtered compose file and use it if available
             filtered_compose_file = dockertree_dst / "docker-compose.worktree.filtered.yml"

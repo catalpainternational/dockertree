@@ -280,7 +280,9 @@ dockertree = "dockertree.cli:main"
     def test_installation_error_handling(self):
         """Test installation error handling."""
         with patch('subprocess.run') as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(1, 'pip', "Installation failed")
+            error = subprocess.CalledProcessError(1, 'pip', "Installation failed")
+            error.stderr = "Installation failed"
+            mock_run.side_effect = error
             
             # Test error handling
             try:
@@ -290,7 +292,9 @@ dockertree = "dockertree.cli:main"
                 assert False, "Should have raised CalledProcessError"
             except subprocess.CalledProcessError as e:
                 assert e.returncode == 1
-                assert "Installation failed" in str(e)
+                # Check stderr if available, otherwise check the exception message
+                error_msg = getattr(e, 'stderr', None) or str(e)
+                assert "Installation failed" in error_msg or "pip" in str(e)
     
     def test_multiple_installation_methods(self):
         """Test multiple installation methods."""

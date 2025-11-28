@@ -6,15 +6,17 @@ configuration management for worktree environments.
 """
 
 import os
+import socket
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
 from ..config.settings import (
     generate_env_compose_content, 
     get_volume_names,
     DEFAULT_ENV_VARS,
     get_project_root,
-    get_worktree_paths
+    get_worktree_paths,
+    get_worktree_dir,
 )
 from ..utils.logging import log_info, log_success, log_warning
 from ..utils.path_utils import (
@@ -23,6 +25,12 @@ from ..utils.path_utils import (
     copy_env_file
 )
 from ..core.dns_manager import is_domain
+
+HOST_PORT_RANGES: Dict[str, tuple[int, int]] = {
+    "DOCKERTREE_DB_HOST_PORT": (55432, 56431),
+    "DOCKERTREE_REDIS_HOST_PORT": (56379, 57378),
+    "DOCKERTREE_WEB_HOST_PORT": (58000, 58999),
+}
 
 
 class EnvironmentManager:
@@ -40,6 +48,130 @@ class EnvironmentManager:
             self.project_root = get_project_root()
         else:
             self.project_root = Path(project_root).resolve()
+
+    def _build_host_port_section(self, branch_name: str) -> str:
+        """Build host port assignments for env.dockertree."""
+        host_ports = self._calculate_host_ports(branch_name)
+        if not host_ports:
+            return ""
+        lines = [f"{var}={value}" for var, value in host_ports.items()]
+        return "\n".join(lines) + "\n"
+
+    def _calculate_host_ports(self, branch_name: str) -> Dict[str, int]:
+        """Assign deterministic host ports for key services."""
+        used_ports = self._collect_used_host_ports()
+        existing_ports = self._read_existing_host_ports(branch_name)
+
+        # Reserve existing ports so we don't reassign them
+        for var, value in existing_ports.items():
+            used_ports.setdefault(var, set()).add(value)
+
+        assigned: Dict[str, int] = {}
+        for var, port_range in HOST_PORT_RANGES.items():
+            if var in existing_ports:
+                assigned[var] = existing_ports[var]
+                continue
+
+            allocated = self._allocate_host_port(var, used_ports.get(var, set()), port_range, branch_name)
+            assigned[var] = allocated
+            if allocated > 0:
+                used_ports.setdefault(var, set()).add(allocated)
+
+        return assigned
+
+    def _collect_used_host_ports(self) -> Dict[str, Set[int]]:
+        """Scan existing worktrees to understand which host ports are taken."""
+        used: Dict[str, Set[int]] = {var: set() for var in HOST_PORT_RANGES}
+        directories_to_scan = []
+
+        worktree_root = self.project_root / get_worktree_dir()
+        if worktree_root.exists():
+            directories_to_scan.append(worktree_root)
+
+        legacy_root = self.project_root.parent
+        if legacy_root.exists():
+            directories_to_scan.append(legacy_root)
+
+        for root in directories_to_scan:
+            for candidate in root.iterdir():
+                if not candidate.is_dir():
+                    continue
+                env_file = candidate / ".dockertree" / "env.dockertree"
+                env_ports = self._extract_host_ports(env_file)
+                for var, value in env_ports.items():
+                    used.setdefault(var, set()).add(value)
+
+        return used
+
+    def _read_existing_host_ports(self, branch_name: str) -> Dict[str, int]:
+        """Read previously assigned host ports for a branch if env.dockertree exists."""
+        host_ports: Dict[str, int] = {}
+        worktree_path = self.project_root / get_worktree_dir() / branch_name
+        legacy_path = self.project_root.parent / branch_name
+
+        env_path = get_env_compose_file_path(worktree_path)
+        if not env_path.exists() and legacy_path.exists():
+            env_path = get_env_compose_file_path(legacy_path)
+
+        host_ports.update(self._extract_host_ports(env_path))
+        return host_ports
+
+    def _extract_host_ports(self, env_path: Path) -> Dict[str, int]:
+        """Extract host port values from an env.dockertree file."""
+        from ..utils.env_loader import load_env_file
+
+        if not env_path.exists():
+            return {}
+
+        try:
+            env_vars = load_env_file(env_path)
+        except Exception:
+            return {}
+
+        extracted: Dict[str, int] = {}
+        for var in HOST_PORT_RANGES.keys():
+            raw_value = env_vars.get(var)
+            if raw_value is None:
+                continue
+            try:
+                value = int(raw_value)
+            except (TypeError, ValueError):
+                continue
+            extracted[var] = value
+        return extracted
+
+    def _allocate_host_port(
+        self,
+        var_name: str,
+        used_ports: Set[int],
+        port_range: tuple[int, int],
+        branch_name: str,
+    ) -> int:
+        """Find the first available host port in the configured range."""
+        start, end = port_range
+        for port in range(start, end + 1):
+            if port in used_ports:
+                continue
+            if self._is_port_available(port):
+                log_info(f"Assigned {var_name}={port} for branch {branch_name}")
+                return port
+
+        log_warning(
+            f"No free ports available in range {start}-{end} for {var_name}. "
+            "Falling back to Docker auto-assignment."
+        )
+        return 0
+
+    @staticmethod
+    def _is_port_available(port: int) -> bool:
+        """Check if a host port is available on the current machine."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("", port))
+            except OSError:
+                return False
+        return True
     
     def create_worktree_env(self, branch_name: str, worktree_path: Path, 
                            source_env_path: Optional[Path] = None,
@@ -204,7 +336,7 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
         site_domain = f"{compose_project_name}.localhost"  # RFC-compliant hostname
         allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
         
-        return f"""# Dockertree environment configuration for {branch_name}
+        base_content = f"""# Dockertree environment configuration for {branch_name}
 COMPOSE_PROJECT_NAME={compose_project_name}
 PROJECT_ROOT={self.project_root}
 SITE_DOMAIN={site_domain}
@@ -213,6 +345,10 @@ DEBUG=True
 USE_X_FORWARDED_HOST=True
 CSRF_TRUSTED_ORIGINS=http://{site_domain}
 """
+        host_port_section = self._build_host_port_section(branch_name)
+        if host_port_section:
+            base_content = f"{base_content}\n{host_port_section}"
+        return base_content
     
     def get_worktree_volume_names(self, branch_name: str) -> Dict[str, str]:
         """Get worktree-specific volume names."""
@@ -370,7 +506,8 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
             Database URL in format: postgres://user:password@host:port/database
         """
         from ..config.settings import get_project_name, sanitize_project_name
-        from ..utils.env_loader import get_env_compose_file_path, load_env_file
+        from ..utils.path_utils import get_env_compose_file_path
+        from ..utils.env_loader import load_env_file
         
         # Get environment variables from worktree's env.dockertree file
         worktree_path, _ = get_worktree_paths(branch_name)
@@ -551,7 +688,7 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
         # Determine secure cookie setting
         use_secure_cookies = self._should_use_secure_cookies(site_domain)
         
-        return f"""# Dockertree environment configuration for {branch_name}
+        base_content = f"""# Dockertree environment configuration for {branch_name}
 # Domain override: {domain}
 COMPOSE_PROJECT_NAME={compose_project_name}
 PROJECT_ROOT={project_root}
@@ -563,6 +700,10 @@ CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
 USE_SECURE_COOKIES={str(use_secure_cookies)}
 CADDY_EMAIL={caddy_email}
 """
+        host_port_section = self._build_host_port_section(branch_name)
+        if host_port_section:
+            base_content = f"{base_content}\n{host_port_section}"
+        return base_content
     
     def apply_domain_overrides(self, worktree_path: Path, domain: str) -> bool:
         """Apply domain overrides to existing environment files.
@@ -817,21 +958,121 @@ CADDY_EMAIL={caddy_email}
                             compose_file.write_text(yaml_content)
                             log_info(f"Updated docker-compose.worktree.yml with domain: {domain}")
                             log_info(f"Caddy will route {domain} to containers when they start")
+                            
+                            # Verify the update was successful by reading back the file
+                            verify_content = compose_file.read_text()
+                            verify_data = yaml.safe_load(verify_content)
+                            if verify_data and 'services' in verify_data:
+                                verification_passed = False
+                                for svc_name, svc_config in verify_data['services'].items():
+                                    if 'labels' in svc_config:
+                                        labels = svc_config['labels']
+                                        if isinstance(labels, list):
+                                            for label in labels:
+                                                if isinstance(label, str) and 'caddy.proxy=' in label and domain in label:
+                                                    verification_passed = True
+                                                    break
+                                        elif isinstance(labels, dict):
+                                            if labels.get('caddy.proxy') == domain:
+                                                verification_passed = True
+                                                break
+                                    if verification_passed:
+                                        break
+                                
+                                if not verification_passed:
+                                    log_warning(f"Domain override verification failed: labels may not have been updated correctly")
+                                    log_warning(f"Please manually verify docker-compose.worktree.yml contains 'caddy.proxy={domain}'")
+                                    # Don't return False here - file was written, verification is just a check
+                                else:
+                                    log_info(f"Verified: Caddy labels updated successfully to use domain {domain}")
                         elif services_checked > 0:
                             log_warning(f"No Caddy labels found to update in docker-compose.worktree.yml (checked {services_checked} service(s))")
+                            log_warning(f"This may indicate the compose file doesn't have Caddy labels configured")
+                            log_warning(f"Expected labels like 'caddy.proxy=${COMPOSE_PROJECT_NAME}.localhost' for web services")
+                            # This is a warning, not necessarily a failure - compose file may not use Caddy labels
                         else:
                             log_warning(f"No services found in docker-compose.worktree.yml")
                 except Exception as e:
                     log_warning(f"Failed to update docker-compose.worktree.yml: {e}")
                     import traceback
                     log_warning(f"Traceback: {traceback.format_exc()}")
+                    # Don't return False here - env files may have been updated successfully
+                    # Compose file update failure is a warning, not a complete failure
             
+            # Return True if we successfully updated env files (compose file update is optional)
+            # Env files are the critical part for domain override
             return True
             
         except Exception as e:
             log_warning(f"Failed to apply domain overrides: {e}")
             return False
 
+    def verify_domain_configuration(self, worktree_path: Path, domain: str) -> Dict[str, bool]:
+        """Verify domain configuration is correct after deployment.
+        
+        Args:
+            worktree_path: Path to worktree directory
+            domain: Expected domain
+            
+        Returns:
+            Dictionary with verification results for each check
+        """
+        results = {
+            "compose_labels": False,
+            "env_variables": False,
+        }
+        
+        try:
+            # Check compose file labels
+            from ..utils.path_utils import get_compose_override_path
+            compose_file = get_compose_override_path(worktree_path)
+            if compose_file and compose_file.exists():
+                import yaml
+                compose_content = compose_file.read_text()
+                compose_data = yaml.safe_load(compose_content)
+                if compose_data and 'services' in compose_data:
+                    for svc_config in compose_data['services'].values():
+                        if 'labels' in svc_config:
+                            labels = svc_config['labels']
+                            if isinstance(labels, list):
+                                for label in labels:
+                                    if isinstance(label, str) and 'caddy.proxy=' in label and domain in label:
+                                        results["compose_labels"] = True
+                                        break
+                            elif isinstance(labels, dict):
+                                if labels.get('caddy.proxy') == domain:
+                                    results["compose_labels"] = True
+                                    break
+                        if results["compose_labels"]:
+                            break
+            
+            # Check env.dockertree variables
+            env_dockertree = get_env_compose_file_path(worktree_path)
+            if env_dockertree.exists():
+                content = env_dockertree.read_text()
+                # Check if domain is in ALLOWED_HOSTS
+                if 'ALLOWED_HOSTS=' in content:
+                    for line in content.splitlines():
+                        if line.startswith('ALLOWED_HOSTS='):
+                            allowed_hosts = line.split('=', 1)[1].strip().strip('"\'')
+                            if domain in allowed_hosts:
+                                results["env_variables"] = True
+                                break
+                # Check if SITE_DOMAIN includes domain
+                if 'SITE_DOMAIN=' in content:
+                    for line in content.splitlines():
+                        if line.startswith('SITE_DOMAIN='):
+                            site_domain = line.split('=', 1)[1].strip().strip('"\'')
+                            if domain in site_domain:
+                                results["env_variables"] = True
+                                break
+            
+            return results
+            
+        except Exception as e:
+            log_warning(f"Domain configuration verification failed: {e}")
+            return results
+    
     def apply_ip_overrides(self, worktree_path: Path, ip: str) -> bool:
         """Apply IP overrides to existing environment files (HTTP-only).
 

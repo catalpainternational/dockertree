@@ -165,6 +165,72 @@ DEBUG=True
             print(f"Log output: {log_output}")
         
         assert result is True, f"apply_domain_overrides returned False. Logs: {log_output}"
+    
+    def test_verify_domain_configuration(self, env_manager, temp_project):
+        """Test that verify_domain_configuration correctly verifies domain settings."""
+        worktree_path = temp_project / "worktrees" / "test"
+        worktree_path.mkdir(parents=True)
+        dockertree_dir = worktree_path / ".dockertree"
+        dockertree_dir.mkdir()
+        
+        domain = "test.example.com"
+        
+        # Create compose file with domain labels
+        compose_file = dockertree_dir / "docker-compose.worktree.yml"
+        compose_data = {
+            "services": {
+                "web": {
+                    "labels": [
+                        f"caddy.proxy={domain}",
+                        "caddy.proxy.reverse_proxy=${COMPOSE_PROJECT_NAME}-web:8000"
+                    ]
+                }
+            }
+        }
+        compose_file.write_text(yaml.dump(compose_data))
+        
+        # Create env.dockertree with domain in ALLOWED_HOSTS
+        env_file = dockertree_dir / "env.dockertree"
+        env_file.write_text(f"ALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.example.com\nSITE_DOMAIN=https://{domain}\n")
+        
+        # Verify configuration
+        verification = env_manager.verify_domain_configuration(worktree_path, domain)
+        
+        assert verification["compose_labels"] is True, "Compose labels should be verified"
+        assert verification["env_variables"] is True, "Env variables should be verified"
+    
+    def test_verify_domain_configuration_missing_labels(self, env_manager, temp_project):
+        """Test that verify_domain_configuration detects missing domain labels."""
+        worktree_path = temp_project / "worktrees" / "test"
+        worktree_path.mkdir(parents=True)
+        dockertree_dir = worktree_path / ".dockertree"
+        dockertree_dir.mkdir()
+        
+        domain = "test.example.com"
+        
+        # Create compose file WITHOUT domain labels (still has localhost)
+        compose_file = dockertree_dir / "docker-compose.worktree.yml"
+        compose_data = {
+            "services": {
+                "web": {
+                    "labels": [
+                        "caddy.proxy=${COMPOSE_PROJECT_NAME}.localhost",
+                        "caddy.proxy.reverse_proxy=${COMPOSE_PROJECT_NAME}-web:8000"
+                    ]
+                }
+            }
+        }
+        compose_file.write_text(yaml.dump(compose_data))
+        
+        # Create env.dockertree with domain in ALLOWED_HOSTS
+        env_file = dockertree_dir / "env.dockertree"
+        env_file.write_text(f"ALLOWED_HOSTS=localhost,127.0.0.1,{domain},*.example.com\nSITE_DOMAIN=https://{domain}\n")
+        
+        # Verify configuration
+        verification = env_manager.verify_domain_configuration(worktree_path, domain)
+        
+        assert verification["compose_labels"] is False, "Compose labels should NOT be verified (localhost still present)"
+        assert verification["env_variables"] is True, "Env variables should be verified"
         
         # Verify compose file was updated
         compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
