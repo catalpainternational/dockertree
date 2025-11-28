@@ -663,6 +663,25 @@ dockertree_mcp/
 
 ## 📦 Package Management Architecture
 
+### Package Structure
+
+Packages preserve the fractal `.dockertree` structure, containing everything needed for deployment:
+
+```
+package.tar.gz
+├── code/{branch}.tar.gz      # Project tar containing:
+│   ├── .dockertree/          # Project root configuration
+│   ├── worktrees/{branch}/   # Worktree directory
+│   │   ├── .dockertree/      # Worktree configuration (fractal copy)
+│   │   └── ... (code files)
+│   └── key project files     # docker-compose.yml, Dockerfile, etc.
+├── volumes/                  # Volume backups
+│   └── backup_{branch}.tar
+└── metadata.json             # Package metadata with checksums
+```
+
+**Key Design**: The package uses a regular tar (not git archive) to preserve `.dockertree/` directories which may be gitignored. This ensures the fractal configuration structure is included.
+
 ### Import Modes and Auto-Detection
 
 Dockertree package import supports two modes with automatic detection:
@@ -690,27 +709,27 @@ def _is_in_existing_project(self) -> bool:
 2. Extract metadata and determine branch name
 3. Create new worktree using WorktreeOrchestrator
 4. Restore environment files to worktree
-5. Restore volumes to branch-specific volumes
-6. Extract code archive (if included in package)
+5. Apply domain/IP override if provided
+6. Restore volumes to branch-specific volumes
+7. Extract worktree contents from code archive (remaps paths)
 
 **Result**: New worktree added to existing project
 
-#### Standalone Mode (New Project)
+#### Standalone Mode (Server Deployment)
 
 **When**: Directory does NOT contain `.dockertree/config.yml` OR not a git repository
 
 **Process**:
 1. Validate package integrity
 2. Check package includes code (required for standalone)
-3. Determine target directory (from flag or auto-generate)
-4. Initialize new git repository
-5. Extract code archive from package
-6. Commit initial code
-7. Run `dockertree setup` to initialize configuration
-8. Restore environment files
-9. Restore volumes (if requested)
+3. Create target directory
+4. Extract project tar to target directory (creates complete structure)
+5. Apply domain/IP override to worktree's `.dockertree/`
+6. Restore volumes (if requested)
 
-**Result**: Complete new dockertree project ready to use
+**Result**: Complete deployment ready to use
+
+**Key Simplification**: Standalone import is simple extraction - no git initialization or `setup_project()` needed. The package contains the complete fractal structure, so we just extract and configure.
 
 ### Import Flow Diagram
 
@@ -725,9 +744,27 @@ _is_in_existing_project()?      Standalone = True/False
     ↓ YES            ↓ NO            ↓
 Normal Mode     Standalone Mode   As specified
     ↓                ↓                ↓
-Import to        Create new       Execute
-existing         project          accordingly
+Import to        Extract to       Execute
+existing         new directory    accordingly
 worktree
+```
+
+### Export Flow
+
+```
+Export Request
+    ↓
+1. Validate worktree exists
+    ↓
+2. Create temp package directory
+    ↓
+3. Backup volumes (unless skipped)
+    ↓
+4. Create project tar (includes .dockertree/ directories)
+    ↓
+5. Generate metadata with checksums
+    ↓
+6. Compress package
 ```
 
 ### DRY Architecture
@@ -737,10 +774,13 @@ All logic centralized in `PackageManager` class:
 ```
                     PackageManager (core)
                          ├── _is_in_existing_project()
+                         ├── export_package()
+                         │   └── _create_project_archive()
                          ├── import_package()
                          │   ├── _normal_import()
                          │   ├── _standalone_import()
                          │   └── _extract_and_validate_package()
+                         ├── _apply_domain_or_ip_override()  # DRY helper
                          ↑
                     Used by both:
                          │
@@ -758,6 +798,7 @@ Both interfaces use identical parameters and logic:
 **CLI**:
 ```bash
 dockertree packages import package.tar.gz --standalone --target-dir ./project
+dockertree packages import package.tar.gz --domain app.example.com
 ```
 
 **MCP**:
@@ -765,7 +806,8 @@ dockertree packages import package.tar.gz --standalone --target-dir ./project
 {
   "package_file": "package.tar.gz",
   "standalone": true,
-  "target_directory": "./project"
+  "target_directory": "./project",
+  "domain": "app.example.com"
 }
 ```
 
@@ -808,10 +850,18 @@ For standalone import to succeed:
 
 1. **Package must include code**: Export with `--include-code` (default)
 2. **Target directory must not exist**: Prevents accidental overwrites
-3. **Git must be available**: For repository initialization
-4. **Docker must be running**: For volume restoration
+3. **Docker must be running**: For volume restoration
+
+**Note**: Git is NOT required for standalone import. Server deployments don't need version control - the package contains the complete project structure ready to run.
 
 ### Use Cases
+
+**Server Deployment**:
+```bash
+# Deploy to production server with domain
+dockertree packages import myapp.tar.gz --standalone --domain app.example.com
+# → Extracts project, applies domain override, ready to start
+```
 
 **Team Onboarding**:
 ```bash

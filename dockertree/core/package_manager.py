@@ -42,6 +42,64 @@ class PackageManager:
         self.env_manager = EnvironmentManager(project_root=self.project_root)
         self.orchestrator = WorktreeOrchestrator(project_root=self.project_root)
     
+    def _apply_domain_or_ip_override(self, worktree_path: Path, domain: Optional[str], 
+                                      ip: Optional[str], env_manager: EnvironmentManager = None) -> bool:
+        """Apply domain or IP override to worktree configuration files.
+        
+        This is a DRY helper method used by both _normal_import() and _standalone_import().
+        
+        Args:
+            worktree_path: Path to worktree directory
+            domain: Optional domain override (subdomain.domain.tld)
+            ip: Optional IP override
+            env_manager: Optional EnvironmentManager instance (uses self.env_manager if not provided)
+            
+        Returns:
+            True if successful or no override needed, False on failure
+        """
+        if not domain and not ip:
+            return True  # No override needed
+        
+        if not worktree_path.exists():
+            log_error(f"Worktree path not found: {worktree_path}. Cannot apply domain/IP overrides.")
+            return False
+        
+        manager = env_manager or self.env_manager
+        
+        if domain:
+            log_info(f"Applying domain overrides to worktree: {domain}")
+            log_info(f"Worktree path: {worktree_path}")
+            success = manager.apply_domain_overrides(worktree_path, domain)
+            if not success:
+                log_error(f"Failed to apply domain overrides to worktree at {worktree_path}")
+                log_error(f"This may cause containers to use localhost domain instead of {domain}")
+                log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
+                log_error(f"and {worktree_path}/.dockertree/env.dockertree to set domain to {domain}")
+                return False
+            
+            # Verify domain configuration was applied correctly
+            log_info("Verifying domain configuration...")
+            verification = manager.verify_domain_configuration(worktree_path, domain)
+            if verification.get("compose_labels") and verification.get("env_variables"):
+                log_success("Domain configuration verified: compose labels and env variables updated correctly")
+            else:
+                if not verification.get("compose_labels"):
+                    log_warning("Domain configuration verification: compose labels not found or incorrect")
+                if not verification.get("env_variables"):
+                    log_warning("Domain configuration verification: env variables not found or incorrect")
+        elif ip:
+            log_info(f"Applying IP overrides to worktree: {ip}")
+            log_info(f"Worktree path: {worktree_path}")
+            success = manager.apply_ip_overrides(worktree_path, ip)
+            if not success:
+                log_error(f"Failed to apply IP overrides to worktree at {worktree_path}")
+                log_error(f"This may cause containers to use localhost domain instead of {ip}")
+                log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
+                log_error(f"and {worktree_path}/.dockertree/env.dockertree to set IP to {ip}")
+                return False
+        
+        return True
+    
     def _is_in_existing_project(self) -> bool:
         """Check if we're in an existing dockertree project.
         
@@ -72,7 +130,7 @@ class PackageManager:
         Args:
             branch_name: Name of the branch to export
             output_dir: Directory to save the package
-            include_code: Whether to include git archive of code
+            include_code: Whether to include project tar archive
             compressed: Whether to compress the final package
             skip_volumes: Whether to skip volume backup (fallback option)
             container_filter: Optional list of dicts with 'worktree' and 'container' keys
@@ -106,15 +164,7 @@ class PackageManager:
             temp_package_dir = output_dir / package_name
             temp_package_dir.mkdir(exist_ok=True)
             
-            # 4. Copy environment files
-            env_success = self._copy_environment_files(worktree_path, temp_package_dir, container_filter, exclude_deps, droplet_info)
-            if not env_success:
-                return {
-                    "success": False,
-                    "error": "Failed to copy environment files"
-                }
-            
-            # 5. Backup volumes using existing DockerManager (unless skipped)
+            # 4. Backup volumes using existing DockerManager (unless skipped)
             backup_file = None
             if not skip_volumes:
                 volumes_backup_path = temp_package_dir / "volumes" / f"backup_{branch_name}.tar"
@@ -161,26 +211,26 @@ class PackageManager:
             else:
                 log_warning("Skipping volume backup as requested")
             
-            # 6. Create git archive if requested
+            # 5. Create project archive if requested (includes .dockertree directories)
             code_archive_path = None
             if include_code:
                 code_archive_path = temp_package_dir / "code" / f"{branch_name}.tar.gz"
                 code_archive_path.parent.mkdir(exist_ok=True)
                 
-                log_info(f"Creating git archive for {branch_name}...")
-                if not self.git_manager.create_worktree_archive(branch_name, code_archive_path):
+                log_info(f"Creating project archive for {branch_name}...")
+                if not self._create_project_archive(branch_name, worktree_path, code_archive_path):
                     return {
                         "success": False,
-                        "error": "Failed to create git archive"
+                        "error": "Failed to create project archive"
                     }
             
-            # 7. Generate metadata with checksums
+            # 6. Generate metadata with checksums
             metadata = self._generate_metadata(
                 branch_name, temp_package_dir, include_code, skip_volumes, container_filter,
                 exclude_deps=exclude_deps, droplet_info=droplet_info, central_droplet_info=central_droplet_info
             )
             
-            # 8. Compress package if requested
+            # 7. Compress package if requested
             final_package_path = temp_package_dir
             if compressed:
                 final_package_path = output_dir / f"{package_name}.tar.gz"
@@ -373,7 +423,7 @@ class PackageManager:
                 }
             
             # Restore environment files
-            # Preserve domain settings if domain/IP is provided (safety net)
+            # NOTE: This may overwrite domain/IP settings, so we'll re-apply them after restore
             preserve_domain = domain is not None or ip is not None
             env_success = self._restore_environment_files(package_dir, worktree_path, preserve_domain_settings=preserve_domain)
             if not env_success:
@@ -384,37 +434,8 @@ class PackageManager:
                 log_info("Detected worker deployment, configuring environment variables...")
                 self._configure_worker_environment(worktree_path, metadata)
             
-            # Apply domain/ip overrides if provided
-            # This must happen AFTER environment files are restored so the compose file exists
-            if domain:
-                log_info(f"Applying domain overrides: {domain}")
-                log_info(f"Worktree path: {worktree_path}")
-                success = self.env_manager.apply_domain_overrides(worktree_path, domain)
-                if not success:
-                    log_error(f"Failed to apply domain overrides to worktree at {worktree_path}")
-                    log_error(f"This may cause containers to use localhost domain instead of {domain}")
-                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
-                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set domain to {domain}")
-                else:
-                    # Verify domain configuration was applied correctly
-                    log_info("Verifying domain configuration...")
-                    verification = self.env_manager.verify_domain_configuration(worktree_path, domain)
-                    if verification.get("compose_labels") and verification.get("env_variables"):
-                        log_success("Domain configuration verified: compose labels and env variables updated correctly")
-                    else:
-                        if not verification.get("compose_labels"):
-                            log_warning("Domain configuration verification: compose labels not found or incorrect")
-                        if not verification.get("env_variables"):
-                            log_warning("Domain configuration verification: env variables not found or incorrect")
-            elif ip:
-                log_info(f"Applying IP overrides: {ip}")
-                log_info(f"Worktree path: {worktree_path}")
-                success = self.env_manager.apply_ip_overrides(worktree_path, ip)
-                if not success:
-                    log_error(f"Failed to apply IP overrides to worktree at {worktree_path}")
-                    log_error(f"This may cause containers to use localhost domain instead of {ip}")
-                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
-                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set IP to {ip}")
+            # Apply domain/ip overrides if provided (DRY: uses shared helper method)
+            self._apply_domain_or_ip_override(worktree_path, domain, ip)
             
             # Restore volumes if requested
             # restore_volumes() handles stopping containers safely before restore
@@ -428,12 +449,20 @@ class PackageManager:
                     log_warning("Volume backup not found in package")
             
             # Extract code archive if present
+            # New format: tar contains worktrees/{branch}/ - extract those contents to worktree_path
             code_archive = package_dir / "code" / f"{metadata['branch_name']}.tar.gz"
             if code_archive.exists():
                 log_info(f"Extracting code archive to {worktree_path}...")
                 try:
                     with tarfile.open(code_archive, 'r:gz') as tar:
-                        tar.extractall(worktree_path)
+                        # Extract only worktree contents, remapping paths
+                        worktree_prefix = f"worktrees/{metadata['branch_name']}/"
+                        for member in tar.getmembers():
+                            if member.name.startswith(worktree_prefix):
+                                # Remap path: worktrees/{branch}/foo -> foo
+                                member.name = member.name[len(worktree_prefix):]
+                                if member.name:  # Skip empty names (the directory itself)
+                                    tar.extract(member, worktree_path)
                 except Exception as e:
                     log_warning(f"Failed to extract code archive: {e}")
             
@@ -462,10 +491,10 @@ class PackageManager:
     def _standalone_import(self, package_path: Path, target_directory: Path = None,
                           restore_data: bool = True, domain: Optional[str] = None,
                           ip: Optional[str] = None, non_interactive: bool = False) -> Dict[str, Any]:
-        """Import package in standalone mode - creates complete project.
+        """Import package in standalone mode - extracts complete deployment.
         
-        Creates new git repository, extracts code archive, initializes dockertree,
-        and restores environment and volumes.
+        Simply extracts code archive and environment files from package.
+        No git initialization or setup_project() needed - package has everything.
         
         Args:
             package_path: Path to the package file
@@ -488,6 +517,13 @@ class PackageManager:
                     "error": "Standalone import requires package with code (export with --include-code)"
                 }
             
+            branch_name = metadata.get("branch_name")
+            if not branch_name:
+                return {
+                    "success": False,
+                    "error": "Branch name missing from package metadata"
+                }
+            
             # Determine target directory
             if not target_directory:
                 project_name = metadata.get("project_name", "dockertree-project")
@@ -504,108 +540,37 @@ class PackageManager:
             
             target_directory.mkdir(parents=True, exist_ok=True)
             
-            # Initialize git repository
-            log_info(f"Initializing git repository in {target_directory}")
-            subprocess.run(["git", "init"], cwd=target_directory, check=True, capture_output=True)
-            
-            # Extract code archive
-            code_archive = package_dir / "code" / f"{metadata['branch_name']}.tar.gz"
+            # Extract project archive to target directory
+            # Archive contains complete structure: .dockertree/, worktrees/{branch}/
+            code_archive = package_dir / "code" / f"{branch_name}.tar.gz"
             if code_archive.exists():
-                log_info("Extracting code archive...")
+                log_info(f"Extracting project archive to {target_directory}...")
                 with tarfile.open(code_archive, 'r:gz') as tar:
                     tar.extractall(target_directory)
-            
-            # Commit initial code
-            subprocess.run(["git", "add", "."], cwd=target_directory, check=True, capture_output=True)
-            subprocess.run(
-                ["git", "commit", "-m", f"Initial import from package: {metadata['branch_name']}"],
-                cwd=target_directory, check=True, capture_output=True
-            )
-            
-            # Initialize dockertree setup
-            log_info("Initializing dockertree configuration...")
-            original_project_name = metadata.get("project_name")
-            if original_project_name:
-                log_info(f"Using project name from package metadata: {original_project_name}")
+                log_success(f"Extracted project with worktree: worktrees/{branch_name}/")
             else:
-                log_warning("No project name in package metadata, will use directory name")
-            from ..commands.setup import SetupManager
-            setup_manager = SetupManager(project_root=target_directory)
-            if not setup_manager.setup_project(project_name=original_project_name, domain=domain, ip=ip, non_interactive=non_interactive):
                 return {
                     "success": False,
-                    "error": "Failed to initialize dockertree setup"
+                    "error": f"Code archive not found in package: {code_archive}"
                 }
             
-            # Verify project name was set correctly
-            from ..config.settings import get_project_name
-            actual_project_name = get_project_name()
-            log_info(f"Project name after setup: {actual_project_name}")
-            if original_project_name and actual_project_name != original_project_name:
-                log_warning(f"Project name mismatch: expected {original_project_name}, got {actual_project_name}")
-                log_warning("This may cause volume name mismatches")
-            
-            # Restore environment files
-            # NOTE: This restores files from package, which may overwrite domain/IP settings
-            # We'll re-apply domain/IP overrides after worktree creation
-            # Preserve domain settings if domain/IP is provided (safety net)
-            preserve_domain = domain is not None or ip is not None
-            self._restore_environment_files(package_dir, target_directory, preserve_domain_settings=preserve_domain)
+            # Verify worktree was extracted
+            worktree_path = target_directory / "worktrees" / branch_name
+            if not worktree_path.exists():
+                return {
+                    "success": False,
+                    "error": f"Worktree not found in archive: worktrees/{branch_name}"
+                }
             
             # Configure worker environment if metadata indicates worker deployment
             if metadata.get('vpc_deployment', {}).get('is_worker'):
                 log_info("Detected worker deployment, configuring environment variables...")
-                self._configure_worker_environment(target_directory, metadata)
+                self._configure_worker_environment(worktree_path, metadata)
             
-            # Create worktree for the imported branch
-            branch_name = metadata.get("branch_name")
-            if branch_name:
-                log_info(f"Creating worktree for branch '{branch_name}'...")
-                orchestrator = WorktreeOrchestrator(project_root=target_directory)
-                create_result = orchestrator.create_worktree(branch_name)
-                if not create_result.get("success"):
-                    log_warning(f"Failed to create worktree for branch '{branch_name}': {create_result.get('error')}")
-                else:
-                    log_success(f"Created worktree for branch '{branch_name}'")
-                    
-                    # Apply domain/IP overrides to worktree if provided
-                    # This must happen AFTER worktree creation so the compose file exists
-                    if domain or ip:
-                        worktree_path = Path(target_directory) / "worktrees" / branch_name
-                        if worktree_path.exists():
-                            env_manager = EnvironmentManager(project_root=target_directory)
-                            if domain:
-                                log_info(f"Applying domain overrides to worktree: {domain}")
-                                log_info(f"Worktree path: {worktree_path}")
-                                success = env_manager.apply_domain_overrides(worktree_path, domain)
-                                if not success:
-                                    log_error(f"Failed to apply domain overrides to worktree at {worktree_path}")
-                                    log_error(f"This may cause containers to use localhost domain instead of {domain}")
-                                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
-                                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set domain to {domain}")
-                                else:
-                                    # Verify domain configuration was applied correctly
-                                    log_info("Verifying domain configuration...")
-                                    verification = env_manager.verify_domain_configuration(worktree_path, domain)
-                                    if verification.get("compose_labels") and verification.get("env_variables"):
-                                        log_success("Domain configuration verified: compose labels and env variables updated correctly")
-                                    else:
-                                        if not verification.get("compose_labels"):
-                                            log_warning("Domain configuration verification: compose labels not found or incorrect")
-                                        if not verification.get("env_variables"):
-                                            log_warning("Domain configuration verification: env variables not found or incorrect")
-                            elif ip:
-                                log_info(f"Applying IP overrides to worktree: {ip}")
-                                log_info(f"Worktree path: {worktree_path}")
-                                success = env_manager.apply_ip_overrides(worktree_path, ip)
-                                if not success:
-                                    log_error(f"Failed to apply IP overrides to worktree at {worktree_path}")
-                                    log_error(f"This may cause containers to use localhost domain instead of {ip}")
-                                    log_error(f"Manual intervention required: edit {worktree_path}/.dockertree/docker-compose.worktree.yml")
-                                    log_error(f"and {worktree_path}/.dockertree/env.dockertree to set IP to {ip}")
-                        else:
-                            log_error(f"Worktree path not found: {worktree_path}. Cannot apply domain/IP overrides.")
-                            log_error(f"Domain/IP override will not be applied - deployment may fail.")
+            # Apply domain/IP overrides to worktree's .dockertree/ if provided
+            # The .dockertree/ was extracted with localhost settings, now update for deployment
+            env_manager = EnvironmentManager(project_root=target_directory)
+            self._apply_domain_or_ip_override(worktree_path, domain, ip, env_manager)
             
             # Restore volumes if requested
             # IMPORTANT: Stop any running containers first to ensure volumes can be restored safely.
@@ -735,6 +700,66 @@ class PackageManager:
                     })
         
         return sorted(packages, key=lambda x: x["name"])
+    
+    def _create_project_archive(self, branch_name: str, worktree_path: Path, output_path: Path) -> bool:
+        """Create tar archive of project including .dockertree directories.
+        
+        Creates a complete tar of the project structure preserving the fractal
+        .dockertree configuration. Includes:
+        - Project root .dockertree/
+        - worktrees/{branch}/ with its .dockertree/
+        - All project files
+        
+        Args:
+            branch_name: Name of the branch/worktree
+            worktree_path: Path to the worktree directory
+            output_path: Path where the archive should be created
+            
+        Returns:
+            True if archive was created successfully, False otherwise
+        """
+        try:
+            # Ensure output directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Get project root (parent of worktrees directory)
+            # worktree_path is like /project/worktrees/{branch}
+            project_root = worktree_path.parent.parent
+            
+            log_info(f"Creating project archive from {project_root}")
+            log_info(f"Including worktree: worktrees/{branch_name}")
+            
+            # Create tar archive of project
+            # Include: .dockertree/, worktrees/{branch}/, and key project files
+            with tarfile.open(output_path, 'w:gz') as tar:
+                # Add project root .dockertree/
+                dockertree_dir = project_root / ".dockertree"
+                if dockertree_dir.exists():
+                    tar.add(dockertree_dir, arcname=".dockertree")
+                    log_info("  Added: .dockertree/")
+                
+                # Add the worktree directory (includes its .dockertree/)
+                worktrees_dir = project_root / "worktrees"
+                worktree_subdir = worktrees_dir / branch_name
+                if worktree_subdir.exists():
+                    tar.add(worktree_subdir, arcname=f"worktrees/{branch_name}")
+                    log_info(f"  Added: worktrees/{branch_name}/")
+                
+                # Add key project files from root (if they exist)
+                for filename in ["docker-compose.yml", "docker-compose.yaml", 
+                                "Dockerfile", ".env.example", "requirements.txt",
+                                "package.json", "Makefile"]:
+                    filepath = project_root / filename
+                    if filepath.exists():
+                        tar.add(filepath, arcname=filename)
+                        log_info(f"  Added: {filename}")
+            
+            log_success(f"Created project archive: {output_path}")
+            return True
+            
+        except Exception as e:
+            log_error(f"Failed to create project archive: {e}")
+            return False
     
     def _copy_environment_files(self, worktree_path: Path, package_dir: Path, 
                                 container_filter: Optional[List[Dict[str, str]]] = None,

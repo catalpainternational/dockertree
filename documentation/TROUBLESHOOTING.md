@@ -1,5 +1,53 @@
 # Dockertree Troubleshooting Guide
 
+## Port Already Allocated (e.g., `Bind for 0.0.0.0:5432 failed`)
+
+### Symptom
+- `docker compose up` fails with `driver failed programming external connectivity` or `Bind for 0.0.0.0:5432 failed: port is already allocated`
+- Only one Dockertree worktree starts successfully; additional worktrees fail to start `db`, `redis`, or `web` containers
+- Host ports 5432/6379/8000 randomly collide with other local stacks
+
+### Root Cause
+Older `docker-compose.worktree.yml` files published fixed host port mappings such as `5432:5432` and `8000:8000`. When multiple worktrees reuse those host ports, Docker cannot bind the second container, producing the `port is already allocated` error. This was masked previously because the compose override relied on `expose` only; once explicit `ports` blocks were added, conflicts surfaced.
+
+### Solution
+1. **Use env-driven port mappings**  
+   Update `.dockertree/docker-compose.worktree.yml` so every service that publishes a host port uses the Dockertree placeholders:
+   ```yaml
+   services:
+     db:
+       expose:
+         - "5432"
+       ports:
+         - "${DOCKERTREE_DB_HOST_PORT:-0}:5432"
+     web:
+       expose:
+         - "8000"
+       ports:
+         - "${DOCKERTREE_WEB_HOST_PORT:-0}:8000"
+     redis:
+       ports:
+         - "${DOCKERTREE_REDIS_HOST_PORT:-0}:6379"
+   ```
+   The `:-0` default lets Docker pick a random free port when running against legacy environments that are missing the new variables.
+
+2. **Let Dockertree assign unique host ports per worktree**  
+   The environment manager now writes three new entries to each worktree's `.dockertree/env.dockertree`:
+   ```
+   DOCKERTREE_DB_HOST_PORT=58xxx
+   DOCKERTREE_REDIS_HOST_PORT=57xxx
+   DOCKERTREE_WEB_HOST_PORT=58xxx
+   ```
+   These values are selected from high-numbered ranges to avoid system services and are guaranteed to be unique across all existing worktrees. When you create a new worktree (`dockertree create <branch>`), the CLI auto-assigns and logs the chosen ports.
+
+3. **Retrofit existing worktrees**  
+   Delete and recreate the worktree (`dockertree delete <branch>` followed by `dockertree create <branch>`) so the new env file is generated with unique ports. If recreation is not possible, manually edit `<worktree>/.dockertree/env.dockertree` and add unique values for `DOCKERTREE_DB_HOST_PORT`, `DOCKERTREE_REDIS_HOST_PORT`, and `DOCKERTREE_WEB_HOST_PORT`.
+
+### Verification
+- `docker compose -p <project>-<branch> ps` shows each service running with distinct published ports.
+- `docker compose port db 5432` (or `web 8000`, `redis 6379`) matches the values recorded in `.dockertree/env.dockertree`.
+- Bringing up multiple worktrees simultaneously no longer produces `port is already allocated`.
+
 ## Workers Not Processing Jobs / Database Connection Failures
 
 ### Symptom

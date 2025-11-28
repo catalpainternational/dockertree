@@ -281,12 +281,14 @@ dockertree packages import my-package.tar.gz --standalone
 - Normal imports work with or without code
 
 **What Gets Created in Standalone Mode**:
-1. New git repository initialized
-2. Complete codebase from package
-3. Dockertree configuration (`.dockertree/`)
-4. Environment files
+1. Complete project structure extracted from package
+2. Project root `.dockertree/` configuration
+3. Worktree with its own `.dockertree/` (fractal structure)
+4. All code files
 5. Docker volumes (if `--restore-data`)
 6. Ready-to-use isolated environment
+
+**Note**: Standalone import is simple - it extracts the project tar and applies domain/IP overrides. No git initialization or additional setup needed since the package contains the complete fractal structure.
 
 ### Shell Completion Management
 | Command | Description | Example |
