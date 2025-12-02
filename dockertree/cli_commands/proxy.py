@@ -20,7 +20,7 @@ def register_commands(cli) -> None:
     @click.option("--non-interactive", is_flag=True, default=False, help="Run non-interactively", hidden=True)
     @add_json_option
     @add_verbose_option
-    @command_wrapper()
+    @command_wrapper(require_prerequisites=False)  # Only need Docker, not git
     def start_proxy(non_interactive: bool, json: bool):
         """Start the global Caddy proxy container."""
         log_info("Starting global Caddy proxy")
@@ -36,7 +36,7 @@ def register_commands(cli) -> None:
     @click.option("--non-interactive", is_flag=True, default=False, help="Run non-interactively", hidden=True)
     @add_json_option
     @add_verbose_option
-    @command_wrapper()
+    @command_wrapper(require_prerequisites=False)  # Only need Docker, not git
     def stop_proxy(non_interactive: bool, json: bool):
         """Stop the global Caddy proxy container."""
         log_info("Stopping global Caddy proxy")
@@ -50,7 +50,7 @@ def register_commands(cli) -> None:
 
     @cli.command("start")
     @add_verbose_option
-    @command_wrapper()
+    @command_wrapper(require_prerequisites=False)  # Only need Docker, not git
     def start():
         """Start the global Caddy proxy container (alias)."""
         caddy_manager = CaddyManager()
@@ -61,7 +61,7 @@ def register_commands(cli) -> None:
 
     @cli.command("stop")
     @add_verbose_option
-    @command_wrapper()
+    @command_wrapper(require_prerequisites=False)  # Only need Docker, not git
     def stop():
         """Stop the global Caddy proxy container (alias)."""
         caddy_manager = CaddyManager()

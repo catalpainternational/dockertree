@@ -24,6 +24,7 @@ from ..utils.path_utils import (
     get_env_compose_file_path,
     copy_env_file
 )
+from ..utils.caddy_config import ensure_caddy_labels_and_network, update_allowed_hosts_in_compose
 from ..core.dns_manager import is_domain
 
 HOST_PORT_RANGES: Dict[str, tuple[int, int]] = {
@@ -759,82 +760,6 @@ CADDY_EMAIL={caddy_email}
                 # Fallback to existing format
                 allowed_hosts = f"localhost,127.0.0.1,{domain},*.{base_domain},web"
             
-            # Update .env file if it exists
-            env_file = worktree_path / ".env"
-            if env_file.exists():
-                content = env_file.read_text()
-                
-                # Replace SITE_DOMAIN
-                content = re.sub(
-                    r'SITE_DOMAIN=.*',
-                    f'SITE_DOMAIN={https_url}',
-                    content,
-                    flags=re.MULTILINE
-                )
-                
-                # Update ALLOWED_HOSTS
-                if 'ALLOWED_HOSTS=' in content:
-                    # Replace existing ALLOWED_HOSTS
-                    content = re.sub(
-                        r'ALLOWED_HOSTS=.*',
-                        f'ALLOWED_HOSTS={allowed_hosts}',
-                        content,
-                        flags=re.MULTILINE
-                    )
-                else:
-                    # Add ALLOWED_HOSTS if missing
-                    content += f"\nALLOWED_HOSTS={allowed_hosts}\n"
-                
-                # Set DEBUG=False for production
-                content = re.sub(
-                    r'DEBUG=.*',
-                    'DEBUG=False',
-                    content,
-                    flags=re.MULTILINE | re.IGNORECASE
-                )
-
-                # Ensure proxy/CSRF headers for domain deployments
-                # USE_X_FORWARDED_HOST
-                if 'USE_X_FORWARDED_HOST=' in content:
-                    content = re.sub(r'USE_X_FORWARDED_HOST=.*', 'USE_X_FORWARDED_HOST=True', content, flags=re.MULTILINE)
-                else:
-                    content += "\nUSE_X_FORWARDED_HOST=True\n"
-
-                # SECURE_PROXY_SSL_HEADER hint (value consumed by Django settings if supported)
-                if 'SECURE_PROXY_SSL_HEADER=' in content:
-                    content = re.sub(r'SECURE_PROXY_SSL_HEADER=.*', 'SECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https', content, flags=re.MULTILINE)
-                else:
-                    content += "\nSECURE_PROXY_SSL_HEADER=HTTP_X_FORWARDED_PROTO,https\n"
-
-                # CSRF_TRUSTED_ORIGINS
-                csrf_value = f"https://{domain} http://{domain}"
-                if base_domain:
-                    csrf_value += f" https://*.{base_domain}"
-                if 'CSRF_TRUSTED_ORIGINS=' in content:
-                    content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
-                else:
-                    content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
-                
-                # USE_SECURE_COOKIES (HTTPS domain deployments require secure cookies)
-                use_secure_cookies = self._should_use_secure_cookies(https_url)
-                if 'USE_SECURE_COOKIES=' in content:
-                    content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
-                else:
-                    content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
-                
-                # Replace any localhost references in URLs
-                from ..config.settings import sanitize_project_name, get_project_name
-                project_name = sanitize_project_name(get_project_name())
-                localhost_domain = f"{project_name}-.*\\.localhost"
-                content = re.sub(
-                    localhost_domain,
-                    domain,
-                    content
-                )
-                
-                env_file.write_text(content)
-                log_info(f"Applied domain overrides to .env file: {domain}")
-            
             # Update env.dockertree file
             env_dockertree = get_env_compose_file_path(worktree_path)
             if env_dockertree.exists():
@@ -907,97 +832,73 @@ CADDY_EMAIL={caddy_email}
                 env_dockertree.write_text(content)
                 log_info(f"Applied domain overrides to env.dockertree: {domain}")
             
-            # Update docker-compose.worktree.yml to replace localhost patterns with domain
+            # Update docker-compose files to add/update Caddy labels and ALLOWED_HOSTS
+            # Check both docker-compose.worktree.yml and docker-compose.yml in worktree directory
             from ..utils.path_utils import get_compose_override_path
+            import yaml
+            from ..utils.file_utils import clean_compose_version_field
+            
+            compose_files_to_check = []
+            
+            # Check docker-compose.worktree.yml first (preferred)
             compose_file = get_compose_override_path(worktree_path)
-            if not compose_file:
-                log_warning(f"Could not find docker-compose.worktree.yml for worktree at {worktree_path}")
-            elif not compose_file.exists():
-                log_warning(f"Docker Compose file does not exist: {compose_file}")
+            if compose_file and compose_file.exists():
+                compose_files_to_check.append(compose_file)
+            
+            # Also check docker-compose.yml in worktree directory (for standalone imports)
+            worktree_compose = worktree_path / "docker-compose.yml"
+            if worktree_compose.exists() and worktree_compose not in compose_files_to_check:
+                compose_files_to_check.append(worktree_compose)
+            
+            if not compose_files_to_check:
+                log_warning(f"Could not find docker-compose file for worktree at {worktree_path}")
             else:
-                try:
-                    import yaml
-                    compose_content = compose_file.read_text()
-                    compose_data = yaml.safe_load(compose_content)
-                    
-                    if not compose_data:
-                        log_warning(f"Docker Compose file is empty or invalid: {compose_file}")
-                    elif 'services' not in compose_data:
-                        log_warning(f"Docker Compose file has no 'services' section: {compose_file}")
-                    else:
-                        updated = False
-                        services_checked = 0
-                        for service_name, service_config in compose_data['services'].items():
-                            services_checked += 1
-                            if 'labels' in service_config:
-                                labels = service_config['labels']
-                                # Handle both list and dict formats
-                                if isinstance(labels, list):
-                                    for i, label in enumerate(labels):
-                                        if isinstance(label, str) and 'caddy.proxy=' in label:
-                                            # Replace localhost pattern with domain
-                                            if '${COMPOSE_PROJECT_NAME}.localhost' in label or '.localhost' in label:
-                                                labels[i] = f"caddy.proxy={domain}"
-                                                updated = True
-                                                log_info(f"Updated Caddy label for {service_name}: {domain}")
-                                elif isinstance(labels, dict):
-                                    if 'caddy.proxy' in labels:
-                                        old_value = labels['caddy.proxy']
-                                        if '${COMPOSE_PROJECT_NAME}.localhost' in str(old_value) or '.localhost' in str(old_value):
-                                            labels['caddy.proxy'] = domain
-                                            updated = True
-                                            log_info(f"Updated Caddy label for {service_name}: {domain}")
+                for compose_file in compose_files_to_check:
+                    try:
+                        compose_content = compose_file.read_text()
+                        compose_data = yaml.safe_load(compose_content)
                         
-                        if updated:
+                        if not compose_data:
+                            log_warning(f"Docker Compose file is empty or invalid: {compose_file}")
+                            continue
+                        elif 'services' not in compose_data:
+                            log_warning(f"Docker Compose file has no 'services' section: {compose_file}")
+                            continue
+                        
+                        # Use shared utility to ensure Caddy labels and network are configured
+                        # This will ADD labels if missing, or update them if they exist
+                        caddy_updated = ensure_caddy_labels_and_network(
+                            compose_data, 
+                            domain=domain, 
+                            ip=None, 
+                            use_localhost_pattern=False  # Don't use localhost pattern, use domain
+                        )
+                        
+                        # Also update ALLOWED_HOSTS in environment section for all services
+                        allowed_hosts_updated = False
+                        for service_name, service_config in compose_data['services'].items():
+                            if update_allowed_hosts_in_compose(service_config, domain):
+                                allowed_hosts_updated = True
+                                log_info(f"Updated ALLOWED_HOSTS for {service_name} in {compose_file.name}")
+                        
+                        if caddy_updated or allowed_hosts_updated:
                             # Remove version field if it's null (Docker Compose v2 doesn't require it)
-                            from ..utils.file_utils import clean_compose_version_field
                             clean_compose_version_field(compose_data)
                             
                             # Write YAML with proper formatting
                             yaml_content = yaml.dump(compose_data, default_flow_style=False, sort_keys=False, allow_unicode=True)
                             compose_file.write_text(yaml_content)
-                            log_info(f"Updated docker-compose.worktree.yml with domain: {domain}")
+                            log_info(f"Updated {compose_file.name} with domain: {domain}")
                             log_info(f"Caddy will route {domain} to containers when they start")
-                            
-                            # Verify the update was successful by reading back the file
-                            verify_content = compose_file.read_text()
-                            verify_data = yaml.safe_load(verify_content)
-                            if verify_data and 'services' in verify_data:
-                                verification_passed = False
-                                for svc_name, svc_config in verify_data['services'].items():
-                                    if 'labels' in svc_config:
-                                        labels = svc_config['labels']
-                                        if isinstance(labels, list):
-                                            for label in labels:
-                                                if isinstance(label, str) and 'caddy.proxy=' in label and domain in label:
-                                                    verification_passed = True
-                                                    break
-                                        elif isinstance(labels, dict):
-                                            if labels.get('caddy.proxy') == domain:
-                                                verification_passed = True
-                                                break
-                                    if verification_passed:
-                                        break
-                                
-                                if not verification_passed:
-                                    log_warning(f"Domain override verification failed: labels may not have been updated correctly")
-                                    log_warning(f"Please manually verify docker-compose.worktree.yml contains 'caddy.proxy={domain}'")
-                                    # Don't return False here - file was written, verification is just a check
-                                else:
-                                    log_info(f"Verified: Caddy labels updated successfully to use domain {domain}")
-                        elif services_checked > 0:
-                            log_warning(f"No Caddy labels found to update in docker-compose.worktree.yml (checked {services_checked} service(s))")
-                            log_warning(f"This may indicate the compose file doesn't have Caddy labels configured")
-                            log_warning(f"Expected labels like 'caddy.proxy=${COMPOSE_PROJECT_NAME}.localhost' for web services")
-                            # This is a warning, not necessarily a failure - compose file may not use Caddy labels
                         else:
-                            log_warning(f"No services found in docker-compose.worktree.yml")
-                except Exception as e:
-                    log_warning(f"Failed to update docker-compose.worktree.yml: {e}")
-                    import traceback
-                    log_warning(f"Traceback: {traceback.format_exc()}")
-                    # Don't return False here - env files may have been updated successfully
-                    # Compose file update failure is a warning, not a complete failure
+                            log_info(f"No updates needed for {compose_file.name} (labels and ALLOWED_HOSTS already configured)")
+                            
+                    except Exception as e:
+                        log_warning(f"Failed to update {compose_file.name}: {e}")
+                        import traceback
+                        log_warning(f"Traceback: {traceback.format_exc()}")
+                        # Don't return False here - env files may have been updated successfully
+                        # Compose file update failure is a warning, not a complete failure
             
             # Return True if we successfully updated env files (compose file update is optional)
             # Env files are the critical part for domain override
@@ -1005,6 +906,116 @@ CADDY_EMAIL={caddy_email}
             
         except Exception as e:
             log_warning(f"Failed to apply domain overrides: {e}")
+            return False
+
+    def update_project_root(self, worktree_path: Path, project_root: Path) -> bool:
+        """Update PROJECT_ROOT in env.dockertree file.
+        
+        This method is used during standalone imports to fix PROJECT_ROOT
+        from source machine path to target server path.
+        
+        Reuses the same pattern as apply_domain_overrides(): read file, regex replace, write file.
+        
+        Args:
+            worktree_path: Path to worktree directory
+            project_root: New PROJECT_ROOT value (target server path)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from ..utils.path_utils import get_env_compose_file_path
+            import re
+            
+            env_dockertree = get_env_compose_file_path(worktree_path)
+            if not env_dockertree.exists():
+                log_warning(f"env.dockertree not found: {env_dockertree}")
+                return False
+            
+            content = env_dockertree.read_text()
+            # Replace PROJECT_ROOT line
+            content = re.sub(
+                r'^PROJECT_ROOT=.*$',
+                f'PROJECT_ROOT={project_root}',
+                content,
+                flags=re.MULTILINE
+            )
+            env_dockertree.write_text(content)
+            log_info(f"Updated PROJECT_ROOT in env.dockertree: {project_root}")
+            return True
+        except Exception as e:
+            log_warning(f"Failed to update PROJECT_ROOT: {e}")
+            return False
+
+    def fix_standalone_paths(self, worktree_path: Path, project_root: Path) -> bool:
+        """Fix build context and volume paths in compose file for standalone deployments.
+        
+        For standalone deployments, build context and code volume mounts should point
+        to the worktree directory, not PROJECT_ROOT.
+        
+        Reuses the same compose file update pattern as apply_domain_overrides():
+        read YAML, update services, write YAML.
+        
+        Args:
+            worktree_path: Path to worktree directory
+            project_root: Project root path (for reference, but worktree_path is used for builds)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from ..utils.path_utils import get_compose_override_path
+            import yaml
+            from ..utils.file_utils import clean_compose_version_field
+            
+            compose_file = get_compose_override_path(worktree_path)
+            if not compose_file or not compose_file.exists():
+                log_warning(f"Compose file not found: {compose_file}")
+                return False
+            
+            compose_content = compose_file.read_text()
+            compose_data = yaml.safe_load(compose_content)
+            
+            if not compose_data or 'services' not in compose_data:
+                log_warning(f"Invalid compose file: {compose_file}")
+                return False
+            
+            updated = False
+            
+            # Fix build context and volume mounts for all services
+            for service_name, service_config in compose_data['services'].items():
+                # Fix build context
+                if 'build' in service_config:
+                    if isinstance(service_config['build'], str):
+                        if '${PROJECT_ROOT}' in service_config['build']:
+                            service_config['build'] = str(worktree_path)
+                            updated = True
+                    elif isinstance(service_config['build'], dict):
+                        if 'context' in service_config['build']:
+                            context = service_config['build']['context']
+                            if isinstance(context, str) and '${PROJECT_ROOT}' in context:
+                                service_config['build']['context'] = str(worktree_path)
+                                updated = True
+                
+                # Fix volume mounts for code directories (e.g., /app, /code, /src)
+                if 'volumes' in service_config:
+                    volumes = service_config['volumes']
+                    for i, volume in enumerate(volumes):
+                        if isinstance(volume, str) and '${PROJECT_ROOT}' in volume:
+                            # Only replace for code mounts (contains /app, /code, /src, etc.)
+                            if any(path in volume for path in ['/app', '/code', '/src']):
+                                volumes[i] = volume.replace('${PROJECT_ROOT}', str(worktree_path))
+                                updated = True
+            
+            if updated:
+                clean_compose_version_field(compose_data)
+                yaml_content = yaml.dump(compose_data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+                compose_file.write_text(yaml_content)
+                log_info(f"Fixed standalone paths in {compose_file.name}")
+            
+            return True
+        except Exception as e:
+            log_warning(f"Failed to fix standalone paths: {e}")
             return False
 
     def verify_domain_configuration(self, worktree_path: Path, domain: str) -> Dict[str, bool]:
@@ -1115,43 +1126,6 @@ CADDY_EMAIL={caddy_email}
             else:
                 # Fallback to existing format
                 allowed_hosts = f"localhost,127.0.0.1,{ip},web"
-
-            # Update .env file
-            env_file = worktree_path / ".env"
-            if env_file.exists():
-                content = env_file.read_text()
-
-                content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
-
-                if 'ALLOWED_HOSTS=' in content:
-                    content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS={allowed_hosts}', content, flags=re.MULTILINE)
-                else:
-                    content += f"\nALLOWED_HOSTS={allowed_hosts}\n"
-
-                content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
-
-                # Proxy/CSRF headers for IP deployments (HTTP-only)
-                if 'USE_X_FORWARDED_HOST=' in content:
-                    content = re.sub(r'USE_X_FORWARDED_HOST=.*', 'USE_X_FORWARDED_HOST=True', content, flags=re.MULTILINE)
-                else:
-                    content += "\nUSE_X_FORWARDED_HOST=True\n"
-
-                # No SECURE_PROXY_SSL_HEADER for IP/http
-                csrf_value = f"http://{ip}"
-                if 'CSRF_TRUSTED_ORIGINS=' in content:
-                    content = re.sub(r'CSRF_TRUSTED_ORIGINS=.*', f'CSRF_TRUSTED_ORIGINS={csrf_value}', content, flags=re.MULTILINE)
-                else:
-                    content += f"\nCSRF_TRUSTED_ORIGINS={csrf_value}\n"
-                
-                # USE_SECURE_COOKIES (IP deployments are HTTP-only, no secure cookies)
-                use_secure_cookies = self._should_use_secure_cookies(http_url)
-                if 'USE_SECURE_COOKIES=' in content:
-                    content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
-                else:
-                    content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
-
-                env_file.write_text(content)
-                log_info(f"Applied IP overrides to .env file: {ip}")
 
             # Update env.dockertree
             env_dockertree = get_env_compose_file_path(worktree_path)

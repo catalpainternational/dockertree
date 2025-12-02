@@ -9,7 +9,7 @@ from typing import Optional
 
 # Script versions for cache invalidation
 SERVER_PREP_SCRIPT_VERSION = "1.0"
-REMOTE_IMPORT_SCRIPT_VERSION = "1.0"
+REMOTE_IMPORT_SCRIPT_VERSION = "1.1"  # Updated for standalone mode fixes
 
 
 SERVER_PREP_SCRIPT = r'''
@@ -632,12 +632,108 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
   fi
   
   log "Restoring volumes from package..."
-  if "$DTBIN" volumes restore "${{BRANCH_NAME}}" "$PKG_FILE"; then
-    log_success "Volumes restored successfully"
-    NEED_VOLUME_RESTORE=false
+  
+  # In standalone mode, use direct Docker commands to restore volumes (bypasses git requirement)
+  if [ "$IMPORT_MODE" = "standalone" ]; then
+    log "Using standalone volume restoration (direct Docker commands)..."
+    
+    # Create temporary directory for extraction
+    RESTORE_TEMP_DIR=$(mktemp -d)
+    trap "rm -rf $RESTORE_TEMP_DIR" EXIT
+    
+    # Extract package to find backup archive
+    log "Extracting package to find volume backups..."
+    if tar -xzf "$PKG_FILE" -C "$RESTORE_TEMP_DIR" 2>/dev/null; then
+      # Find the nested backup tar file
+      BACKUP_TAR=$(find "$RESTORE_TEMP_DIR" -name "backup_${{BRANCH_NAME}}.tar" -o -name "backup_*.tar" | head -1)
+      
+      if [ -n "$BACKUP_TAR" ] && [ -f "$BACKUP_TAR" ]; then
+        log "Found backup archive: $BACKUP_TAR"
+        # Extract the nested backup tar
+        BACKUP_EXTRACT_DIR=$(mktemp -d)
+        if tar -xzf "$BACKUP_TAR" -C "$BACKUP_EXTRACT_DIR" 2>/dev/null || tar -xf "$BACKUP_TAR" -C "$BACKUP_EXTRACT_DIR" 2>/dev/null; then
+          log "Backup archive extracted successfully"
+          
+          # Restore each volume type
+          RESTORED_COUNT=0
+          for vol_type in postgres_data redis_data media_files; do
+            if [ -n "$PROJECT_NAME" ]; then
+              VOL_NAME="${{PROJECT_NAME}}-${{BRANCH_NAME}}_${{vol_type}}"
+            else
+              VOL_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}_${{vol_type}}"
+            fi
+            
+            # Find matching backup file (look for .tar.gz files with volume name pattern)
+            BACKUP_FILE=$(find "$BACKUP_EXTRACT_DIR" -name "*${{vol_type}}.tar.gz" | head -1)
+            
+            if [ -n "$BACKUP_FILE" ] && [ -f "$BACKUP_FILE" ]; then
+              log "Restoring volume: $VOL_NAME from $BACKUP_FILE"
+              
+              # Remove existing volume if it exists and is empty
+              if docker volume inspect "$VOL_NAME" >/dev/null 2>&1; then
+                log "Removing existing volume $VOL_NAME to allow restoration..."
+                docker volume rm "$VOL_NAME" >/dev/null 2>&1 || true
+              fi
+              
+              # Create new volume
+              if docker volume create "$VOL_NAME" >/dev/null 2>&1; then
+                # Restore using docker run with tar extraction
+                if docker run --rm -v "$VOL_NAME:/data" -v "$BACKUP_FILE:/backup.tar.gz:ro" alpine sh -c "cd /data && tar -xzf /backup.tar.gz --strip-components=1 2>/dev/null || tar -xzf /backup.tar.gz" >/dev/null 2>&1; then
+                  log_success "Volume $VOL_NAME restored successfully"
+                  RESTORED_COUNT=$((RESTORED_COUNT + 1))
+                else
+                  log_error "Failed to restore volume $VOL_NAME"
+                fi
+              else
+                log_error "Failed to create volume $VOL_NAME"
+              fi
+            else
+              log_warning "Backup file for $VOL_NAME not found (expected pattern: *${{vol_type}}.tar.gz)"
+            fi
+          done
+          
+          rm -rf "$BACKUP_EXTRACT_DIR"
+          
+          if [ $RESTORED_COUNT -gt 0 ]; then
+            log_success "Restored $RESTORED_COUNT volume(s) successfully"
+            NEED_VOLUME_RESTORE=false
+          else
+            log_error "No volumes were restored"
+          fi
+        else
+          log_error "Failed to extract backup archive"
+        fi
+      else
+        log_error "Backup archive not found in package"
+        log "Trying dockertree volumes restore as fallback..."
+        if "$DTBIN" volumes restore "${{BRANCH_NAME}}" "$PKG_FILE" 2>/dev/null; then
+          log_success "Volumes restored successfully (using dockertree command)"
+          NEED_VOLUME_RESTORE=false
+        else
+          log_error "Volume restoration failed - containers will start with empty volumes"
+        fi
+      fi
+      
+      rm -rf "$RESTORE_TEMP_DIR"
+    else
+      log_error "Failed to extract package file"
+      log "Trying dockertree volumes restore as fallback..."
+      if "$DTBIN" volumes restore "${{BRANCH_NAME}}" "$PKG_FILE" 2>/dev/null; then
+        log_success "Volumes restored successfully (using dockertree command)"
+        NEED_VOLUME_RESTORE=false
+      else
+        log_error "Volume restoration failed - containers will start with empty volumes"
+      fi
+    fi
   else
-    log_error "Volume restoration failed - containers will start with empty volumes"
-    log_error "Database will be empty - manual restoration may be required"
+    # Normal mode: use dockertree command (requires git repository)
+    if "$DTBIN" volumes restore "${{BRANCH_NAME}}" "$PKG_FILE"; then
+      log_success "Volumes restored successfully"
+      NEED_VOLUME_RESTORE=false
+    else
+      log_error "Volume restoration failed - containers will start with empty volumes"
+      log_error "Database will be empty - manual restoration may be required"
+    fi
   fi
 fi
 
@@ -660,43 +756,121 @@ TIMEOUT=600  # 10 minutes timeout (increased for slower networks/containers)
 UP_OUTPUT=$(mktemp)
 UP_ERROR=$(mktemp)
 
-# Check if timeout command is available
-if command -v timeout >/dev/null 2>&1; then
-  log "Running with $TIMEOUT second timeout..."
-  # Run command with timeout in background and monitor progress
-  timeout $TIMEOUT "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR" &
-  UP_PID=$!
+# Determine the command to use based on import mode
+if [ "$IMPORT_MODE" = "standalone" ]; then
+  # Standalone mode: use docker compose directly (no git repository required)
+  WORKTREE_PATH="$ROOT2/worktrees/${{BRANCH_NAME}}"
+  COMPOSE_FILE="$WORKTREE_PATH/docker-compose.yml"
   
-  # Show progress every 30 seconds
-  ELAPSED=0
-  while kill -0 $UP_PID 2>/dev/null && [ $ELAPSED -lt $TIMEOUT ]; do
-    sleep 30
-    ELAPSED=$((ELAPSED + 30))
-    log "Still starting containers... (${{ELAPSED}}s elapsed)"
-    # Show container status
-    RUNNING=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
-    TOTAL=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
-    if [ "$TOTAL" -gt 0 ]; then
-      log "  Containers: $RUNNING/$TOTAL running"
+  if [ ! -f "$COMPOSE_FILE" ]; then
+    # Try alternative location
+    COMPOSE_FILE="$WORKTREE_PATH/.dockertree/docker-compose.worktree.yml"
+  fi
+  
+  if [ -f "$COMPOSE_FILE" ]; then
+    log "Using docker compose directly (standalone mode)"
+    cd "$WORKTREE_PATH"
+    
+    # Set project name for docker compose
+    if [ -n "$PROJECT_NAME" ]; then
+      COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
+    else
+      COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
     fi
-  done
-  
-  wait $UP_PID
-  UP_EXIT_CODE=$?
-  
-  if [ $UP_EXIT_CODE -eq 124 ]; then
-    log_error "Command timed out after $TIMEOUT seconds"
-    log "This may indicate containers are stuck or waiting for dependencies"
-  elif [ $UP_EXIT_CODE -ne 0 ]; then
-    log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+    
+    # Get relative path to compose file from worktree directory
+    COMPOSE_FILE_REL="${COMPOSE_FILE#$WORKTREE_PATH/}"
+    
+    # Load PROJECT_ROOT from env.dockertree (reuses existing env file loading pattern)
+    if [ -f ".dockertree/env.dockertree" ]; then
+      export $(grep "^PROJECT_ROOT=" .dockertree/env.dockertree | xargs)
+      log "Loaded PROJECT_ROOT from env.dockertree: $PROJECT_ROOT"
+    fi
+    
+    # Check if timeout command is available
+    if command -v timeout >/dev/null 2>&1; then
+      log "Running with $TIMEOUT second timeout..."
+      timeout $TIMEOUT docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR" &
+      UP_PID=$!
+      
+      # Show progress every 30 seconds
+      ELAPSED=0
+      while kill -0 $UP_PID 2>/dev/null && [ $ELAPSED -lt $TIMEOUT ]; do
+        sleep 30
+        ELAPSED=$((ELAPSED + 30))
+        log "Still starting containers... (${{ELAPSED}}s elapsed)"
+        # Show container status
+        RUNNING=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+        TOTAL=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+        if [ "$TOTAL" -gt 0 ]; then
+          log "  Containers: $RUNNING/$TOTAL running"
+        fi
+      done
+      
+      wait $UP_PID
+      UP_EXIT_CODE=$?
+      
+      if [ $UP_EXIT_CODE -eq 124 ]; then
+        log_error "Command timed out after $TIMEOUT seconds"
+        log "This may indicate containers are stuck or waiting for dependencies"
+      elif [ $UP_EXIT_CODE -ne 0 ]; then
+        log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+      fi
+    else
+      log "Timeout command not available, running without timeout..."
+      if docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
+        UP_EXIT_CODE=0
+      else
+        UP_EXIT_CODE=$?
+        log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+      fi
+    fi
+    
+    cd "$ROOT2"
+  else
+    log_error "Docker Compose file not found: $COMPOSE_FILE"
+    log_error "Cannot start containers in standalone mode"
+    UP_EXIT_CODE=1
   fi
 else
-  log "Timeout command not available, running without timeout..."
-  if "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
-    UP_EXIT_CODE=0
-  else
+  # Normal mode: use dockertree command (requires git repository)
+  if command -v timeout >/dev/null 2>&1; then
+    log "Running with $TIMEOUT second timeout..."
+    # Run command with timeout in background and monitor progress
+    timeout $TIMEOUT "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR" &
+    UP_PID=$!
+    
+    # Show progress every 30 seconds
+    ELAPSED=0
+    while kill -0 $UP_PID 2>/dev/null && [ $ELAPSED -lt $TIMEOUT ]; do
+      sleep 30
+      ELAPSED=$((ELAPSED + 30))
+      log "Still starting containers... (${{ELAPSED}}s elapsed)"
+      # Show container status
+      RUNNING=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+      TOTAL=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+      if [ "$TOTAL" -gt 0 ]; then
+        log "  Containers: $RUNNING/$TOTAL running"
+      fi
+    done
+    
+    wait $UP_PID
     UP_EXIT_CODE=$?
-    log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+    
+    if [ $UP_EXIT_CODE -eq 124 ]; then
+      log_error "Command timed out after $TIMEOUT seconds"
+      log "This may indicate containers are stuck or waiting for dependencies"
+    elif [ $UP_EXIT_CODE -ne 0 ]; then
+      log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+    fi
+  else
+    log "Timeout command not available, running without timeout..."
+    if "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
+      UP_EXIT_CODE=0
+    else
+      UP_EXIT_CODE=$?
+      log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+    fi
   fi
 fi
 

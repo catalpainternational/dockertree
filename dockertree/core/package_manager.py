@@ -567,9 +567,20 @@ class PackageManager:
                 log_info("Detected worker deployment, configuring environment variables...")
                 self._configure_worker_environment(worktree_path, metadata)
             
+            # Fix PROJECT_ROOT and build context for standalone deployment
+            # The .dockertree/ was extracted with source machine paths, now update for target server
+            env_manager = EnvironmentManager(project_root=target_directory)
+            
+            # Update PROJECT_ROOT in env.dockertree to use target server path
+            if not env_manager.update_project_root(worktree_path, target_directory):
+                log_warning("Failed to update PROJECT_ROOT, but continuing...")
+            
+            # Fix build context and volume mounts to use worktree path instead of PROJECT_ROOT
+            if not env_manager.fix_standalone_paths(worktree_path, target_directory):
+                log_warning("Failed to fix standalone paths, but continuing...")
+            
             # Apply domain/IP overrides to worktree's .dockertree/ if provided
             # The .dockertree/ was extracted with localhost settings, now update for deployment
-            env_manager = EnvironmentManager(project_root=target_directory)
             self._apply_domain_or_ip_override(worktree_path, domain, ip, env_manager)
             
             # Restore volumes if requested

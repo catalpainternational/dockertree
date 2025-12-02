@@ -13,6 +13,7 @@ from typing import Optional, Dict, Any
 from ..config.settings import get_project_root, DOCKERTREE_DIR, get_worktree_dir
 from ..utils.logging import log_info, log_success, log_warning, log_error
 from ..utils.validation import check_prerequisites
+from ..utils.caddy_config import ensure_caddy_labels_and_network
 from ..utils.file_utils import (
     prompt_yes_no, 
     add_to_gitignore, 
@@ -372,6 +373,9 @@ services:
             }
             compose_data['services'] = filtered_services
             
+            # Add Caddy labels and network for web services using shared utility (before service transformation)
+            ensure_caddy_labels_and_network(compose_data, domain=domain, ip=ip, use_localhost_pattern=True)
+            
             # Transform services
             for service_name, service_config in compose_data['services'].items():
                 # Add COMPOSE_PROJECT_NAME to container names
@@ -401,40 +405,8 @@ services:
                         service_config['ports'] = ports
                         log_info(f"Preserved ports mapping for {service_name} (needed for external access)")
                 
-                # Add Caddy labels for web services
+                # Ensure a named volume mount exists for SQLite persistence (web services only)
                 if service_name in ['web', 'app', 'frontend', 'api']:
-                    existing_labels = service_config.setdefault('labels', [])
-                    
-                    # Use domain override if provided, otherwise use localhost pattern
-                    if domain:
-                        # For production/staging, use the provided domain
-                        proxy_domain = domain
-                        log_info(f"Using production domain for {service_name}: {domain}")
-                    elif ip:
-                        # IP deployments - HTTP only, no automatic HTTPS
-                        proxy_domain = ip
-                        log_warning("IP deployments are HTTP-only. Let's Encrypt requires a domain name.")
-                    else:
-                        # For development, use localhost pattern
-                        proxy_domain = "${COMPOSE_PROJECT_NAME}.localhost"
-                    
-                    new_labels = [
-                        f"caddy.proxy={proxy_domain}",
-                        f"caddy.proxy.reverse_proxy=${{COMPOSE_PROJECT_NAME}}-{service_name}:8000"
-                        # Note: Health check disabled by default. Add manually if needed:
-                        # "caddy.proxy.health_check=/health-check/"
-                    ]
-                    # Only add labels that don't already exist
-                    for label in new_labels:
-                        if label not in existing_labels:
-                            existing_labels.append(label)
-                    
-                    # Connect web services to dockertree_caddy_proxy network
-                    networks = service_config.setdefault('networks', [])
-                    if 'dockertree_caddy_proxy' not in networks:
-                        networks.append('dockertree_caddy_proxy')
-
-                    # Ensure a named volume mount exists for SQLite persistence
                     # Mount a named volume at /data so Django can point SQLite NAME to /data/db.sqlite3
                     volumes_list = service_config.setdefault('volumes', [])
                     # Normalize to list
@@ -450,22 +422,46 @@ services:
                         volumes_list.append('sqlite_data:/data')
                 
                 # Add environment variables
+                # When domain is provided, add ALLOWED_HOSTS directly to ensure it's always available
+                if domain:
+                    from ..config.settings import build_allowed_hosts_with_container
+                    # Build allowed hosts with domain
+                    base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+                    allowed_hosts = f"localhost,127.0.0.1,{domain},*.{base_domain},web"
+                    # Try to get branch name for container name in allowed hosts
+                    try:
+                        from ..utils.path_utils import get_worktree_branch_name
+                        branch_name = get_worktree_branch_name(self.project_root)
+                        if branch_name:
+                            allowed_hosts = build_allowed_hosts_with_container(branch_name, [domain, f"*.{base_domain}"])
+                    except Exception:
+                        pass  # Use simple format if branch name unavailable
+                
                 if 'environment' in service_config:
                     if isinstance(service_config['environment'], dict):
-                        service_config['environment'].update({
+                        env_updates = {
                             'COMPOSE_PROJECT_NAME': '${COMPOSE_PROJECT_NAME}',
                             'PROJECT_ROOT': '${PROJECT_ROOT}',
-                        })
+                        }
+                        if domain:
+                            env_updates['ALLOWED_HOSTS'] = allowed_hosts
+                        service_config['environment'].update(env_updates)
                     elif isinstance(service_config['environment'], list):
-                        service_config['environment'].extend([
+                        env_updates = [
                             'COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}',
                             'PROJECT_ROOT=${PROJECT_ROOT}',
-                        ])
+                        ]
+                        if domain:
+                            env_updates.append(f'ALLOWED_HOSTS={allowed_hosts}')
+                        service_config['environment'].extend(env_updates)
                 else:
-                    service_config['environment'] = {
+                    env_dict = {
                         'COMPOSE_PROJECT_NAME': '${COMPOSE_PROJECT_NAME}',
                         'PROJECT_ROOT': '${PROJECT_ROOT}',
                     }
+                    if domain:
+                        env_dict['ALLOWED_HOSTS'] = allowed_hosts
+                    service_config['environment'] = env_dict
                 
                 # Add env_file directive to load both .env and dockertree env files
                 if 'env_file' not in service_config:
