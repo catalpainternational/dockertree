@@ -1981,6 +1981,27 @@ if [ "$IMPORT_MODE" = "standalone" ]; then
       elif [ $UP_EXIT_CODE -ne 0 ]; then
         log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
       fi
+      
+      # Post-wait verification: check if containers are actually running
+      # Even if the command timed out or failed, containers might have started successfully
+      log "Verifying container status after command completion..."
+      sleep 2  # Brief pause for containers to register
+      RUNNING_AFTER=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+      TOTAL_AFTER=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+      
+      if [ "$TOTAL_AFTER" -gt 0 ] && [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+        log_success "All $RUNNING_AFTER container(s) are running successfully"
+        log "Container startup completed successfully despite command exit code"
+        UP_EXIT_CODE=0  # Override exit code since containers are healthy
+      elif [ "$RUNNING_AFTER" -gt 0 ]; then
+        log "Container status: $RUNNING_AFTER/$TOTAL_AFTER running"
+        if [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+          log_success "All containers are running - deployment successful"
+          UP_EXIT_CODE=0  # Override exit code since all containers are running
+        else
+          log_warning "Some containers are not running - checking status..."
+        fi
+      fi
     else
       log "Timeout command not available, running without timeout..."
       if docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
@@ -1988,6 +2009,27 @@ if [ "$IMPORT_MODE" = "standalone" ]; then
       else
         UP_EXIT_CODE=$?
         log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+      fi
+      
+      # Post-command verification: check if containers are actually running
+      # Even if the command failed, containers might have started successfully
+      log "Verifying container status after command completion..."
+      sleep 2  # Brief pause for containers to register
+      RUNNING_AFTER=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+      TOTAL_AFTER=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+      
+      if [ "$TOTAL_AFTER" -gt 0 ] && [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+        log_success "All $RUNNING_AFTER container(s) are running successfully"
+        log "Container startup completed successfully despite command exit code"
+        UP_EXIT_CODE=0  # Override exit code since containers are healthy
+      elif [ "$RUNNING_AFTER" -gt 0 ]; then
+        log "Container status: $RUNNING_AFTER/$TOTAL_AFTER running"
+        if [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+          log_success "All containers are running - deployment successful"
+          UP_EXIT_CODE=0  # Override exit code since all containers are running
+        else
+          log_warning "Some containers are not running - checking status..."
+        fi
       fi
     fi
     
@@ -2035,6 +2077,27 @@ else
     elif [ $UP_EXIT_CODE -ne 0 ]; then
       log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
     fi
+    
+    # Post-wait verification: check if containers are actually running
+    # Even if the command timed out or failed, containers might have started successfully
+    log "Verifying container status after command completion..."
+    sleep 2  # Brief pause for containers to register
+    RUNNING_AFTER=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+    TOTAL_AFTER=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+    
+    if [ "$TOTAL_AFTER" -gt 0 ] && [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+      log_success "All $RUNNING_AFTER container(s) are running successfully"
+      log "Container startup completed successfully despite command exit code"
+      UP_EXIT_CODE=0  # Override exit code since containers are healthy
+    elif [ "$RUNNING_AFTER" -gt 0 ]; then
+      log "Container status: $RUNNING_AFTER/$TOTAL_AFTER running"
+      if [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+        log_success "All containers are running - deployment successful"
+        UP_EXIT_CODE=0  # Override exit code since all containers are running
+      else
+        log_warning "Some containers are not running - checking status..."
+      fi
+    fi
   else
     log "Timeout command not available, running without timeout..."
     if "$DTBIN" "$BRANCH_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
@@ -2042,6 +2105,27 @@ else
     else
       UP_EXIT_CODE=$?
       log_error "Failed to start worktree environment (exit code: $UP_EXIT_CODE)"
+    fi
+    
+    # Post-command verification: check if containers are actually running
+    # Even if the command failed, containers might have started successfully
+    log "Verifying container status after command completion..."
+    sleep 2  # Brief pause for containers to register
+    RUNNING_AFTER=$(docker ps --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+    TOTAL_AFTER=$(docker ps -a --filter "name=${{BRANCH_NAME}}" --format "{{{{.Names}}}}" 2>/dev/null | wc -l)
+    
+    if [ "$TOTAL_AFTER" -gt 0 ] && [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+      log_success "All $RUNNING_AFTER container(s) are running successfully"
+      log "Container startup completed successfully despite command exit code"
+      UP_EXIT_CODE=0  # Override exit code since containers are healthy
+    elif [ "$RUNNING_AFTER" -gt 0 ]; then
+      log "Container status: $RUNNING_AFTER/$TOTAL_AFTER running"
+      if [ "$RUNNING_AFTER" -eq "$TOTAL_AFTER" ]; then
+        log_success "All containers are running - deployment successful"
+        UP_EXIT_CODE=0  # Override exit code since all containers are running
+      else
+        log_warning "Some containers are not running - checking status..."
+      fi
     fi
   fi
 fi

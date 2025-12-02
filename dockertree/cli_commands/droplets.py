@@ -440,7 +440,7 @@ def register_commands(cli) -> None:
                     prepare_server=prepare_server,
                     dns_token=dns_token or api_token,
                     skip_dns_check=skip_dns_check,
-                    create_droplet=False,
+                    create_droplet=True,
                     droplet_name=None,
                     droplet_region=None,
                     droplet_size=None,
