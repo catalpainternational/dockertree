@@ -9,7 +9,7 @@ from typing import Optional
 
 # Script versions for cache invalidation
 SERVER_PREP_SCRIPT_VERSION = "1.0"
-REMOTE_IMPORT_SCRIPT_VERSION = "1.1"  # Updated for standalone mode fixes
+REMOTE_IMPORT_SCRIPT_VERSION = "1.2"  # Fixed PROJECT_ROOT and COMPOSE_PROJECT_NAME exports
 
 
 SERVER_PREP_SCRIPT = r'''
@@ -620,14 +620,16 @@ if [ "$NEED_VOLUME_RESTORE" = true ]; then
   COMPOSE_FILE="$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree/docker-compose.worktree.yml"
   if [ -f "$COMPOSE_FILE" ]; then
     log "Stopping any running containers before volume restoration..."
-    cd "$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree"
+    cd "$ROOT2/worktrees/${{BRANCH_NAME}}"
     # Use the same project name format as dockertree uses (project-name-branch-name)
+    # CRITICAL: Export both variables for docker-compose.yml interpolation
     if [ -n "$PROJECT_NAME" ]; then
-      COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
+      export COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
     else
-      COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
+      export COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
     fi
-    docker compose -f docker-compose.worktree.yml -p "$COMPOSE_PROJECT_NAME" down >/dev/null 2>&1 || true
+    export PROJECT_ROOT="$ROOT2/worktrees/${{BRANCH_NAME}}"
+    docker compose -f .dockertree/docker-compose.worktree.yml --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" down >/dev/null 2>&1 || true
     cd "$ROOT2"
   fi
   
@@ -771,21 +773,30 @@ if [ "$IMPORT_MODE" = "standalone" ]; then
     log "Using docker compose directly (standalone mode)"
     cd "$WORKTREE_PATH"
     
-    # Set project name for docker compose
+    # Set and EXPORT project name for docker compose
+    # CRITICAL: Both variables must be exported for docker-compose.yml interpolation
     if [ -n "$PROJECT_NAME" ]; then
-      COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
+      export COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
     else
-      COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
+      export COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
     fi
+    
+    # CRITICAL: Set PROJECT_ROOT to the worktree path, NOT the project root
+    # The docker-compose.yml uses $PROJECT_ROOT to locate .env and .dockertree/env.dockertree
+    # These files are in the worktree directory, not the parent project directory
+    export PROJECT_ROOT="$WORKTREE_PATH"
+    log "Set PROJECT_ROOT=$PROJECT_ROOT"
+    log "Set COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME"
     
     # Get relative path to compose file from worktree directory
-    COMPOSE_FILE_REL="${COMPOSE_FILE#$WORKTREE_PATH/}"
+    COMPOSE_FILE_REL="${{COMPOSE_FILE#$WORKTREE_PATH/}}"
     
-    # Load PROJECT_ROOT from env.dockertree (reuses existing env file loading pattern)
-    if [ -f ".dockertree/env.dockertree" ]; then
-      export $(grep "^PROJECT_ROOT=" .dockertree/env.dockertree | xargs)
-      log "Loaded PROJECT_ROOT from env.dockertree: $PROJECT_ROOT"
-    fi
+    # Run docker compose with explicit environment variables
+    # The --env-file loads additional vars, but PROJECT_ROOT and COMPOSE_PROJECT_NAME
+    # are already exported in the shell environment
+    run_docker_compose() {{
+      docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" "$@"
+    }}
     
     # Check if timeout command is available
     if command -v timeout >/dev/null 2>&1; then
