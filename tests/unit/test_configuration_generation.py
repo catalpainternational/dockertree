@@ -350,12 +350,16 @@ class TestConfigurationGeneration:
         
         # Check specific Caddy labels
         assert any('caddy.proxy=${COMPOSE_PROJECT_NAME}.localhost' in label for label in labels)
-        assert any('caddy.proxy.reverse_proxy' in label for label in labels)
+        # Note: reverse_proxy label is not added automatically - Caddy script uses container name
+        # Verify caddy.proxy label is present
+        assert any('caddy.proxy=' in label for label in labels)
         # Health check is optional and disabled by default
         # assert any('caddy.proxy.health_check' in label for label in labels)
         
         # Check web service is connected to dockertree_caddy_proxy network
+        # Networks should be in dict format to preserve default network access
         assert 'networks' in web_service
+        assert isinstance(web_service['networks'], dict), "Networks should be in dict format to preserve default network"
         assert 'dockertree_caddy_proxy' in web_service['networks']
     
     @patch('dockertree.utils.file_utils.prompt_compose_file_choice')
@@ -622,8 +626,10 @@ class TestConfigurationGeneration:
         networks = web_service['networks']
         labels = web_service['labels']
         
-        # Should not have duplicates
-        assert len(networks) == len(set(networks))
+        # Networks should be in dict format to preserve default network access
+        assert isinstance(networks, dict), "Networks should be in dict format to preserve default network"
+        # Should not have duplicates (check dict keys)
+        assert len(networks) == len(set(networks.keys()))
         assert len(labels) == len(set(labels))
         
         # Should have dockertree_caddy_proxy network
@@ -638,7 +644,8 @@ class TestConfigurationGeneration:
                     'image': 'nginx',
                     'container_name': '${COMPOSE_PROJECT_NAME}-web',
                     'networks': ['internal', 'caddy_proxy'],
-                    'labels': ['caddy.proxy=test.localhost', 'caddy.proxy.reverse_proxy=web:8000']
+                    'labels': ['caddy.proxy=test.localhost']
+                    # Note: reverse_proxy label not set - Caddy script uses container name automatically
                 }
             },
             'networks': {

@@ -606,12 +606,21 @@ services:
             # Remove legacy dockertree networks
             if 'networks' in service_config:
                 original_networks = service_config['networks']
-                cleaned_networks = [n for n in original_networks if n not in legacy_network_names]
-                if cleaned_networks:
-                    service_config['networks'] = cleaned_networks
-                else:
-                    # Keep at least one default network if all were removed
-                    service_config['networks'] = ['default']
+                # Handle both list and dict formats
+                if isinstance(original_networks, list):
+                    cleaned_networks = [n for n in original_networks if n not in legacy_network_names]
+                    if cleaned_networks:
+                        service_config['networks'] = cleaned_networks
+                    else:
+                        # Keep at least one default network if all were removed
+                        service_config['networks'] = {'default': None}
+                elif isinstance(original_networks, dict):
+                    cleaned_networks = {k: v for k, v in original_networks.items() if k not in legacy_network_names}
+                    if cleaned_networks:
+                        service_config['networks'] = cleaned_networks
+                    else:
+                        # Keep at least one default network if all were removed
+                        service_config['networks'] = {'default': None}
             
             # Remove legacy dockertree labels
             if 'labels' in service_config:

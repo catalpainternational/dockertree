@@ -72,11 +72,16 @@ def ensure_caddy_labels_and_network(
             service_config['labels'] = existing_labels
         
         # Build new labels
+        # Note: We don't set caddy.proxy.reverse_proxy here because:
+        # 1. Service names (web:8000) don't resolve on external networks across Compose projects
+        # 2. Container name patterns (${COMPOSE_PROJECT_NAME}-web) don't match actual names (test-web-1)
+        # 3. The Caddy dynamic config script automatically uses container['Names'] as fallback
+        #    which gives us the actual unique container name (e.g., test-web-1:8000)
         new_labels = [
-            f"caddy.proxy={proxy_domain}",
-            f"caddy.proxy.reverse_proxy=${{COMPOSE_PROJECT_NAME}}-{service_name}:{DEFAULT_WEB_PORT}"
+            f"caddy.proxy={proxy_domain}"
             # Note: Health check disabled by default. Add manually if needed:
             # "caddy.proxy.health_check=/health-check/"
+            # Note: reverse_proxy target is auto-detected from container name by Caddy script
         ]
         
         # Add labels that don't already exist
@@ -93,17 +98,46 @@ def ensure_caddy_labels_and_network(
                 log_info(f"Added Caddy label to {service_name}: {label}")
         
         # Connect web services to dockertree_caddy_proxy network
-        networks = service_config.setdefault('networks', [])
-        
-        # Normalize networks to list format if it's a dict
-        if isinstance(networks, dict):
-            networks = list(networks.keys())
-            service_config['networks'] = networks
-        
-        if 'dockertree_caddy_proxy' not in networks:
-            networks.append('dockertree_caddy_proxy')
+        # Important: Web containers need BOTH:
+        # 1. Default network (for database/redis access)
+        # 2. dockertree_caddy_proxy network (for Caddy routing)
+        # When networks are explicitly specified (list or dict), Docker Compose does NOT
+        # automatically add the default network. We must explicitly include it.
+        if 'networks' not in service_config:
+            # No networks specified - explicitly include both default and dockertree_caddy_proxy
+            service_config['networks'] = {
+                'default': None,  # Explicitly include default network for database access
+                'dockertree_caddy_proxy': None
+            }
             updated = True
-            log_info(f"Added dockertree_caddy_proxy network to {service_name}")
+            log_info(f"Added networks to {service_name}: default + dockertree_caddy_proxy")
+        elif isinstance(service_config['networks'], list):
+            # Convert list to dict format, preserving all existing networks
+            networks_dict = {}
+            for network in service_config['networks']:
+                networks_dict[network] = None
+            # Ensure default network is included for database access
+            if 'default' not in networks_dict:
+                networks_dict['default'] = None
+            # Add dockertree_caddy_proxy if not present
+            if 'dockertree_caddy_proxy' not in networks_dict:
+                networks_dict['dockertree_caddy_proxy'] = None
+                updated = True
+            service_config['networks'] = networks_dict
+            if updated:
+                log_info(f"Added networks to {service_name}: preserved existing + default + dockertree_caddy_proxy")
+        elif isinstance(service_config['networks'], dict):
+            # Already in dict format - ensure both default and dockertree_caddy_proxy are present
+            network_added = False
+            if 'default' not in service_config['networks']:
+                service_config['networks']['default'] = None
+                network_added = True
+            if 'dockertree_caddy_proxy' not in service_config['networks']:
+                service_config['networks']['dockertree_caddy_proxy'] = None
+                network_added = True
+            if network_added:
+                updated = True
+                log_info(f"Added networks to {service_name}: ensured default + dockertree_caddy_proxy")
     
     return updated
 
