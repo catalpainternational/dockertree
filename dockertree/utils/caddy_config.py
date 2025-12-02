@@ -84,15 +84,27 @@ def ensure_caddy_labels_and_network(
             # Note: reverse_proxy target is auto-detected from container name by Caddy script
         ]
         
-        # Add labels that don't already exist
+        # Add or update labels
         for label in new_labels:
             label_key = label.split('=')[0] if '=' in label else label
-            # Check if label already exists (by key)
-            label_exists = any(
-                existing_label.startswith(label_key + '=') or existing_label == label_key
-                for existing_label in existing_labels
-            )
-            if not label_exists:
+            # Find existing label index (if any)
+            existing_index = None
+            for i, existing_label in enumerate(existing_labels):
+                if existing_label.startswith(label_key + '=') or existing_label == label_key:
+                    existing_index = i
+                    break
+            
+            if existing_index is not None:
+                # Label exists - update it only if we have a production domain/IP
+                # (don't overwrite custom labels with localhost pattern)
+                if domain or ip:
+                    old_value = existing_labels[existing_index]
+                    existing_labels[existing_index] = label
+                    updated = True
+                    log_info(f"Updated Caddy label for {service_name}: {old_value} -> {label}")
+                # else: keep existing label (localhost pattern shouldn't overwrite)
+            else:
+                # Label doesn't exist - add it
                 existing_labels.append(label)
                 updated = True
                 log_info(f"Added Caddy label to {service_name}: {label}")

@@ -143,7 +143,7 @@ environment:
 - Volumes are made branch-specific
 - Ports converted to `expose` for internal networking (extracts container port only)
 - Caddy labels added for web services (web, app, frontend, api)
-- Web services automatically connected to `dockertree_caddy_proxy` network
+- Web services automatically connected to both `default` network (for database/redis access) and `dockertree_caddy_proxy` network (for Caddy routing)
 
 ### Dynamic Configuration Loading
 ### Django Compatibility Validation
@@ -387,6 +387,41 @@ This eliminates duplicated `try/except` blocks and guarantees uniform output for
 
 **Dependencies**: Standard library (json, sys, datetime)
 **External Interactions**: stdout, CLI framework integration
+
+#### Caddy Configuration (`utils/caddy_config.py`)
+**Responsibility**: Single source of truth for Caddy label and network configuration
+
+**Key Functions**:
+- `ensure_caddy_labels_and_network()` - Ensure Caddy labels and network are configured for web services
+- `update_allowed_hosts_in_compose()` - Update ALLOWED_HOSTS in docker-compose.yml environment section
+
+**Key Features**:
+- **Label Update Behavior**: When `domain` or `ip` is provided (production deployment), existing `caddy.proxy` labels are **replaced** with the production domain/IP
+- **Localhost Preservation**: When no domain/IP is provided (local development), existing localhost labels are **preserved** (not overwritten)
+- **Label Normalization**: Automatically converts dict-format labels to list format for consistency
+- **Network Configuration**: Ensures web services are connected to both default network (for database/redis) and `dockertree_caddy_proxy` network (for Caddy routing)
+- **Service Detection**: Only configures web services (web, app, frontend, api) - skips database, redis, and other services
+
+**Usage**:
+- Used by `SetupManager._transform_compose_file()` during project setup
+- Used by `EnvironmentManager.apply_domain_overrides()` during domain override
+- Used by `PackageManager._standalone_import()` during package import
+
+**Label Update Logic**:
+```python
+# Production deployment (domain/IP provided)
+if domain or ip:
+    # Replace existing caddy.proxy label
+    existing_labels[existing_index] = f"caddy.proxy={domain}"
+    
+# Local development (no domain/IP)
+else:
+    # Preserve existing label (don't overwrite)
+    # Only add if label doesn't exist
+```
+
+**Dependencies**: Docker Compose YAML structure
+**External Interactions**: Docker Compose file modification
 
 ## ⚙️ Configuration Architecture
 
@@ -897,6 +932,7 @@ dockertree packages import backup-20240115.tar.gz --standalone
   - Automatic DNS management via Digital Ocean DNS API
   - DNS record creation with user confirmation if subdomain doesn't exist
   - Caddy routes traffic using the provided domain
+  - **Caddy labels automatically updated**: Existing `caddy.proxy` labels in docker-compose files are replaced with the production domain (replaces `${COMPOSE_PROJECT_NAME}.localhost` pattern)
   - HTTPS available via automatic certificate management (Let's Encrypt)
   - Environment overrides set `SITE_DOMAIN=https://{domain}` and include domain in `ALLOWED_HOSTS`
   - Dynamic HTTPS configuration via Caddy admin API
@@ -904,6 +940,7 @@ dockertree packages import backup-20240115.tar.gz --standalone
 - IP (`--ip x.x.x.x`):
   - HTTP-only (no TLS); certificate authorities do not issue certificates for IPs
   - Caddy can route using the IP value, but remains HTTP unless manually configured
+  - **Caddy labels automatically updated**: Existing `caddy.proxy` labels in docker-compose files are replaced with the IP address (replaces `${COMPOSE_PROJECT_NAME}.localhost` pattern)
   - Environment overrides set `SITE_DOMAIN=http://{ip}` and include IP in `ALLOWED_HOSTS`
 
 ### DNS Provider Abstraction Layer
