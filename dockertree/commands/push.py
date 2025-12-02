@@ -1924,17 +1924,31 @@ if [ "$IMPORT_MODE" = "standalone" ]; then
     log "Using docker compose directly (standalone mode)"
     cd "$WORKTREE_PATH"
     
-    # Set project name for docker compose
+    # Set and EXPORT project name for docker compose
+    # CRITICAL: Both variables must be exported for docker-compose.yml interpolation
     if [ -n "$PROJECT_NAME" ]; then
-      COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
+      export COMPOSE_PROJECT_NAME="$PROJECT_NAME-${{BRANCH_NAME}}"
     else
-      COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
+      export COMPOSE_PROJECT_NAME="$(basename "$ROOT2" | tr '_' '-' | tr '[:upper:]' '[:lower:]')-${{BRANCH_NAME}}"
+    fi
+    
+    # CRITICAL: Set PROJECT_ROOT to the worktree path, NOT the project root
+    # The docker-compose.yml uses $PROJECT_ROOT to locate .env and .dockertree/env.dockertree
+    # These files are in the worktree directory, not the parent project directory
+    export PROJECT_ROOT="$WORKTREE_PATH"
+    log "Set PROJECT_ROOT=$PROJECT_ROOT"
+    log "Set COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME"
+    
+    # Get the compose file name relative to worktree path
+    COMPOSE_FILE_REL="$(basename "$COMPOSE_FILE")"
+    if [ "$COMPOSE_FILE_REL" = "docker-compose.worktree.yml" ]; then
+      COMPOSE_FILE_REL=".dockertree/docker-compose.worktree.yml"
     fi
     
     # Check if timeout command is available
     if command -v timeout >/dev/null 2>&1; then
       log "Running with $TIMEOUT second timeout..."
-      timeout $TIMEOUT docker compose -f "$(basename "$COMPOSE_FILE")" -p "$COMPOSE_PROJECT_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR" &
+      timeout $TIMEOUT docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR" &
       UP_PID=$!
       
       # Show progress every 30 seconds
@@ -1969,7 +1983,7 @@ if [ "$IMPORT_MODE" = "standalone" ]; then
       fi
     else
       log "Timeout command not available, running without timeout..."
-      if docker compose -f "$(basename "$COMPOSE_FILE")" -p "$COMPOSE_PROJECT_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
+      if docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" up -d > "$UP_OUTPUT" 2> "$UP_ERROR"; then
         UP_EXIT_CODE=0
       else
         UP_EXIT_CODE=$?
