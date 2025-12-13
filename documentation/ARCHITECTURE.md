@@ -928,7 +928,11 @@ dockertree packages import backup-20240115.tar.gz --standalone
 
 ### Domain vs IP Deployments
 
-- Domain (`--domain sub.domain.tld`):
+- Domain (`--domain sub.domain.tld` or `--domain sub.sub.domain.tld` or `--domain sub.domain.co.uk`):
+  - Supports simple subdomains: `app.example.com`
+  - Supports sub-subdomains: `h2.h1.example.com`
+  - Supports multi-part TLDs: `example.co.uk`, `app.example.com.au`
+  - Supports combined: `h2.h1.example.co.uk`
   - Automatic DNS management via Digital Ocean DNS API
   - DNS record creation with user confirmation if subdomain doesn't exist
   - Caddy routes traffic using the provided domain
@@ -953,7 +957,8 @@ Dockertree includes a DNS provider abstraction layer for automatic DNS managemen
 **Key Components**:
 - `DNSProvider` abstract base class with interface methods
 - Provider registry for auto-detection and factory creation
-- Shared utilities: `parse_domain()`, `is_domain()`, token resolution
+- Shared utilities: `parse_domain()`, `get_base_domain()`, `is_domain()`, token resolution
+- `parse_domain()` supports sub-subdomains and multi-part TLDs (e.g., `h2.h1.example.co.uk`)
 
 **Key Methods**:
 - `check_domain_exists()` - Check if subdomain exists and return current IP

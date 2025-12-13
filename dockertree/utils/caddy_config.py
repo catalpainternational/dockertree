@@ -151,6 +151,26 @@ def ensure_caddy_labels_and_network(
                 updated = True
                 log_info(f"Added networks to {service_name}: ensured default + dockertree_caddy_proxy")
     
+    # Ensure top-level networks declaration exists if any service references dockertree_caddy_proxy
+    # This is required for Docker Compose to recognize the network as external
+    network_referenced = False
+    for service_name, service_config in compose_data['services'].items():
+        if 'networks' in service_config:
+            networks = service_config['networks']
+            if isinstance(networks, dict) and 'dockertree_caddy_proxy' in networks:
+                network_referenced = True
+                break
+            elif isinstance(networks, list) and 'dockertree_caddy_proxy' in networks:
+                network_referenced = True
+                break
+    
+    if network_referenced:
+        compose_data.setdefault('networks', {})
+        if 'dockertree_caddy_proxy' not in compose_data['networks']:
+            compose_data['networks']['dockertree_caddy_proxy'] = {'external': True}
+            updated = True
+            log_info("Added top-level networks declaration for dockertree_caddy_proxy (external)")
+    
     return updated
 
 
@@ -174,7 +194,8 @@ def update_allowed_hosts_in_compose(
         return False
     
     # Build complete ALLOWED_HOSTS value with domain, wildcard, and container names
-    base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+    from ..core.dns_manager import get_base_domain
+    base_domain = get_base_domain(domain)
     allowed_hosts = f"localhost,127.0.0.1,{domain},*.{base_domain},web"
     
     # Try to get container name from COMPOSE_PROJECT_NAME if available

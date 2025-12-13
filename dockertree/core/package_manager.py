@@ -562,6 +562,18 @@ class PackageManager:
                     "error": f"Worktree not found in archive: worktrees/{branch_name}"
                 }
             
+            # Initialize git repository for standalone deployment
+            # This removes invalid .git worktree references and creates a fresh repo
+            # so that dockertree commands (which require git) will work on the server
+            if not self._initialize_git_for_standalone(target_directory):
+                log_warning("Failed to initialize git repository, dockertree commands may not work")
+            
+            # Fix env_file paths in docker-compose.worktree.yml for standalone deployment
+            # The compose file may reference ${PROJECT_ROOT}/.env but on standalone deployments
+            # the .env is in the worktree directory, so we use relative paths
+            if not self._fix_env_file_paths_for_standalone(worktree_path):
+                log_warning("Failed to fix env_file paths, docker compose may fail to find .env")
+            
             # Configure worker environment if metadata indicates worker deployment
             if metadata.get('vpc_deployment', {}).get('is_worker'):
                 log_info("Detected worker deployment, configuring environment variables...")
@@ -1578,4 +1590,165 @@ class PackageManager:
             return True
         except Exception as e:
             log_error(f"Failed to compress package: {e}")
+            return False
+
+    def _initialize_git_for_standalone(self, target_directory: Path) -> bool:
+        """Initialize a git repository for standalone deployment.
+        
+        Standalone deployments may have invalid .git worktree reference files
+        that point to the source machine's paths. This method:
+        1. Removes invalid .git worktree reference files
+        2. Initializes a fresh git repository
+        3. Creates an initial commit with all files
+        
+        Args:
+            target_directory: Root directory of the extracted project
+            
+        Returns:
+            True if git was initialized successfully, False otherwise
+        """
+        import subprocess
+        
+        try:
+            # Find and remove invalid .git files (worktree references)
+            # These are small files containing "gitdir: /path/to/original/.git/worktrees/..."
+            for git_file in target_directory.rglob('.git'):
+                if git_file.is_file():
+                    # Read first line to check if it's a worktree reference
+                    try:
+                        content = git_file.read_text().strip()
+                        if content.startswith('gitdir:'):
+                            log_info(f"Removing invalid .git worktree reference: {git_file}")
+                            git_file.unlink()
+                    except Exception as e:
+                        log_warning(f"Could not read .git file {git_file}: {e}")
+            
+            # Initialize git repository at project root
+            log_info("Initializing git repository for standalone deployment...")
+            result = subprocess.run(
+                ["git", "init"],
+                cwd=target_directory,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                log_warning(f"git init failed: {result.stderr}")
+                return False
+            
+            # Configure git user if not already set (needed for commit)
+            subprocess.run(
+                ["git", "config", "user.email", "dockertree@localhost"],
+                cwd=target_directory,
+                capture_output=True
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Dockertree"],
+                cwd=target_directory,
+                capture_output=True
+            )
+            
+            # Add all files
+            result = subprocess.run(
+                ["git", "add", "-A"],
+                cwd=target_directory,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                log_warning(f"git add failed: {result.stderr}")
+                return False
+            
+            # Create initial commit
+            result = subprocess.run(
+                ["git", "commit", "-m", "Initial import from dockertree package"],
+                cwd=target_directory,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                # May fail if nothing to commit (empty repo)
+                log_warning(f"git commit failed: {result.stderr}")
+                return False
+            
+            log_success("Git repository initialized for standalone deployment")
+            return True
+            
+        except Exception as e:
+            log_warning(f"Failed to initialize git for standalone: {e}")
+            return False
+
+    def _fix_env_file_paths_for_standalone(self, worktree_path: Path) -> bool:
+        """Fix env_file paths in docker-compose.worktree.yml for standalone deployment.
+        
+        The docker-compose.worktree.yml may have env_file paths like:
+            - ${PROJECT_ROOT}/.env
+            - ${PROJECT_ROOT}/.dockertree/env.dockertree
+        
+        For standalone deployments, these should be relative to the docker-compose file
+        location (.dockertree/), not the worktree root:
+            - ../.env (go up from .dockertree/ to worktree root where .env is)
+            - env.dockertree (same directory as docker-compose file)
+        
+        Args:
+            worktree_path: Path to the worktree directory
+            
+        Returns:
+            True if paths were fixed successfully, False otherwise
+        """
+        import yaml
+        
+        try:
+            compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
+            if not compose_file.exists():
+                log_warning(f"docker-compose.worktree.yml not found at {compose_file}")
+                return False
+            
+            # Read the compose file
+            with open(compose_file, 'r') as f:
+                compose_data = yaml.safe_load(f)
+            
+            if not compose_data or 'services' not in compose_data:
+                log_warning("Invalid docker-compose.worktree.yml structure")
+                return False
+            
+            modified = False
+            
+            # Fix env_file paths in each service
+            # Paths are relative to the docker-compose file location (.dockertree/)
+            for service_name, service_config in compose_data.get('services', {}).items():
+                if 'env_file' in service_config:
+                    env_files = service_config['env_file']
+                    if isinstance(env_files, list):
+                        new_env_files = []
+                        for ef in env_files:
+                            # Replace ${PROJECT_ROOT}/ paths with relative paths
+                            # ../.env goes up from .dockertree/ to worktree root
+                            if '${PROJECT_ROOT}/.env' in ef:
+                                new_env_files.append('../.env')
+                                modified = True
+                            # env.dockertree is in the same directory as docker-compose
+                            elif '${PROJECT_ROOT}/.dockertree/env.dockertree' in ef:
+                                new_env_files.append('env.dockertree')
+                                modified = True
+                            else:
+                                new_env_files.append(ef)
+                        service_config['env_file'] = new_env_files
+                    elif isinstance(env_files, str):
+                        if '${PROJECT_ROOT}/.env' in env_files:
+                            service_config['env_file'] = '../.env'
+                            modified = True
+                        elif '${PROJECT_ROOT}/.dockertree/env.dockertree' in env_files:
+                            service_config['env_file'] = 'env.dockertree'
+                            modified = True
+            
+            if modified:
+                # Write the updated compose file
+                with open(compose_file, 'w') as f:
+                    yaml.dump(compose_data, f, default_flow_style=False, sort_keys=False)
+                log_info("Fixed env_file paths in docker-compose.worktree.yml for standalone deployment")
+            
+            return True
+            
+        except Exception as e:
+            log_warning(f"Failed to fix env_file paths: {e}")
             return False

@@ -425,8 +425,9 @@ services:
                 # When domain is provided, add ALLOWED_HOSTS directly to ensure it's always available
                 if domain:
                     from ..config.settings import build_allowed_hosts_with_container
+                    from ..core.dns_manager import get_base_domain
                     # Build allowed hosts with domain
-                    base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+                    base_domain = get_base_domain(domain)
                     allowed_hosts = f"localhost,127.0.0.1,{domain},*.{base_domain},web"
                     # Try to get branch name for container name in allowed hosts
                     try:
@@ -538,9 +539,8 @@ services:
                             'name': f"${{COMPOSE_PROJECT_NAME}}_{volume_name}"
                         }
             
-            # Add networks
-            compose_data.setdefault('networks', {})
-            compose_data['networks']['dockertree_caddy_proxy'] = {'external': True}
+            # Note: Top-level networks declaration for dockertree_caddy_proxy is now handled
+            # by ensure_caddy_labels_and_network() which is called earlier in this function
             
             # Validate transformed compose file
             if not self._validate_transformed_compose(compose_data):

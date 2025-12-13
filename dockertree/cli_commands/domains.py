@@ -83,20 +83,10 @@ def register_commands(cli) -> None:
     def domains_delete(full_domain: str, force: bool, dns_token: Optional[str], json: bool):
         from dockertree.core.dns_manager import parse_domain
 
-        parts = full_domain.split(".")
-        if len(parts) < 2:
-            raise DockertreeCommandError(
-                f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld or domain.tld"
-            )
-
-        if len(parts) == 2:
-            subdomain = ""
-            domain = full_domain
-        else:
-            try:
-                subdomain, domain = parse_domain(full_domain)
-            except ValueError as exc:
-                raise DockertreeCommandError(f"Invalid domain format: {exc}")
+        try:
+            subdomain, domain = parse_domain(full_domain)
+        except ValueError as exc:
+            raise DockertreeCommandError(f"Invalid domain format: {exc}")
 
         check_prerequisites_no_git()
         domain_commands = DomainCommands()
@@ -122,20 +112,10 @@ def register_commands(cli) -> None:
     def domains_info(full_domain: str, dns_token: Optional[str], json: bool):
         from dockertree.core.dns_manager import parse_domain
 
-        parts = full_domain.split(".")
-        if len(parts) < 2:
-            raise DockertreeCommandError(
-                f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld or domain.tld"
-            )
-
-        if len(parts) == 2:
-            subdomain = ""
-            domain = full_domain
-        else:
-            try:
-                subdomain, domain = parse_domain(full_domain)
-            except ValueError as exc:
-                raise DockertreeCommandError(f"Invalid domain format: {exc}")
+        try:
+            subdomain, domain = parse_domain(full_domain)
+        except ValueError as exc:
+            raise DockertreeCommandError(f"Invalid domain format: {exc}")
 
         check_prerequisites_no_git()
         domain_commands = DomainCommands()

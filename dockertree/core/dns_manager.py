@@ -9,6 +9,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Dict, Any, List
 import os
+import tldextract
 
 from ..utils.logging import log_info, log_warning, log_error
 from ..utils.env_loader import load_env_from_project_root, load_env_from_home
@@ -17,23 +18,73 @@ from ..utils.env_loader import load_env_from_project_root, load_env_from_home
 def parse_domain(full_domain: str) -> Tuple[str, str]:
     """Parse full domain into subdomain and base domain components.
     
+    Supports:
+    - Multi-level subdomains: 'h2.h1.example.com' → ('h2.h1', 'example.com')
+    - Multi-part TLDs: 'example.co.uk' → ('', 'example.co.uk')
+    - Combined: 'h2.h1.example.co.uk' → ('h2.h1', 'example.co.uk')
+    - Simple subdomain: 'app.example.com' → ('app', 'example.com')
+    - Root domain: 'example.com' → ('', 'example.com')
+    
     Args:
-        full_domain: Full domain name (e.g., 'app.example.com')
+        full_domain: Full domain name (e.g., 'app.example.com', 'h2.h1.example.co.uk')
         
     Returns:
-        Tuple of (subdomain, domain)
+        Tuple of (subdomain, base_domain) where:
+        - subdomain: All subdomain parts joined (e.g., 'h2.h1' or 'app'), empty string for root domains
+        - base_domain: Registered domain with TLD (e.g., 'example.com' or 'example.co.uk')
         
     Raises:
         ValueError: If domain format is invalid
     """
-    parts = full_domain.split('.')
-    if len(parts) < 2:
+    if not full_domain or not isinstance(full_domain, str):
+        raise ValueError(f"Invalid domain format: {full_domain}. Expected a non-empty string.")
+    
+    # Basic validation - must contain at least one dot
+    if '.' not in full_domain:
         raise ValueError(f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld")
     
-    subdomain = parts[0]
-    domain = '.'.join(parts[1:])
+    # Use tldextract to properly identify domain and TLD
+    extracted = tldextract.extract(full_domain)
     
-    return subdomain, domain
+    # Extract base domain (registered domain with TLD)
+    # Use top_domain_under_public_suffix (recommended) with fallback to registered_domain for older versions
+    base_domain = getattr(extracted, 'top_domain_under_public_suffix', None) or extracted.registered_domain
+    
+    # If no registered domain found, fall back to simple parsing
+    if not base_domain:
+        parts = full_domain.split('.')
+        if len(parts) < 2:
+            raise ValueError(f"Invalid domain format: {full_domain}. Expected format: subdomain.domain.tld")
+        # Fallback: assume last 2 parts are domain.tld
+        if len(parts) == 2:
+            return ('', full_domain)
+        subdomain = '.'.join(parts[:-2])
+        domain = '.'.join(parts[-2:])
+        return (subdomain, domain) if subdomain else ('', domain)
+    
+    # Extract subdomain (everything before registered_domain)
+    subdomain = extracted.subdomain if extracted.subdomain else ''
+    
+    return (subdomain, base_domain)
+
+
+def get_base_domain(full_domain: str) -> str:
+    """Extract base domain (registered domain) from full domain.
+    
+    This is a convenience function that extracts only the base domain portion,
+    useful for cases where you only need the base domain and not the subdomain.
+    
+    Args:
+        full_domain: Full domain name (e.g., 'app.example.com', 'h2.h1.example.co.uk')
+        
+    Returns:
+        Base domain with TLD (e.g., 'example.com', 'example.co.uk')
+        
+    Raises:
+        ValueError: If domain format is invalid
+    """
+    _, base_domain = parse_domain(full_domain)
+    return base_domain
 
 
 def is_domain(host: str) -> bool:

@@ -272,8 +272,10 @@ class EnvironmentManager:
         
         # Use domain override if provided, otherwise use localhost
         if domain:
+            from ..core.dns_manager import get_base_domain
             site_domain = f"https://{domain}"
-            allowed_hosts = f"localhost,127.0.0.1,{domain},*.{domain.split('.', 1)[1] if '.' in domain else domain},web"
+            base_domain = get_base_domain(domain)
+            allowed_hosts = f"localhost,127.0.0.1,{domain},*.{base_domain},web"
         else:
             site_domain = f"{project_name}-{branch_name}.localhost"
             allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
@@ -657,13 +659,9 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
         
         # Construct URLs from domain
         site_domain = f"https://{domain}"
-        allowed_hosts = f"localhost,127.0.0.1,{domain}"
-        
-        # Extract base domain (everything after first dot)
-        if '.' in domain:
-            base_domain = domain.split('.', 1)[1]
-            allowed_hosts += f",*.{base_domain}"
-        allowed_hosts += ",web"
+        from ..core.dns_manager import get_base_domain
+        base_domain = get_base_domain(domain)
+        allowed_hosts = f"localhost,127.0.0.1,{domain},*.{base_domain},web"
         
         # Determine CADDY_EMAIL: check if already set in env.dockertree, otherwise use default
         default_caddy_email = f"admin@{domain}"
@@ -751,7 +749,8 @@ CADDY_EMAIL={caddy_email}
             https_url = f"https://{domain}"
             
             # Extract base domain
-            base_domain = domain.split('.', 1)[1] if '.' in domain else domain
+            from ..core.dns_manager import get_base_domain
+            base_domain = get_base_domain(domain)
             
             # Build ALLOWED_HOSTS with container name if branch_name is available
             if branch_name:

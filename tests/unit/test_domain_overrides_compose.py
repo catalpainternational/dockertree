@@ -165,6 +165,18 @@ DEBUG=True
             print(f"Log output: {log_output}")
         
         assert result is True, f"apply_domain_overrides returned False. Logs: {log_output}"
+        
+        # Verify compose file was updated
+        compose_file = worktree_path / ".dockertree" / "docker-compose.worktree.yml"
+        assert compose_file.exists()
+        
+        with open(compose_file) as f:
+            compose_data = yaml.safe_load(f)
+        
+        # Verify top-level networks declaration was added (fix for external network issue)
+        assert 'networks' in compose_data
+        assert 'dockertree_caddy_proxy' in compose_data['networks']
+        assert compose_data['networks']['dockertree_caddy_proxy'] == {'external': True}
     
     def test_verify_domain_configuration(self, env_manager, temp_project):
         """Test that verify_domain_configuration correctly verifies domain settings."""
@@ -294,6 +306,11 @@ DEBUG=True
         api_labels = compose_data['services']['api']['labels']
         assert isinstance(api_labels, list)  # Dict format is normalized to list
         assert f'caddy.proxy={domain}' in api_labels
+        
+        # Verify top-level networks declaration was added (fix for external network issue)
+        assert 'networks' in compose_data
+        assert 'dockertree_caddy_proxy' in compose_data['networks']
+        assert compose_data['networks']['dockertree_caddy_proxy'] == {'external': True}
 
     def test_apply_domain_overrides_handles_missing_compose_file(self, env_manager, temp_project):
         """Test error handling when compose file doesn't exist."""
@@ -465,6 +482,11 @@ DEBUG=True
         assert 'caddy.proxy.reverse_proxy=${COMPOSE_PROJECT_NAME}-web:8000' in web_labels
         assert 'com.example.custom=value' in web_labels
         assert 'traefik.enable=true' in web_labels
+        
+        # Verify top-level networks declaration was added (fix for external network issue)
+        assert 'networks' in updated_compose
+        assert 'dockertree_caddy_proxy' in updated_compose['networks']
+        assert updated_compose['networks']['dockertree_caddy_proxy'] == {'external': True}
 
     def test_domain_override_updates_allowed_hosts(self, env_manager, temp_project):
         """Test that domain override updates ALLOWED_HOSTS in env.dockertree."""

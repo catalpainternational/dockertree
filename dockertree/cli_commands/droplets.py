@@ -90,8 +90,7 @@ def _resolve_droplet_name(branch_name: str, domain: Optional[str], json: bool) -
         from dockertree.core.dns_manager import parse_domain
 
         subdomain, _ = parse_domain(domain)
-        domain_parts = domain.split(".")
-        if len(domain_parts) == 2:
+        if not subdomain:
             if not json:
                 log_info(
                     f"Domain '{domain}' is a root domain (no subdomain), using branch name '{branch_name}' as droplet name"
