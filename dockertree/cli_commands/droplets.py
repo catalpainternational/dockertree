@@ -485,8 +485,36 @@ def register_commands(cli) -> None:
             else:
                 if not json:
                     print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
+                
+                # Determine deployment URL
+                url = None
+                if domain:
+                    url = f"https://{domain}"
+                elif ip:
+                    url = f"http://{ip}"
+                elif droplet_info and droplet_info.ip_address:
+                    url = f"http://{droplet_info.ip_address}"
+                
                 if json:
-                    JSONOutput.print_success("Droplet created and package pushed successfully")
+                    data = {"droplet_name": droplet_name}
+                    if url:
+                        data["url"] = url
+                    if droplet_info:
+                        data["ip_address"] = droplet_info.ip_address
+                    JSONOutput.print_success("Droplet created and package pushed successfully", data=data)
+                else:
+                    log_success("Droplet created and package pushed successfully")
+                    
+                    # Output deployment URL
+                    if url:
+                        if domain:
+                            log_success(f"🌐 Your site is available at: {url}")
+                        elif ip:
+                            log_success(f"🌐 Your site is available at: {url}")
+                        else:
+                            log_info(f"🌐 Your site is available at: {url}")
+                            log_info("   (Use --domain to enable HTTPS)")
+                        print_plain("")
         except Exception as exc:
             from dockertree.utils.logging import format_elapsed_time
 
