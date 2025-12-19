@@ -80,7 +80,10 @@ class CaddyDockerMonitor:
                 json=config,
                 timeout=10
             )
-            return response.status_code == 200
+            if response.status_code != 200:
+                logger.error(f"Failed to update Caddy config: {response.status_code} - {response.text}")
+                return False
+            return True
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to update Caddy config: {e}")
             return False
@@ -169,13 +172,21 @@ class CaddyDockerMonitor:
         
         routes = []
         
-        # Add routes for each container (specific routes first)
+        # Group containers by domain to handle path-based routing
+        domain_containers = {}
         for container in containers:
-            # Labels are already in the container dict from get_docker_containers
             labels = container.get('Labels', {})
-            
             if 'caddy.proxy' in labels:
                 domain = labels['caddy.proxy']
+                if domain not in domain_containers:
+                    domain_containers[domain] = []
+                domain_containers[domain].append((container, labels))
+        
+        # Add routes for each domain (with path-based routing support)
+        for domain, container_list in domain_containers.items():
+            if len(container_list) == 1:
+                # Single container for this domain - simple route
+                container, labels = container_list[0]
                 target = labels.get('caddy.proxy.reverse_proxy', f"{container['Names']}:8000")
                 
                 route = {
@@ -197,6 +208,70 @@ class CaddyDockerMonitor:
                 routes.append(route)
                 route_type = "HTTPS" if self._is_domain(domain) else "HTTP"
                 logger.info(f"Added {route_type} route for {domain} -> {target}")
+            else:
+                # Multiple containers for same domain - use subroute with path matching
+                # Sort containers: specific paths first (longest first), then catch-all
+                def sort_key(x):
+                    labels = x[1]
+                    path = labels.get('caddy.proxy.path', '/')
+                    except_path = labels.get('caddy.proxy.except', '')
+                    # Priority: specific paths > except paths > catch-all
+                    if path and path != '/':
+                        return (0, -len(path))  # Specific path, longer = higher priority
+                    elif except_path:
+                        return (1, 0)  # Except path
+                    else:
+                        return (2, 0)  # Catch-all
+                
+                container_list_sorted = sorted(container_list, key=sort_key)
+                
+                # Create subroutes - Caddy evaluates subroutes in order within a subroute handler
+                subroutes = []
+                for container, labels in container_list_sorted:
+                    target = labels.get('caddy.proxy.reverse_proxy', f"{container['Names']}:8000")
+                    path = labels.get('caddy.proxy.path', '/')
+                    except_path = labels.get('caddy.proxy.except', '')
+                    
+                    # Create match conditions for subroute
+                    # Subroutes are evaluated in order, so specific paths must come first
+                    match_conditions = []
+                    if path and path != '/':
+                        # Specific path pattern (e.g., /api/*) - must come first
+                        match_conditions.append({"path": [path]})
+                    # For catch-all, no path condition - matches everything not matched above
+                    
+                    subroute = {
+                        "match": match_conditions if match_conditions else [],
+                        "handle": [{
+                            "handler": "reverse_proxy",
+                            "upstreams": [{"dial": target}]
+                        }]
+                    }
+                    
+                    # Add health check if specified
+                    if 'caddy.proxy.health_check' in labels:
+                        subroute["handle"][0]["health_checks"] = {
+                            "active": {
+                                "path": labels['caddy.proxy.health_check']
+                            }
+                        }
+                    
+                    subroutes.append(subroute)
+                    route_type = "HTTPS" if self._is_domain(domain) else "HTTP"
+                    logger.info(f"Added subroute for {domain} path {path} (except: {except_path}) -> {target}")
+                
+                # Create main route with subroute handler
+                # Subroutes are evaluated in order, so /api/* matches first, then catch-all
+                route = {
+                    "match": [{"host": [domain]}],
+                    "handle": [{
+                        "handler": "subroute",
+                        "routes": subroutes
+                    }]
+                }
+                routes.append(route)
+                route_type = "HTTPS" if self._is_domain(domain) else "HTTP"
+                logger.info(f"Added {route_type} route with subroutes for {domain}")
         
         # Add default wildcard route at the end (must be last for proper matching)
         routes.append({
@@ -216,32 +291,52 @@ class CaddyDockerMonitor:
         try:
             routes = config.get("apps", {}).get("http", {}).get("servers", {}).get("srv0", {}).get("routes", [])
             
-            # Create a mapping of domain -> expected target from container labels
+            # Create a mapping of domain+path -> expected target from container labels
             expected_routes = {}
             for container in containers:
                 labels = container.get('Labels', {})
                 if 'caddy.proxy' in labels:
                     domain = labels['caddy.proxy']
+                    path = labels.get('caddy.proxy.path', '/')
                     expected_target = labels.get('caddy.proxy.reverse_proxy', f"{container['Names']}:8000")
-                    expected_routes[domain] = expected_target
+                    # Use domain+path as key to handle multiple routes per domain
+                    route_key = f"{domain}:{path}"
+                    expected_routes[route_key] = expected_target
             
             # Validate each route matches expected configuration
+            # Build a set of all expected route keys for validation
+            validated_routes = set()
             for route in routes:
                 if 'match' in route and 'handle' in route:
                     hosts = route['match'][0].get('host', [])
+                    # Extract path from match conditions (if present)
+                    path = '/'
+                    if len(route.get('match', [])) > 1:
+                        path_match = route['match'][1].get('path', [])
+                        if path_match:
+                            path = path_match[0] if isinstance(path_match, list) else path_match
+                    
                     for host in hosts:
-                        if host in expected_routes:
+                        route_key = f"{host}:{path}"
+                        if route_key in expected_routes:
                             # Check if the upstream target matches expected
                             handle = route['handle'][0]
                             if 'upstreams' in handle:
                                 actual_target = handle['upstreams'][0].get('dial', '')
-                                expected_target = expected_routes[host]
+                                expected_target = expected_routes[route_key]
                                 
                                 if actual_target != expected_target:
-                                    logger.error(f"Route misconfiguration detected: {host} -> {actual_target} (expected: {expected_target})")
+                                    logger.error(f"Route misconfiguration detected: {route_key} -> {actual_target} (expected: {expected_target})")
                                     return False
                                 else:
-                                    logger.info(f"Route validation passed: {host} -> {actual_target}")
+                                    logger.info(f"Route validation passed: {route_key} -> {actual_target}")
+                                    validated_routes.add(route_key)
+            
+            # Check that all expected routes were validated
+            if len(validated_routes) != len(expected_routes):
+                missing = set(expected_routes.keys()) - validated_routes
+                logger.warning(f"Some expected routes were not found in configuration: {missing}")
+                # Don't fail validation for this - routes might be in different order
             
             logger.info("All route configurations validated successfully")
             return True

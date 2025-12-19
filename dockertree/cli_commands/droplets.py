@@ -105,6 +105,109 @@ def _resolve_droplet_name(branch_name: str, domain: Optional[str], json: bool) -
         return branch_name
 
 
+def _resolve_host_to_ip(host: str, push_manager, api_token: Optional[str] = None) -> str:
+    """Resolve host (IP, domain, droplet ID, or droplet name) to IP address.
+    
+    DRY: Reuses PushManager._resolve_server_ip() for domain/IP DNS resolution.
+    Only adds new logic for droplet ID/name resolution.
+    
+    Args:
+        host: Host identifier (IP, domain, droplet ID, or droplet name)
+        push_manager: PushManager instance for DNS resolution
+        api_token: Digital Ocean API token for droplet lookup
+        
+    Returns:
+        IP address string
+        
+    Raises:
+        ValueError: If host cannot be resolved as domain, droplet ID, or droplet name
+    """
+    import re
+    
+    # First try: Check if already an IP address
+    if re.match(r'^\d+\.\d+\.\d+\.\d+$', host):
+        return host
+    
+    # Second try: Use existing PushManager method for domain DNS resolution (reuses existing code!)
+    try:
+        ip = push_manager._resolve_server_ip(host)
+        # If it resolved successfully to an IP (different from host), return it
+        if re.match(r'^\d+\.\d+\.\d+\.\d+$', ip) and ip != host:
+            return ip
+        # If it returned the host unchanged (DNS failed), continue to droplet lookup
+        if ip == host:
+            pass  # Fall through to droplet resolution
+        else:
+            # Shouldn't happen, but if we get here, return the result
+            return ip
+    except Exception:
+        pass  # Fall through to droplet resolution
+    
+    # Second try: Resolve as droplet ID or name (new logic, but minimal)
+    droplet_commands = DropletCommands()
+    droplet_id, error = droplet_commands._resolve_droplet_identifier(host, api_token)
+    if error:
+        raise ValueError(f"Could not resolve '{host}' as domain, droplet ID, or droplet name: {error}")
+    
+    provider, _ = droplet_commands._get_provider(api_token)
+    if not provider:
+        raise ValueError(f"Failed to create droplet provider: {error}")
+    
+    droplet = provider.get_droplet(droplet_id)
+    if not droplet or not droplet.ip_address:
+        raise ValueError(f"Droplet {host} has no IP address")
+    
+    return droplet.ip_address
+
+
+def _parse_scp_target_or_droplet(arg: str, api_token: Optional[str] = None) -> str:
+    """Parse progressive SCP target patterns and resolve to full SCP target.
+    
+    Supports:
+    - Full SCP target: `user@host:path` → use as-is
+    - Username + domain: `user@example.com` → resolve domain, construct `user@<ip>:/root`
+    - Domain/IP + path: `example.com:/path` or `192.168.1.100:/path` → construct `root@<ip>:<path>`
+    - Domain/IP only: `example.com` or `192.168.1.100` → construct `root@<ip>:/root`
+    - Droplet ID: `12345678` → resolve to IP, construct `root@<ip>:/root`
+    - Droplet name: `my-app` → resolve to IP, construct `root@<ip>:/root`
+    
+    DRY: Reuses PushManager._resolve_server_ip() for domain/IP resolution.
+    
+    Args:
+        arg: SCP target or droplet identifier
+        api_token: Digital Ocean API token for droplet lookup
+        
+    Returns:
+        Full SCP target string in format user@ip:path
+    """
+    from ..commands.push import PushManager
+    
+    # Full SCP target format (contains both @ and : with @ before :)
+    if '@' in arg and ':' in arg:
+        at_pos = arg.index('@')
+        colon_pos = arg.index(':')
+        if at_pos < colon_pos:
+            return arg  # Backward compatible: full SCP target
+    
+    push_manager = PushManager()
+    
+    # Username + domain/IP: `user@example.com` or `user@192.168.1.100`
+    if '@' in arg and ':' not in arg:
+        username, host = arg.split('@', 1)
+        ip = _resolve_host_to_ip(host, push_manager, api_token)
+        return f"{username}@{ip}:/root"
+    
+    # Domain/IP + path: `example.com:/path` or `192.168.1.100:/path`
+    if ':' in arg and '@' not in arg:
+        host, path = arg.rsplit(':', 1)
+        ip = _resolve_host_to_ip(host, push_manager, api_token)
+        return f"root@{ip}:{path}"
+    
+    # Just host (domain, IP, droplet ID, or droplet name)
+    ip = _resolve_host_to_ip(arg, push_manager, api_token)
+    return f"root@{ip}:/root"
+
+
 def _log_creation_context(
     droplet_name: str,
     resolved_region: str,
@@ -788,6 +891,34 @@ def register_commands(cli) -> None:
                 else:
                     error_exit("scp_target is required")
                 return
+            
+            # Parse and resolve SCP target (supports progressive patterns)
+            # This ensures resolved IP is used for DNS management (fixes domain setup issue)
+            try:
+                # api_token is not in scope for this command; use the provided DNS token
+                resolved_scp_target = _parse_scp_target_or_droplet(scp_target, dns_token)
+                if resolved_scp_target != scp_target and not json:
+                    log_info(f"Resolved SCP target: {scp_target} → {resolved_scp_target}")
+                scp_target = resolved_scp_target
+            except ValueError as e:
+                elapsed_time = time.time() - start_time
+                if not json:
+                    print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
+                if json:
+                    JSONOutput.print_error(str(e))
+                else:
+                    error_exit(str(e))
+                return
+            except Exception as e:
+                elapsed_time = time.time() - start_time
+                if not json:
+                    print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
+                if json:
+                    JSONOutput.print_error(f"Error resolving SCP target: {e}")
+                else:
+                    error_exit(f"Error resolving SCP target: {e}")
+                return
+            
             push_manager = PushManager()
             exclude_deps_list = [d.strip() for d in exclude_deps.split(",")] if exclude_deps else None
             success = push_manager.push_package(

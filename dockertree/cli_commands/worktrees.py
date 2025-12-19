@@ -8,12 +8,16 @@ from typing import Optional
 
 import click
 
+from pathlib import Path
+from typing import Optional
+
 from dockertree.cli.helpers import add_json_option, add_verbose_option, command_wrapper
+from dockertree.commands.push import PushManager
 from dockertree.commands.utility import UtilityManager
 from dockertree.commands.worktree import WorktreeManager
 from dockertree.exceptions import DockertreeCommandError
 from dockertree.utils.json_output import JSONOutput
-from dockertree.utils.logging import log_info, log_success, log_warning
+from dockertree.utils.logging import error_exit, log_info, log_success, log_warning
 from dockertree.utils.pattern_matcher import has_wildcard
 
 
@@ -189,5 +193,113 @@ def register_commands(cli) -> None:
             return JSONOutput.success("Pruned worktrees", {"pruned_count": pruned_count})
         pruned_count = utility_manager.prune_worktrees()
         log_info(f"Pruned {pruned_count} worktree(s)")
+
+    @cli.command()
+    @click.argument("branch_name", required=False)
+    @click.argument("scp_target", required=False)
+    @click.option("--output-dir", type=click.Path(), default="./packages", help="Temporary package location (default: ./packages)")
+    @click.option("--keep-package", is_flag=True, default=False, help="Keep package file after successful push (default: delete after push)")
+    @click.option(
+        "--no-auto-import",
+        is_flag=True,
+        default=False,
+        help="Skip automatic import and start on remote server after push (default: auto-import is enabled)",
+    )
+    @click.option("--prepare-server", is_flag=True, default=False, help="Check remote server for required dependencies before push")
+    @click.option(
+        "--domain",
+        help="Domain override for remote import (subdomain.domain.tld). DNS A record will be automatically created if it does not exist.",
+    )
+    @click.option("--ip", help="IP override for remote import (HTTP-only, no TLS)")
+    @click.option("--dns-token", help="DigitalOcean API token (or use DIGITALOCEAN_API_TOKEN env var)")
+    @click.option("--skip-dns-check", is_flag=True, default=False, help="Skip DNS validation and management")
+    @click.option(
+        "--resume",
+        is_flag=True,
+        default=False,
+        help="Resume a failed push operation by detecting what's already completed (skips export/transfer if package exists, skips server prep if already done)",
+    )
+    @click.option("--code-only", is_flag=True, default=False, help="Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)")
+    @click.option("--build", is_flag=True, default=False, help="Rebuild Docker images on the remote server after deployment")
+    @click.option(
+        "--containers",
+        help="Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)",
+    )
+    @click.option(
+        "--exclude-deps",
+        help="Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.",
+    )
+    @add_json_option
+    @add_verbose_option
+    @command_wrapper(require_setup=True, require_prerequisites=True)
+    def push(
+        branch_name: Optional[str],
+        scp_target: Optional[str],
+        output_dir: str,
+        keep_package: bool,
+        no_auto_import: bool,
+        prepare_server: bool,
+        domain: str,
+        ip: str,
+        dns_token: str,
+        skip_dns_check: bool,
+        resume: bool,
+        code_only: bool,
+        build: bool,
+        containers: Optional[str],
+        exclude_deps: Optional[str],
+        json: bool,
+    ):
+        """Push worktree package to remote server via SCP."""
+        if domain and ip:
+            if json:
+                JSONOutput.print_error("Options --domain and --ip are mutually exclusive")
+            else:
+                error_exit("Options --domain and --ip are mutually exclusive")
+            return
+        
+        if not code_only and not scp_target:
+            if json:
+                JSONOutput.print_error("scp_target is required (or use --code-only with stored config)")
+            else:
+                error_exit("scp_target is required (or use --code-only with stored config)")
+            return
+        
+        push_manager = PushManager()
+        exclude_deps_list = [d.strip() for d in exclude_deps.split(",")] if exclude_deps else None
+        success = push_manager.push_package(
+            branch_name=branch_name,
+            scp_target=scp_target,
+            output_dir=Path(output_dir),
+            keep_package=keep_package,
+            auto_import=not no_auto_import,
+            domain=domain,
+            ip=ip,
+            prepare_server=prepare_server,
+            dns_token=dns_token,
+            skip_dns_check=skip_dns_check,
+            create_droplet=False,
+            droplet_name=None,
+            droplet_region=None,
+            droplet_size=None,
+            droplet_image=None,
+            droplet_ssh_keys=None,
+            resume=resume,
+            code_only=code_only,
+            build=build,
+            containers=containers,
+            exclude_deps=exclude_deps_list,
+        )
+        
+        if not success:
+            if json:
+                JSONOutput.print_error("Failed to push package")
+            else:
+                error_exit("Failed to push package")
+        else:
+            if json:
+                JSONOutput.print_success("Package pushed successfully")
+            else:
+                log_success("Package pushed successfully")
 
 

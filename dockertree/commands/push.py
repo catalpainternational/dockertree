@@ -1270,6 +1270,32 @@ dockertree --version || true
                     return
                 
                 log_success("Remote import script completed successfully")
+                
+                # Post-import domain configuration and route refresh
+                if domain:
+                    log_info("Performing post-import domain configuration...")
+                    # Detect worktree path from remote server
+                    detect_script = f"""#!/bin/bash
+find /root -maxdepth 3 -type f -path "*/worktrees/{branch_name}/.dockertree/env.dockertree" -print -quit 2>/dev/null || echo ""
+"""
+                    detect_cmd = ["ssh", f"{username}@{server}", "bash", "-lc", "cat > /tmp/dtdetect.sh && chmod +x /tmp/dtdetect.sh && /tmp/dtdetect.sh && rm -f /tmp/dtdetect.sh"]
+                    detect_process = subprocess.Popen(
+                        detect_cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    stdout, _ = detect_process.communicate(input=detect_script, timeout=10)
+                    worktree_path = stdout.strip()
+                    if worktree_path:
+                        worktree_path = str(Path(worktree_path).parent)  # Remove .dockertree/env.dockertree
+                        # Update remote env file (in case import didn't fully apply domain settings)
+                        self._update_remote_env_file(username, server, worktree_path, branch_name, domain)
+                    # Refresh Caddy routes
+                    self._refresh_caddy_routes(username, server, domain)
+                    # Verify route
+                    self._verify_caddy_route(username, server, domain)
             else:
                 # Non-verbose mode: stream output but show key messages
                 # Use Popen with timeout to prevent hanging
@@ -1360,6 +1386,32 @@ dockertree --version || true
                         log_info("Remote import output:")
                         for line in result.stdout.splitlines():
                             log_info(f"  {line}")
+                    
+                    # Post-import domain configuration and route refresh
+                    if domain:
+                        log_info("Performing post-import domain configuration...")
+                        # Detect worktree path from remote server
+                        detect_script = f"""#!/bin/bash
+find /root -maxdepth 3 -type f -path "*/worktrees/{branch_name}/.dockertree/env.dockertree" -print -quit 2>/dev/null || echo ""
+"""
+                        detect_cmd = ["ssh", f"{username}@{server}", "bash", "-lc", "cat > /tmp/dtdetect.sh && chmod +x /tmp/dtdetect.sh && /tmp/dtdetect.sh && rm -f /tmp/dtdetect.sh"]
+                        detect_process = subprocess.Popen(
+                            detect_cmd,
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True
+                        )
+                        stdout, _ = detect_process.communicate(input=detect_script, timeout=10)
+                        worktree_path = stdout.strip()
+                        if worktree_path:
+                            worktree_path = str(Path(worktree_path).parent)  # Remove .dockertree/env.dockertree
+                            # Update remote env file (in case import didn't fully apply domain settings)
+                            self._update_remote_env_file(username, server, worktree_path, branch_name, domain)
+                        # Refresh Caddy routes
+                        self._refresh_caddy_routes(username, server, domain)
+                        # Verify route
+                        self._verify_caddy_route(username, server, domain)
         except Exception as e:
             log_error(f"Remote import failed: {e}")
             import traceback
@@ -1501,6 +1553,299 @@ log_success "VPC firewall configuration completed"
             # Don't fail the whole operation if firewall config fails
             return False
 
+    def _refresh_caddy_routes(self, username: str, server: str, domain: Optional[str] = None) -> bool:
+        """Refresh Caddy routes by triggering the dynamic config script.
+        
+        Args:
+            username: SSH username
+            server: Server hostname or IP
+            domain: Optional domain to verify route for
+            
+        Returns:
+            True if routes were refreshed successfully, False otherwise
+        """
+        try:
+            log_info("Refreshing Caddy routes...")
+            
+            # Script to trigger Caddy route refresh
+            script = """#!/bin/bash
+set -euo pipefail
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+}
+
+log_success() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*" >&2
+}
+
+log_error() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
+}
+
+log "Refreshing Caddy routes..."
+
+# Find dockertree binary
+DTBIN=""
+if [ -x /opt/dockertree-venv/bin/dockertree ]; then
+  DTBIN=/opt/dockertree-venv/bin/dockertree
+elif command -v dockertree >/dev/null 2>&1; then
+  DTBIN="$(command -v dockertree)"
+else
+  log_error "dockertree binary not found"
+  exit 1
+fi
+
+# Trigger Caddy route refresh by running the dynamic config script
+# The script monitors Docker containers and updates Caddy routes
+PYTHON_SCRIPT="/opt/dockertree-venv/lib/python*/site-packages/dockertree/scripts/caddy-dynamic-config.py"
+if [ -f "$PYTHON_SCRIPT" ] || python3 -c "import dockertree.scripts.caddy_dynamic_config" 2>/dev/null; then
+  log "Running Caddy dynamic configuration..."
+  if python3 -m dockertree.scripts.caddy_dynamic_config 2>/dev/null || python3 "$PYTHON_SCRIPT" 2>/dev/null; then
+    log_success "Caddy routes refreshed successfully"
+    exit 0
+  fi
+fi
+
+# Fallback: Use dockertree command if available
+if [ -n "$DTBIN" ]; then
+  log "Using dockertree to refresh routes..."
+  # The start-proxy command will refresh routes
+  if "$DTBIN" start-proxy --non-interactive >/dev/null 2>&1; then
+    log_success "Caddy routes refreshed via dockertree"
+    exit 0
+  fi
+fi
+
+log_warning "Could not refresh Caddy routes automatically"
+log "Routes should be updated automatically by the Caddy monitor"
+exit 0
+"""
+            
+            exec_cmd = "cat > /tmp/dtcaddyrefresh.sh && chmod +x /tmp/dtcaddyrefresh.sh && /tmp/dtcaddyrefresh.sh && rm -f /tmp/dtcaddyrefresh.sh"
+            cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
+            
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            stdout, stderr = process.communicate(input=script, timeout=30)
+            
+            if process.returncode == 0:
+                log_success("Caddy routes refreshed successfully")
+                return True
+            else:
+                log_warning("Caddy route refresh returned non-zero exit code, but continuing...")
+                if stderr:
+                    for line in stderr.splitlines():
+                        if line.strip():
+                            log_info(f"[CADDY] {line}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            log_warning("Caddy route refresh timed out, but continuing...")
+            return False
+        except Exception as e:
+            log_warning(f"Failed to refresh Caddy routes: {e}")
+            return False
+    
+    def _verify_caddy_route(self, username: str, server: str, domain: str) -> bool:
+        """Verify that Caddy route exists for the given domain.
+        
+        Args:
+            username: SSH username
+            server: Server hostname or IP
+            domain: Domain to verify route for
+            
+        Returns:
+            True if route exists, False otherwise
+        """
+        try:
+            log_info(f"Verifying Caddy route for {domain}...")
+            
+            # Script to check Caddy admin API for route
+            script = f"""#!/bin/bash
+set -euo pipefail
+
+log() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+}}
+
+log_success() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*" >&2
+}}
+
+log_error() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
+}}
+
+# Check if Caddy admin API is accessible
+CADDY_ADMIN="http://localhost:2019"
+if ! curl -s "$CADDY_ADMIN/config/" >/dev/null 2>&1; then
+  log_error "Caddy admin API not accessible"
+  exit 1
+fi
+
+# Get current routes
+ROUTES=$(curl -s "$CADDY_ADMIN/config/apps/http/servers/srv0/routes" 2>/dev/null || echo "[]")
+
+# Check if domain is in routes
+if echo "$ROUTES" | grep -q "{domain}"; then
+  log_success "Route found for {domain}"
+  exit 0
+else
+  log_error "Route not found for {domain}"
+  log "Current routes:"
+  echo "$ROUTES" | grep -o '"host":\\["[^"]*"\\]' | head -5
+  exit 1
+fi
+"""
+            
+            exec_cmd = "cat > /tmp/dtverifyroute.sh && chmod +x /tmp/dtverifyroute.sh && /tmp/dtverifyroute.sh && rm -f /tmp/dtverifyroute.sh"
+            cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
+            
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            stdout, stderr = process.communicate(input=script, timeout=15)
+            
+            if process.returncode == 0:
+                log_success(f"Caddy route verified for {domain}")
+                return True
+            else:
+                log_warning(f"Caddy route verification failed for {domain}")
+                if stderr:
+                    for line in stderr.splitlines():
+                        if line.strip():
+                            log_info(f"[VERIFY] {line}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            log_warning("Caddy route verification timed out")
+            return False
+        except Exception as e:
+            log_warning(f"Failed to verify Caddy route: {e}")
+            return False
+    
+    def _update_remote_env_file(self, username: str, server: str, worktree_path: str, 
+                                branch_name: str, domain: str) -> bool:
+        """Update remote env.dockertree file with domain settings.
+        
+        Args:
+            username: SSH username
+            server: Server hostname or IP
+            worktree_path: Path to worktree on remote server
+            branch_name: Branch name
+            domain: Domain to configure
+            
+        Returns:
+            True if update was successful, False otherwise
+        """
+        try:
+            from ..core.dns_manager import get_base_domain
+            from ..config.settings import build_allowed_hosts_with_container
+            
+            log_info(f"Updating remote environment file with domain {domain}...")
+            
+            # Build allowed hosts
+            base_domain = get_base_domain(domain)
+            allowed_hosts = build_allowed_hosts_with_container(branch_name, [domain, f"*.{base_domain}"])
+            
+            # Build Vite allowed hosts (domain, wildcard, and localhost variants)
+            vite_allowed_hosts = f"{domain},*.{base_domain},localhost,127.0.0.1"
+            
+            # Script to update env.dockertree file
+            script = f"""#!/bin/bash
+set -euo pipefail
+
+log() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2
+}}
+
+log_success() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✓ $*" >&2
+}}
+
+log_error() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
+}}
+
+ENV_FILE="{worktree_path}/.dockertree/env.dockertree"
+
+if [ ! -f "$ENV_FILE" ]; then
+  log_error "Environment file not found: $ENV_FILE"
+  exit 1
+fi
+
+log "Updating environment file with domain configuration..."
+
+# Update SITE_DOMAIN
+sed -i 's|^SITE_DOMAIN=.*|SITE_DOMAIN={domain}|g' "$ENV_FILE"
+
+# Update ALLOWED_HOSTS
+sed -i 's|^ALLOWED_HOSTS=.*|ALLOWED_HOSTS={allowed_hosts}|g' "$ENV_FILE"
+
+# Update VITE_ALLOWED_HOSTS (for Vite dev server security)
+# Include domain, base domain wildcard, and localhost variants
+if grep -q "^VITE_ALLOWED_HOSTS=" "$ENV_FILE"; then
+  sed -i 's|^VITE_ALLOWED_HOSTS=.*|VITE_ALLOWED_HOSTS={vite_allowed_hosts}|g' "$ENV_FILE"
+else
+  echo "VITE_ALLOWED_HOSTS={vite_allowed_hosts}" >> "$ENV_FILE"
+fi
+
+# Update CSRF_TRUSTED_ORIGINS
+if grep -q "^CSRF_TRUSTED_ORIGINS=" "$ENV_FILE"; then
+  sed -i 's|^CSRF_TRUSTED_ORIGINS=.*|CSRF_TRUSTED_ORIGINS=https://{domain},http://{domain}|g' "$ENV_FILE"
+else
+  echo "CSRF_TRUSTED_ORIGINS=https://{domain},http://{domain}" >> "$ENV_FILE"
+fi
+
+# Set DEBUG=False for production
+sed -i 's|^DEBUG=.*|DEBUG=False|g' "$ENV_FILE"
+
+log_success "Environment file updated successfully"
+"""
+            
+            exec_cmd = "cat > /tmp/dtupdateenv.sh && chmod +x /tmp/dtupdateenv.sh && /tmp/dtupdateenv.sh && rm -f /tmp/dtupdateenv.sh"
+            cmd = ["ssh", f"{username}@{server}", "bash", "-lc", exec_cmd]
+            
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            stdout, stderr = process.communicate(input=script, timeout=30)
+            
+            if process.returncode == 0:
+                log_success("Remote environment file updated successfully")
+                return True
+            else:
+                log_warning("Environment file update returned non-zero exit code")
+                if stderr:
+                    for line in stderr.splitlines():
+                        if line.strip():
+                            log_warning(f"[ENV] {line}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            log_warning("Environment file update timed out")
+            return False
+        except Exception as e:
+            log_warning(f"Failed to update remote environment file: {e}")
+            return False
+
     def _compose_remote_script(self, remote_file: str, branch_name: str, domain: Optional[str],
                                ip: Optional[str], build: bool = False) -> str:
         """Compose a robust remote bash script for importing and starting services.
@@ -1563,6 +1908,169 @@ if [ "$BUILD_SUCCESS" != "true" ]; then
 fi
 
 log_success "Build process completed successfully"
+"""
+        
+        # Build domain configuration section
+        domain_config_section = ""
+        if domain:
+            from ..core.dns_manager import get_base_domain
+            from ..config.settings import build_allowed_hosts_with_container
+            
+            base_domain = get_base_domain(domain)
+            allowed_hosts = build_allowed_hosts_with_container(branch_name, [domain, f"*.{base_domain}"])
+            vite_allowed_hosts = f"{domain},*.{base_domain},localhost,127.0.0.1"
+            
+            domain_config_section = f"""
+# Domain configuration updates
+log "=== Configuring domain: {domain} ==="
+
+# Update environment file with domain settings
+ENV_FILE="$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree/env.dockertree"
+if [ -f "$ENV_FILE" ]; then
+  log "Updating environment file with domain configuration..."
+  
+  # Update SITE_DOMAIN
+  sed -i 's|^SITE_DOMAIN=.*|SITE_DOMAIN={domain}|g' "$ENV_FILE"
+  
+  # Update ALLOWED_HOSTS
+  sed -i 's|^ALLOWED_HOSTS=.*|ALLOWED_HOSTS={allowed_hosts}|g' "$ENV_FILE"
+  
+  # Update VITE_ALLOWED_HOSTS (for Vite dev server security)
+  if grep -q "^VITE_ALLOWED_HOSTS=" "$ENV_FILE"; then
+    sed -i 's|^VITE_ALLOWED_HOSTS=.*|VITE_ALLOWED_HOSTS={vite_allowed_hosts}|g' "$ENV_FILE"
+  else
+    echo "VITE_ALLOWED_HOSTS={vite_allowed_hosts}" >> "$ENV_FILE"
+  fi
+  
+  # Update CSRF_TRUSTED_ORIGINS
+  if grep -q "^CSRF_TRUSTED_ORIGINS=" "$ENV_FILE"; then
+    sed -i 's|^CSRF_TRUSTED_ORIGINS=.*|CSRF_TRUSTED_ORIGINS=https://{domain},http://{domain}|g' "$ENV_FILE"
+  else
+    echo "CSRF_TRUSTED_ORIGINS=https://{domain},http://{domain}" >> "$ENV_FILE"
+  fi
+  
+  # Set DEBUG=False for production
+  sed -i 's|^DEBUG=.*|DEBUG=False|g' "$ENV_FILE"
+  
+  log_success "Environment file updated with domain configuration"
+  
+  # Restart containers to pick up new environment variables
+  log "Restarting containers to apply domain configuration..."
+  cd "$ROOT2"
+  if [ "$IMPORT_MODE" = "standalone" ]; then
+    WORKTREE_PATH="$ROOT2/worktrees/${{BRANCH_NAME}}"
+    COMPOSE_FILE="$WORKTREE_PATH/docker-compose.yml"
+    if [ ! -f "$COMPOSE_FILE" ]; then
+      COMPOSE_FILE="$WORKTREE_PATH/.dockertree/docker-compose.worktree.yml"
+    fi
+    if [ -f "$COMPOSE_FILE" ]; then
+      cd "$WORKTREE_PATH"
+      COMPOSE_FILE_REL="$(basename "$COMPOSE_FILE")"
+      if [ "$COMPOSE_FILE_REL" = "docker-compose.worktree.yml" ]; then
+        COMPOSE_FILE_REL=".dockertree/docker-compose.worktree.yml"
+      fi
+      export COMPOSE_PROJECT_NAME="${{COMPOSE_PROJECT_NAME}}"
+      export PROJECT_ROOT="$WORKTREE_PATH"
+      docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" restart >/dev/null 2>&1 || true
+      log_success "Containers restarted with new domain configuration"
+    fi
+  else
+    if "$DTBIN" "${{BRANCH_NAME}}" restart >/dev/null 2>&1; then
+      log_success "Containers restarted with new domain configuration"
+    else
+      log_warning "Failed to restart containers, but continuing..."
+    fi
+  fi
+  
+  # Refresh Caddy routes to ensure domain is properly routed
+  log "Refreshing Caddy routes for domain {domain}..."
+  sleep 2  # Brief pause for containers to register
+  
+  # Try to trigger Caddy route refresh via dynamic config
+  PYTHON_SCRIPT="/opt/dockertree-venv/lib/python*/site-packages/dockertree/scripts/caddy-dynamic-config.py"
+  if [ -f "$PYTHON_SCRIPT" ] || python3 -c "import dockertree.scripts.caddy_dynamic_config" 2>/dev/null; then
+    if python3 -m dockertree.scripts.caddy_dynamic_config >/dev/null 2>&1 || python3 "$PYTHON_SCRIPT" >/dev/null 2>&1; then
+      log_success "Caddy routes refreshed successfully"
+    else
+      log_warning "Caddy route refresh failed, but routes should update automatically"
+    fi
+  else
+    # Fallback: restart proxy to refresh routes
+    if "$DTBIN" start-proxy --non-interactive >/dev/null 2>&1; then
+      log_success "Caddy proxy restarted to refresh routes"
+    else
+      log_warning "Could not refresh Caddy routes, but they should update automatically"
+    fi
+  fi
+  
+  # Verify route exists (non-blocking)
+  log "Verifying Caddy route for {domain}..."
+  sleep 3  # Give Caddy time to update
+  # Temporarily disable set -e for this non-critical check
+  set +e
+  curl -s "http://localhost:2019/config/apps/http/servers/srv0/routes" 2>/dev/null | grep -q "{domain}"
+  ROUTE_CHECK_RESULT=$?
+  set -e
+  if [ $ROUTE_CHECK_RESULT -eq 0 ]; then
+    log_success "Caddy route verified for {domain}"
+  else
+    log_warning "Caddy route verification failed - route may still be updating"
+    log "Routes should be automatically configured by the Caddy monitor"
+  fi
+else
+  log_warning "Environment file not found: $ENV_FILE"
+  log "Domain configuration may not be applied correctly"
+fi
+"""
+        elif ip:
+            domain_config_section = f"""
+# IP configuration updates
+log "=== Configuring IP: {ip} ==="
+
+# Update environment file with IP settings
+ENV_FILE="$ROOT2/worktrees/${{BRANCH_NAME}}/.dockertree/env.dockertree"
+if [ -f "$ENV_FILE" ]; then
+  log "Updating environment file with IP configuration..."
+  
+  # Update SITE_DOMAIN
+  sed -i 's|^SITE_DOMAIN=.*|SITE_DOMAIN=http://{ip}|g' "$ENV_FILE"
+  
+  # Update ALLOWED_HOSTS to include IP
+  if ! grep -q "{ip}" "$ENV_FILE"; then
+    CURRENT_HOSTS=$(grep "^ALLOWED_HOSTS=" "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+    sed -i "s|^ALLOWED_HOSTS=.*|ALLOWED_HOSTS=${{CURRENT_HOSTS}},{ip}|g" "$ENV_FILE"
+  fi
+  
+  log_success "Environment file updated with IP configuration"
+  
+  # Restart containers to pick up new environment variables
+  log "Restarting containers to apply IP configuration..."
+  cd "$ROOT2"
+  if [ "$IMPORT_MODE" = "standalone" ]; then
+    WORKTREE_PATH="$ROOT2/worktrees/${{BRANCH_NAME}}"
+    COMPOSE_FILE="$WORKTREE_PATH/docker-compose.yml"
+    if [ ! -f "$COMPOSE_FILE" ]; then
+      COMPOSE_FILE="$WORKTREE_PATH/.dockertree/docker-compose.worktree.yml"
+    fi
+    if [ -f "$COMPOSE_FILE" ]; then
+      cd "$WORKTREE_PATH"
+      COMPOSE_FILE_REL="$(basename "$COMPOSE_FILE")"
+      if [ "$COMPOSE_FILE_REL" = "docker-compose.worktree.yml" ]; then
+        COMPOSE_FILE_REL=".dockertree/docker-compose.worktree.yml"
+      fi
+      export COMPOSE_PROJECT_NAME="${{COMPOSE_PROJECT_NAME}}"
+      export PROJECT_ROOT="$WORKTREE_PATH"
+      docker compose -f "$COMPOSE_FILE_REL" --env-file .dockertree/env.dockertree -p "$COMPOSE_PROJECT_NAME" restart >/dev/null 2>&1 || true
+      log_success "Containers restarted with new IP configuration"
+    fi
+  else
+    if "$DTBIN" "${{BRANCH_NAME}}" restart >/dev/null 2>&1; then
+      log_success "Containers restarted with new IP configuration"
+    else
+      log_warning "Failed to restart containers, but continuing..."
+    fi
+  fi
+fi
 """
 
         script = f"""
@@ -2224,7 +2732,11 @@ else
   log "Check container logs above for details"
 fi
 
+# Domain configuration updates and Caddy route refresh
+{domain_config_section}
+
 log_success "=== Remote import process completed ==="
+exit 0
 """
         return script
     
