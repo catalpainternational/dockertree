@@ -341,6 +341,65 @@ def register_commands(cli) -> None:
             branch_name = _auto_detect_branch_name(branch_name, json)
             if not branch_name:
                 return
+            
+            # Load stored droplet config and apply to parameters if not provided via CLI
+            from ..core.environment_manager import EnvironmentManager
+            from ..config.settings import get_project_root
+            
+            env_manager = EnvironmentManager(project_root=get_project_root())
+            stored_config = env_manager.get_droplet_config(branch_name)
+            
+            # Apply stored config values if CLI arguments are not provided
+            # Priority: CLI argument > stored config > global defaults
+            if not region:
+                region = stored_config.get('region')
+            if not size:
+                size = stored_config.get('size')
+            if not image:
+                image = stored_config.get('image')
+            if not ssh_keys:
+                ssh_keys = stored_config.get('ssh_keys')
+            if not tags:
+                stored_tags = stored_config.get('tags')
+                if stored_tags:
+                    tags = tuple(t.strip() for t in stored_tags.split(",") if t.strip())
+            if not vpc_uuid:
+                vpc_uuid = stored_config.get('vpc_uuid')
+            if not central_droplet_name:
+                central_droplet_name = stored_config.get('central_droplet_name')
+            if not scp_target:
+                scp_target = stored_config.get('scp_target')
+            if not domain:
+                domain = stored_config.get('domain') or ''
+            if not ip:
+                ip = stored_config.get('ip') or ''
+            if not dns_token:
+                dns_token = stored_config.get('dns_token') or ''
+            if output_dir == "./packages":  # Only use stored if default value
+                stored_output_dir = stored_config.get('output_dir')
+                if stored_output_dir:
+                    output_dir = stored_output_dir
+            if not keep_package:  # Only use stored if False (default)
+                stored_keep_package = stored_config.get('keep_package')
+                if stored_keep_package:
+                    keep_package = stored_keep_package.lower() in ('true', '1', 'yes')
+            if not prepare_server:  # Only use stored if False (default)
+                stored_prepare_server = stored_config.get('prepare_server')
+                if stored_prepare_server:
+                    prepare_server = stored_prepare_server.lower() in ('true', '1', 'yes')
+            if not resume:  # Only use stored if False (default)
+                stored_resume = stored_config.get('resume')
+                if stored_resume:
+                    resume = stored_resume.lower() in ('true', '1', 'yes')
+            if not build:  # Only use stored if False (default)
+                stored_build = stored_config.get('build')
+                if stored_build:
+                    build = stored_build.lower() in ('true', '1', 'yes')
+            if not containers:
+                containers = stored_config.get('containers')
+            if not exclude_deps:
+                exclude_deps = stored_config.get('exclude_deps')
+            
             droplet_name = _resolve_droplet_name(branch_name, domain, json)
 
             defaults = DropletManager.get_droplet_defaults()
@@ -438,6 +497,18 @@ def register_commands(cli) -> None:
                 return
 
             if create_only:
+                # Save droplet creation configuration even if not pushing
+                config_to_save = {
+                    'region': resolved_region,
+                    'size': resolved_size,
+                    'image': resolved_image,
+                    'ssh_keys': ssh_keys,
+                    'tags': ','.join(tags) if tags else None,
+                    'vpc_uuid': resolved_vpc_uuid,
+                    'central_droplet_name': central_droplet_name,
+                }
+                env_manager.save_droplet_config(branch_name, config_to_save)
+                
                 elapsed_time = time.time() - start_time
                 if not json:
                     print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
@@ -586,6 +657,29 @@ def register_commands(cli) -> None:
                 else:
                     error_exit("Failed to push package to droplet")
             else:
+                # Save droplet configuration for future use
+                config_to_save = {
+                    'region': resolved_region,
+                    'size': resolved_size,
+                    'image': resolved_image,
+                    'ssh_keys': ssh_keys,
+                    'tags': ','.join(tags) if tags else None,
+                    'vpc_uuid': resolved_vpc_uuid,
+                    'central_droplet_name': central_droplet_name,
+                    'scp_target': final_scp_target,
+                    'domain': domain if domain else None,
+                    'ip': ip if ip else None,
+                    'dns_token': dns_token if dns_token else None,
+                    'output_dir': str(output_dir),
+                    'keep_package': keep_package,
+                    'prepare_server': prepare_server,
+                    'resume': resume,
+                    'build': build,
+                    'containers': containers,
+                    'exclude_deps': exclude_deps,
+                }
+                env_manager.save_droplet_config(branch_name, config_to_save)
+                
                 if not json:
                     print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
                 
@@ -873,6 +967,49 @@ def register_commands(cli) -> None:
         try:
             check_setup_or_prompt()
             check_prerequisites()
+            
+            # Load stored droplet config and apply to parameters if not provided via CLI
+            from ..core.environment_manager import EnvironmentManager
+            from ..config.settings import get_project_root
+            
+            env_manager = EnvironmentManager(project_root=get_project_root())
+            stored_config = env_manager.get_droplet_config(branch_name or '')
+            
+            # Apply stored config values if CLI arguments are not provided
+            # Priority: CLI argument > stored config > default
+            if not scp_target:
+                scp_target = stored_config.get('scp_target')
+            if not domain:
+                domain = stored_config.get('domain') or ''
+            if not ip:
+                ip = stored_config.get('ip') or ''
+            if not dns_token:
+                dns_token = stored_config.get('dns_token') or ''
+            if output_dir == "./packages":  # Only use stored if default value
+                stored_output_dir = stored_config.get('output_dir')
+                if stored_output_dir:
+                    output_dir = stored_output_dir
+            if not keep_package:  # Only use stored if False (default)
+                stored_keep_package = stored_config.get('keep_package')
+                if stored_keep_package:
+                    keep_package = stored_keep_package.lower() in ('true', '1', 'yes')
+            if not prepare_server:  # Only use stored if False (default)
+                stored_prepare_server = stored_config.get('prepare_server')
+                if stored_prepare_server:
+                    prepare_server = stored_prepare_server.lower() in ('true', '1', 'yes')
+            if not resume:  # Only use stored if False (default)
+                stored_resume = stored_config.get('resume')
+                if stored_resume:
+                    resume = stored_resume.lower() in ('true', '1', 'yes')
+            if not build:  # Only use stored if False (default)
+                stored_build = stored_config.get('build')
+                if stored_build:
+                    build = stored_build.lower() in ('true', '1', 'yes')
+            if not containers:
+                containers = stored_config.get('containers')
+            if not exclude_deps:
+                exclude_deps = stored_config.get('exclude_deps')
+            
             if domain and ip:
                 elapsed_time = time.time() - start_time
                 if not json:
@@ -882,6 +1019,19 @@ def register_commands(cli) -> None:
                 else:
                     error_exit("Options --domain and --ip are mutually exclusive")
                 return
+            
+            # Infer scp_target from domain or stored config if not explicitly provided
+            if not scp_target and not code_only:
+                # Priority 1: Use domain option if provided
+                if domain:
+                    scp_target = domain
+                    if not json:
+                        log_info(f"Inferred SCP target from domain: {domain}")
+                elif stored_config.get('scp_target'):
+                    scp_target = stored_config.get('scp_target')
+                    if not json:
+                        log_info(f"Using stored SCP target from config: {scp_target}")
+            
             if not code_only and not scp_target:
                 elapsed_time = time.time() - start_time
                 if not json:
@@ -953,6 +1103,22 @@ def register_commands(cli) -> None:
                 else:
                     error_exit("Failed to push package")
             else:
+                # Save droplet configuration for future use
+                config_to_save = {
+                    'scp_target': scp_target,
+                    'domain': domain if domain else None,
+                    'ip': ip if ip else None,
+                    'dns_token': dns_token if dns_token else None,
+                    'output_dir': str(output_dir),
+                    'keep_package': keep_package,
+                    'prepare_server': prepare_server,
+                    'resume': resume,
+                    'build': build,
+                    'containers': containers,
+                    'exclude_deps': exclude_deps,
+                }
+                env_manager.save_droplet_config(branch_name or '', config_to_save)
+                
                 if not json:
                     print_plain(f"Total elapsed time: {format_elapsed_time(elapsed_time)}")
                 if json:

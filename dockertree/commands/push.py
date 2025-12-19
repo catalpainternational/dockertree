@@ -1257,16 +1257,27 @@ dockertree --version || true
                 
                 if process.returncode != 0:
                     log_error("Remote import script returned non-zero exit code")
+                    # Always show errors and key failure points
+                    error_found = False
                     if stderr_lines:
-                        log_error("Remote import errors:")
+                        log_error("Remote import errors and warnings:")
                         for line in stderr_lines:
                             # Check if line is actually an error
                             line_lower = line.lower()
-                            if any(indicator in line_lower for indicator in ['✗', 'error', 'failed', 'fatal', 'exception']):
+                            if any(indicator in line_lower for indicator in ['✗', 'error', 'failed', 'fatal', 'exception', 'exit code', 'non-zero']):
                                 log_error(f"  {line}")
+                                error_found = True
+                            elif any(indicator in line_lower for indicator in ['warning', '⚠', 'warn']):
+                                log_warning(f"  {line}")
                             else:
                                 # Show informational lines too when there's an error
                                 log_info(f"  {line}")
+                    
+                    # Also show last few stdout lines for context
+                    if stdout_lines and not error_found:
+                        log_error("Last output lines for context:")
+                        for line in stdout_lines[-10:]:  # Last 10 lines
+                            log_info(f"  {line}")
                     return
                 
                 log_success("Remote import script completed successfully")
@@ -1372,10 +1383,25 @@ find /root -maxdepth 3 -type f -path "*/worktrees/{branch_name}/.dockertree/env.
                 
                 if result.returncode != 0:
                     log_error("Remote import script returned non-zero exit code")
+                    # Always show errors and key failure information
                     if result.stdout:
-                        log_info("Remote import output:")
-                        for line in result.stdout.splitlines():
-                            log_info(f"  {line}")
+                        log_error("Remote import output (showing errors and last lines):")
+                        lines = result.stdout.splitlines()
+                        error_found = False
+                        # First, show any error lines
+                        for line in lines:
+                            line_lower = line.lower()
+                            if any(indicator in line_lower for indicator in ['✗', 'error', 'failed', 'fatal', 'exception', 'exit code', 'non-zero']):
+                                log_error(f"  {line}")
+                                error_found = True
+                            elif any(indicator in line_lower for indicator in ['warning', '⚠', 'warn']):
+                                log_warning(f"  {line}")
+                        
+                        # If no explicit errors found, show last 20 lines for context
+                        if not error_found and len(lines) > 0:
+                            log_error("Last output lines for context:")
+                            for line in lines[-20:]:  # Last 20 lines
+                                log_info(f"  {line}")
                     if result.stderr:
                         log_error("Remote import errors:")
                         for line in result.stderr.splitlines():

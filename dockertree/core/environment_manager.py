@@ -1210,7 +1210,8 @@ CADDY_EMAIL={caddy_email}
         """Get push configuration from worktree's env.dockertree file.
         
         Reads PUSH_SCP_TARGET, PUSH_BRANCH_NAME, PUSH_DOMAIN, PUSH_IP from
-        the worktree's env.dockertree file.
+        the worktree's env.dockertree file. Also checks DROPLET_* variables
+        for backward compatibility.
         
         Args:
             branch_name: Branch name for the worktree
@@ -1229,27 +1230,36 @@ CADDY_EMAIL={caddy_email}
                 env_path = get_env_compose_file_path(legacy_path)
             
             if not env_path.exists():
+                # Try DROPLET_* config as fallback
+                droplet_config = self.get_droplet_config(branch_name)
                 return {
-                    'scp_target': None,
+                    'scp_target': droplet_config.get('scp_target'),
                     'branch_name': None,
-                    'domain': None,
-                    'ip': None
+                    'domain': droplet_config.get('domain'),
+                    'ip': droplet_config.get('ip')
                 }
             
             env_vars = load_env_file(env_path)
             
+            # Check PUSH_* first (legacy), then DROPLET_* (new format)
+            scp_target = env_vars.get('PUSH_SCP_TARGET') or env_vars.get('DROPLET_SCP_TARGET')
+            domain = env_vars.get('PUSH_DOMAIN') or env_vars.get('DROPLET_DOMAIN')
+            ip = env_vars.get('PUSH_IP') or env_vars.get('DROPLET_IP')
+            
             return {
-                'scp_target': env_vars.get('PUSH_SCP_TARGET'),
+                'scp_target': scp_target,
                 'branch_name': env_vars.get('PUSH_BRANCH_NAME'),
-                'domain': env_vars.get('PUSH_DOMAIN'),
-                'ip': env_vars.get('PUSH_IP')
+                'domain': domain,
+                'ip': ip
             }
         except Exception:
+            # Try DROPLET_* config as fallback
+            droplet_config = self.get_droplet_config(branch_name)
             return {
-                'scp_target': None,
+                'scp_target': droplet_config.get('scp_target'),
                 'branch_name': None,
-                'domain': None,
-                'ip': None
+                'domain': droplet_config.get('domain'),
+                'ip': droplet_config.get('ip')
             }
     
     def save_push_config(self, branch_name: str, scp_target: str, domain: Optional[str] = None, 
@@ -1257,7 +1267,7 @@ CADDY_EMAIL={caddy_email}
         """Save push configuration to worktree's env.dockertree file.
         
         Appends or updates PUSH_SCP_TARGET, PUSH_BRANCH_NAME, PUSH_DOMAIN, PUSH_IP
-        in the worktree's env.dockertree file.
+        in the worktree's env.dockertree file. Also saves to DROPLET_* format.
         
         Args:
             branch_name: Branch name for the worktree
@@ -1286,7 +1296,7 @@ CADDY_EMAIL={caddy_email}
             else:
                 content = f"# Dockertree environment configuration for {branch_name}\n"
             
-            # Update or add push configuration variables
+            # Update or add push configuration variables (legacy PUSH_* format)
             # Remove existing push config lines
             content = re.sub(r'^PUSH_SCP_TARGET=.*$', '', content, flags=re.MULTILINE)
             content = re.sub(r'^PUSH_BRANCH_NAME=.*$', '', content, flags=re.MULTILINE)
@@ -1296,7 +1306,7 @@ CADDY_EMAIL={caddy_email}
             # Remove multiple blank lines
             content = re.sub(r'\n\n\n+', '\n\n', content)
             
-            # Add push configuration at the end
+            # Add push configuration at the end (legacy format for backward compatibility)
             content += "\n# Push configuration (auto-saved after successful push)\n"
             content += f"PUSH_SCP_TARGET={scp_target}\n"
             content += f"PUSH_BRANCH_NAME={branch_name}\n"
@@ -1306,8 +1316,179 @@ CADDY_EMAIL={caddy_email}
                 content += f"PUSH_IP={ip}\n"
             
             env_path.write_text(content)
+            
+            # Also save to DROPLET_* format using the new method
+            droplet_config = {
+                'scp_target': scp_target,
+                'domain': domain,
+                'ip': ip,
+            }
+            self.save_droplet_config(branch_name, droplet_config)
+            
             log_info(f"Saved push configuration to {env_path}")
             return True
         except Exception as e:
             log_warning(f"Failed to save push configuration: {e}")
+            return False
+    
+    def get_droplet_config(self, branch_name: str) -> Dict[str, Optional[str]]:
+        """Get droplet configuration from worktree's env.dockertree file.
+        
+        Reads all DROPLET_* variables from the worktree's env.dockertree file.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            
+        Returns:
+            Dictionary with droplet configuration keys. Values are None if not found.
+            Keys: region, size, image, ssh_keys, tags, vpc_uuid, central_droplet_name,
+                  scp_target, domain, ip, dns_token, output_dir, keep_package,
+                  prepare_server, resume, build, containers, exclude_deps
+        """
+        from ..config.settings import get_worktree_paths
+        from ..utils.env_loader import load_env_file
+        
+        default_config = {
+            'region': None,
+            'size': None,
+            'image': None,
+            'ssh_keys': None,
+            'tags': None,
+            'vpc_uuid': None,
+            'central_droplet_name': None,
+            'scp_target': None,
+            'domain': None,
+            'ip': None,
+            'dns_token': None,
+            'output_dir': None,
+            'keep_package': None,
+            'prepare_server': None,
+            'resume': None,
+            'build': None,
+            'containers': None,
+            'exclude_deps': None,
+        }
+        
+        try:
+            worktree_path, legacy_path = get_worktree_paths(branch_name)
+            env_path = get_env_compose_file_path(worktree_path)
+            if not env_path.exists() and legacy_path.exists():
+                env_path = get_env_compose_file_path(legacy_path)
+            
+            if not env_path.exists():
+                return default_config
+            
+            env_vars = load_env_file(env_path)
+            
+            # Map DROPLET_* env vars to config dict keys
+            config = default_config.copy()
+            config['region'] = env_vars.get('DROPLET_REGION')
+            config['size'] = env_vars.get('DROPLET_SIZE')
+            config['image'] = env_vars.get('DROPLET_IMAGE')
+            config['ssh_keys'] = env_vars.get('DROPLET_SSH_KEYS')
+            config['tags'] = env_vars.get('DROPLET_TAGS')
+            config['vpc_uuid'] = env_vars.get('DROPLET_VPC_UUID')
+            config['central_droplet_name'] = env_vars.get('DROPLET_CENTRAL_DROPLET_NAME')
+            config['scp_target'] = env_vars.get('DROPLET_SCP_TARGET')
+            config['domain'] = env_vars.get('DROPLET_DOMAIN')
+            config['ip'] = env_vars.get('DROPLET_IP')
+            config['dns_token'] = env_vars.get('DROPLET_DNS_TOKEN')
+            config['output_dir'] = env_vars.get('DROPLET_OUTPUT_DIR')
+            config['keep_package'] = env_vars.get('DROPLET_KEEP_PACKAGE')
+            config['prepare_server'] = env_vars.get('DROPLET_PREPARE_SERVER')
+            config['resume'] = env_vars.get('DROPLET_RESUME')
+            config['build'] = env_vars.get('DROPLET_BUILD')
+            config['containers'] = env_vars.get('DROPLET_CONTAINERS')
+            config['exclude_deps'] = env_vars.get('DROPLET_EXCLUDE_DEPS')
+            
+            return config
+        except Exception:
+            return default_config
+    
+    def save_droplet_config(self, branch_name: str, config: Dict[str, Optional[str]]) -> bool:
+        """Save droplet configuration to worktree's env.dockertree file.
+        
+        Writes or updates DROPLET_* variables in the worktree's env.dockertree file.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            config: Dictionary with droplet configuration keys. Only non-None values are saved.
+                   Keys: region, size, image, ssh_keys, tags, vpc_uuid, central_droplet_name,
+                         scp_target, domain, ip, dns_token, output_dir, keep_package,
+                         prepare_server, resume, build, containers, exclude_deps
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        from ..config.settings import get_worktree_paths
+        import re
+        
+        try:
+            worktree_path, legacy_path = get_worktree_paths(branch_name)
+            env_path = get_env_compose_file_path(worktree_path)
+            if not env_path.exists() and legacy_path.exists():
+                env_path = get_env_compose_file_path(legacy_path)
+            
+            # Ensure .dockertree directory exists
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Read existing content or create new
+            if env_path.exists():
+                content = env_path.read_text()
+            else:
+                content = f"# Dockertree environment configuration for {branch_name}\n"
+            
+            # Remove existing DROPLET_* configuration lines
+            droplet_vars = [
+                'DROPLET_REGION', 'DROPLET_SIZE', 'DROPLET_IMAGE', 'DROPLET_SSH_KEYS',
+                'DROPLET_TAGS', 'DROPLET_VPC_UUID', 'DROPLET_CENTRAL_DROPLET_NAME',
+                'DROPLET_SCP_TARGET', 'DROPLET_DOMAIN', 'DROPLET_IP', 'DROPLET_DNS_TOKEN',
+                'DROPLET_OUTPUT_DIR', 'DROPLET_KEEP_PACKAGE', 'DROPLET_PREPARE_SERVER',
+                'DROPLET_RESUME', 'DROPLET_BUILD', 'DROPLET_CONTAINERS', 'DROPLET_EXCLUDE_DEPS'
+            ]
+            for var in droplet_vars:
+                content = re.sub(rf'^{re.escape(var)}=.*$', '', content, flags=re.MULTILINE)
+            
+            # Remove multiple blank lines
+            content = re.sub(r'\n\n\n+', '\n\n', content)
+            
+            # Add droplet configuration at the end
+            content += "\n# Droplet command preferences (auto-saved after successful operations)\n"
+            
+            # Map config dict keys to DROPLET_* env vars
+            mapping = {
+                'region': 'DROPLET_REGION',
+                'size': 'DROPLET_SIZE',
+                'image': 'DROPLET_IMAGE',
+                'ssh_keys': 'DROPLET_SSH_KEYS',
+                'tags': 'DROPLET_TAGS',
+                'vpc_uuid': 'DROPLET_VPC_UUID',
+                'central_droplet_name': 'DROPLET_CENTRAL_DROPLET_NAME',
+                'scp_target': 'DROPLET_SCP_TARGET',
+                'domain': 'DROPLET_DOMAIN',
+                'ip': 'DROPLET_IP',
+                'dns_token': 'DROPLET_DNS_TOKEN',
+                'output_dir': 'DROPLET_OUTPUT_DIR',
+                'keep_package': 'DROPLET_KEEP_PACKAGE',
+                'prepare_server': 'DROPLET_PREPARE_SERVER',
+                'resume': 'DROPLET_RESUME',
+                'build': 'DROPLET_BUILD',
+                'containers': 'DROPLET_CONTAINERS',
+                'exclude_deps': 'DROPLET_EXCLUDE_DEPS',
+            }
+            
+            for key, env_var in mapping.items():
+                value = config.get(key)
+                if value is not None:
+                    # Convert boolean to string
+                    if isinstance(value, bool):
+                        content += f"{env_var}={str(value).lower()}\n"
+                    else:
+                        content += f"{env_var}={value}\n"
+            
+            env_path.write_text(content)
+            log_info(f"Saved droplet configuration to {env_path}")
+            return True
+        except Exception as e:
+            log_warning(f"Failed to save droplet configuration: {e}")
             return False
