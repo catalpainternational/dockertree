@@ -44,6 +44,36 @@ class PushManager:
         self.transfer = TransferManager()
         self.ssh = SSHConnectionManager()
     
+    def _validate_scp_target(self, scp_target: str) -> bool:
+        """Validate SCP target format.
+        
+        Args:
+            scp_target: SCP target string to validate
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        try:
+            SCPTarget(scp_target)
+            return True
+        except ValueError:
+            return False
+    
+    def _parse_scp_target(self, scp_target: str) -> Tuple[str, str, str]:
+        """Parse SCP target into components.
+        
+        Args:
+            scp_target: SCP target string
+            
+        Returns:
+            Tuple of (username, server, remote_path)
+            
+        Raises:
+            ValueError: If format is invalid
+        """
+        target = SCPTarget(scp_target)
+        return (target.username, target.server, target.remote_path)
+    
     def _detect_current_branch(self) -> Optional[str]:
         """Detect current branch name from working directory.
         
@@ -349,13 +379,13 @@ class PushManager:
             else:
                 log_info(f"Using provided branch name: {branch_name}")
             
-            # Validate and parse SCP target (required unless creating droplet)
-            if not scp_target and not create_droplet:
+            # Validate and parse SCP target (required unless creating droplet or droplet_info is provided)
+            if not scp_target and not create_droplet and not droplet_info:
                 log_error("scp_target is required (unless creating droplet)")
                 return False
             
-            # Handle droplet creation if requested
-            if create_droplet:
+            # Handle droplet creation if requested (only if droplet_info is not already provided)
+            if create_droplet and not droplet_info:
                 if not droplet_name:
                     log_error("droplet_name is required when create_droplet is True")
                     return False
