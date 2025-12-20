@@ -582,8 +582,8 @@ class ServerImportOrchestrator:
         log_info(f"Importing package in {'standalone' if is_standalone else 'normal'} mode...")
         try:
             import_result = self.package_manager.import_package(
-                package_path=str(package_file),
-                branch_name=branch_name,
+                package_path=package_file,
+                target_branch=branch_name,
                 domain=domain,
                 ip=ip,
                 standalone=is_standalone,

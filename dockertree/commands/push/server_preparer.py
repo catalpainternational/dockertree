@@ -28,7 +28,7 @@ class ServerPreparer:
             Path to server_prep.sh script
         """
         script_dir = get_script_dir()
-        return script_dir / "server_prep.sh"
+        return script_dir / "scripts" / "server_prep.sh"
     
     def _load_prep_script(self) -> str:
         """Load server preparation script from file.

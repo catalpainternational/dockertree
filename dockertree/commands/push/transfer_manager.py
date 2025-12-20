@@ -93,12 +93,15 @@ class TransferManager:
             package_size_mb = package_path.stat().st_size / 1024 / 1024
             log_info(f"Transferring {package_size_mb:.2f} MB package (this may take a while)...")
             
-            # Use SSHConnectionManager to build SCP command
-            scp_cmd = self.ssh.build_scp_command(
+            # Build SCP command manually with proper format
+            scp_cmd = [
+                "scp",
+                "-C",  # Enable compression
+                "-o", "StrictHostKeyChecking=accept-new",  # Auto-accept new host keys
+                "-o", "ConnectTimeout=10",
                 str(package_path),
-                remote_file_path,
-                use_control_master=True
-            )
+                f"{scp_target.username}@{scp_target.server}:{remote_file_path}"
+            ]
             
             log_info(f"Executing SCP command: {' '.join(scp_cmd)}")
             log_info("Transfer in progress (this may take a while for large packages)...")
