@@ -414,7 +414,19 @@ services:
                     if all(not (isinstance(v, str) and v.split(':',1)[0] == 'sqlite_data') for v in volumes_list):
                         volumes_list.append('sqlite_data:/data')
                 
-                # Add environment variables
+                # Replace hardcoded environment variables with variable references
+                # This allows .env and env.dockertree to override values
+                # List of environment variables that should be configurable (not hardcoded)
+                configurable_env_vars = {
+                    'DEBUG', 'ALLOWED_HOSTS', 'SECRET_KEY', 'DJANGO_SECRET_KEY',
+                    'CORS_ALLOWED_ORIGINS', 'FRONTEND_URL', 'SITE_DOMAIN',
+                    'WEBAUTHN_RP_ID', 'WEBAUTHN_RP_NAME', 'WEBAUTHN_ORIGIN', 'WEBAUTHN_ALLOWED_ORIGINS',
+                    'VITE_API_URL', 'VITE_ALLOWED_HOSTS',
+                    'USE_SECURE_COOKIES', 'USE_X_FORWARDED_HOST', 'CSRF_TRUSTED_ORIGINS',
+                    'SECURE_PROXY_SSL_HEADER', 'REDIS_HOST', 'REDIS_URL',
+                    'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DB', 'DATABASE_URL',
+                }
+                
                 # When domain is provided, add ALLOWED_HOSTS directly to ensure it's always available
                 if domain:
                     from ..config.settings import build_allowed_hosts_with_container
@@ -433,6 +445,18 @@ services:
                 
                 if 'environment' in service_config:
                     if isinstance(service_config['environment'], dict):
+                        # Replace hardcoded values with variable references for configurable vars
+                        env_dict = service_config['environment']
+                        for key, value in list(env_dict.items()):
+                            if key in configurable_env_vars:
+                                # Only replace if it's a string value that's not already a variable reference
+                                if isinstance(value, str) and not value.startswith('${'):
+                                    # Replace hardcoded value with variable reference
+                                    env_dict[key] = f'${{{key}}}'
+                                elif not isinstance(value, str):
+                                    # For non-string values, convert to variable reference
+                                    env_dict[key] = f'${{{key}}}'
+                        
                         env_updates = {
                             'COMPOSE_PROJECT_NAME': '${COMPOSE_PROJECT_NAME}',
                             'PROJECT_ROOT': '${PROJECT_ROOT}',
@@ -441,6 +465,21 @@ services:
                             env_updates['ALLOWED_HOSTS'] = allowed_hosts
                         service_config['environment'].update(env_updates)
                     elif isinstance(service_config['environment'], list):
+                        # Replace hardcoded values with variable references for configurable vars
+                        env_list = service_config['environment']
+                        new_env_list = []
+                        for item in env_list:
+                            if isinstance(item, str) and '=' in item:
+                                key, value = item.split('=', 1)
+                                # If it's a configurable var and not already a variable reference
+                                if key in configurable_env_vars and not value.startswith('${'):
+                                    new_env_list.append(f'{key}=${{{key}}}')
+                                else:
+                                    new_env_list.append(item)
+                            else:
+                                new_env_list.append(item)
+                        service_config['environment'] = new_env_list
+                        
                         env_updates = [
                             'COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}',
                             'PROJECT_ROOT=${PROJECT_ROOT}',
