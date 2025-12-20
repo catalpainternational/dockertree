@@ -231,7 +231,7 @@ class PushManager:
                     log_info(f"  - Branch: {metadata.get('branch_name', 'unknown')}")
                     log_info(f"  - Project: {metadata.get('project_name', 'unknown')}")
                     log_info(f"  - Includes code: {metadata.get('include_code', False)}")
-                    log_info(f"  - Volumes skipped: {metadata.get('skip_volumes', False)}")
+                    log_info(f"  - Volumes included: {not metadata.get('skip_volumes', False)}")
             else:
                 # Extract package name from remote path for display
                 if remote_file_path:
