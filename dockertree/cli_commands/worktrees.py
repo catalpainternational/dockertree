@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from dockertree.cli.helpers import add_json_option, add_verbose_option, command_wrapper
-from dockertree.commands.push import PushManager
+from dockertree.commands.push.push_manager import PushManager
 from dockertree.commands.utility import UtilityManager
 from dockertree.commands.worktree import WorktreeManager
 from dockertree.exceptions import DockertreeCommandError

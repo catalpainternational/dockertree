@@ -14,7 +14,7 @@ import click
 
 from dockertree.cli.helpers import add_json_option, add_verbose_option
 from dockertree.commands.droplets import DropletCommands
-from dockertree.commands.push import PushManager
+from dockertree.commands.push.push_manager import PushManager
 from dockertree.utils.json_output import JSONOutput
 from dockertree.utils.logging import (
     error_exit,
@@ -180,7 +180,7 @@ def _parse_scp_target_or_droplet(arg: str, api_token: Optional[str] = None) -> s
     Returns:
         Full SCP target string in format user@ip:path
     """
-    from ..commands.push import PushManager
+    from ..commands.push.push_manager import PushManager
     
     # Full SCP target format (contains both @ and : with @ before :)
     if '@' in arg and ':' in arg:
