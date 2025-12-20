@@ -529,7 +529,7 @@ class ServerImportOrchestrator:
     
     def import_and_start(self, package_path: str, branch_name: str,
                         domain: Optional[str] = None, ip: Optional[str] = None,
-                        build: bool = False, start: bool = True) -> Dict[str, any]:
+                        build: bool = False, debug: bool = False, start: bool = True) -> Dict[str, any]:
         """Import package and optionally start services.
         
         Args:
@@ -586,6 +586,7 @@ class ServerImportOrchestrator:
                 target_branch=branch_name,
                 domain=domain,
                 ip=ip,
+                debug=debug,
                 standalone=is_standalone,
                 non_interactive=True
             )

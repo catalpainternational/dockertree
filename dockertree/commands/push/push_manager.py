@@ -243,7 +243,7 @@ class PushManager:
     
     def _run_remote_import(self, username: str, server: str, remote_file: str, 
                            branch_name: str, domain: Optional[str], ip: Optional[str],
-                           build: bool = False) -> bool:
+                           build: bool = False, debug: bool = False) -> bool:
         """Run remote import using dockertree server-import command.
         
         Args:
@@ -331,6 +331,7 @@ class PushManager:
                     resume: bool = False,
                     code_only: bool = False,
                     build: bool = False,
+                    debug: bool = False,
                     containers: Optional[str] = None,
                     exclude_deps: Optional[List[str]] = None,
                     vpc_uuid: Optional[str] = None,
@@ -656,6 +657,7 @@ class PushManager:
                     domain,
                     ip,
                     build=build,
+                    debug=debug,
                 )
                 log_info("Remote import process completed")
                 

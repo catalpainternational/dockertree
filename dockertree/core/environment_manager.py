@@ -704,7 +704,7 @@ CADDY_EMAIL={caddy_email}
             base_content = f"{base_content}\n{host_port_section}"
         return base_content
     
-    def apply_domain_overrides(self, worktree_path: Path, domain: str) -> bool:
+    def apply_domain_overrides(self, worktree_path: Path, domain: str, debug: bool = False) -> bool:
         """Apply domain overrides to existing environment files.
         
         This method modifies .env files to replace localhost references
@@ -713,6 +713,7 @@ CADDY_EMAIL={caddy_email}
         Args:
             worktree_path: Path to worktree directory
             domain: Domain override (subdomain.domain.tld)
+            debug: Whether to enable DEBUG mode (default: False for production)
             
         Returns:
             True if successful, False otherwise
@@ -794,10 +795,11 @@ CADDY_EMAIL={caddy_email}
                     flags=re.MULTILINE
                 )
                 
-                # Set DEBUG=False
+                # Set DEBUG based on debug parameter
+                debug_value = 'True' if debug else 'False'
                 content = re.sub(
                     r'DEBUG=.*',
-                    'DEBUG=False',
+                    f'DEBUG={debug_value}',
                     content,
                     flags=re.MULTILINE | re.IGNORECASE
                 )
@@ -1079,11 +1081,19 @@ CADDY_EMAIL={caddy_email}
             log_warning(f"Domain configuration verification failed: {e}")
             return results
     
-    def apply_ip_overrides(self, worktree_path: Path, ip: str) -> bool:
+    def apply_ip_overrides(self, worktree_path: Path, ip: str, debug: bool = False) -> bool:
         """Apply IP overrides to existing environment files (HTTP-only).
 
         Sets SITE_DOMAIN to http://{ip}, updates ALLOWED_HOSTS to include
-        the IP, and forces DEBUG=False.
+        the IP, and sets DEBUG based on debug parameter (default: False for production).
+        
+        Args:
+            worktree_path: Path to worktree directory
+            ip: IP address override
+            debug: Whether to enable DEBUG mode (default: False for production)
+            
+        Returns:
+            True if successful, False otherwise
         """
         try:
             from ..config.settings import build_allowed_hosts_with_container
@@ -1128,7 +1138,9 @@ CADDY_EMAIL={caddy_email}
                 content = env_dockertree.read_text()
                 content = re.sub(r'SITE_DOMAIN=.*', f'SITE_DOMAIN={http_url}', content, flags=re.MULTILINE)
                 content = re.sub(r'ALLOWED_HOSTS=.*', f'ALLOWED_HOSTS={allowed_hosts}', content, flags=re.MULTILINE)
-                content = re.sub(r'DEBUG=.*', 'DEBUG=False', content, flags=re.MULTILINE | re.IGNORECASE)
+                # Set DEBUG based on debug parameter
+                debug_value = 'True' if debug else 'False'
+                content = re.sub(r'DEBUG=.*', f'DEBUG={debug_value}', content, flags=re.MULTILINE | re.IGNORECASE)
                 
                 # USE_SECURE_COOKIES (IP deployments are HTTP-only, no secure cookies)
                 use_secure_cookies = self._should_use_secure_cookies(http_url)
@@ -1339,7 +1351,7 @@ CADDY_EMAIL={caddy_email}
             Dictionary with droplet configuration keys. Values are None if not found.
             Keys: region, size, image, ssh_keys, tags, vpc_uuid, central_droplet_name,
                   scp_target, domain, ip, dns_token, output_dir, keep_package,
-                  prepare_server, resume, build, containers, exclude_deps
+                  prepare_server, resume, build, debug, containers, exclude_deps
         """
         from ..config.settings import get_worktree_paths
         from ..utils.env_loader import load_env_file
@@ -1361,6 +1373,7 @@ CADDY_EMAIL={caddy_email}
             'prepare_server': None,
             'resume': None,
             'build': None,
+            'debug': None,
             'containers': None,
             'exclude_deps': None,
         }
@@ -1394,6 +1407,7 @@ CADDY_EMAIL={caddy_email}
             config['prepare_server'] = env_vars.get('DROPLET_PREPARE_SERVER')
             config['resume'] = env_vars.get('DROPLET_RESUME')
             config['build'] = env_vars.get('DROPLET_BUILD')
+            config['debug'] = env_vars.get('DROPLET_DEBUG')
             config['containers'] = env_vars.get('DROPLET_CONTAINERS')
             config['exclude_deps'] = env_vars.get('DROPLET_EXCLUDE_DEPS')
             
@@ -1411,7 +1425,7 @@ CADDY_EMAIL={caddy_email}
             config: Dictionary with droplet configuration keys. Only non-None values are saved.
                    Keys: region, size, image, ssh_keys, tags, vpc_uuid, central_droplet_name,
                          scp_target, domain, ip, dns_token, output_dir, keep_package,
-                         prepare_server, resume, build, containers, exclude_deps
+                         prepare_server, resume, build, debug, containers, exclude_deps
             
         Returns:
             True if successful, False otherwise
@@ -1440,7 +1454,7 @@ CADDY_EMAIL={caddy_email}
                 'DROPLET_TAGS', 'DROPLET_VPC_UUID', 'DROPLET_CENTRAL_DROPLET_NAME',
                 'DROPLET_SCP_TARGET', 'DROPLET_DOMAIN', 'DROPLET_IP', 'DROPLET_DNS_TOKEN',
                 'DROPLET_OUTPUT_DIR', 'DROPLET_KEEP_PACKAGE', 'DROPLET_PREPARE_SERVER',
-                'DROPLET_RESUME', 'DROPLET_BUILD', 'DROPLET_CONTAINERS', 'DROPLET_EXCLUDE_DEPS'
+                'DROPLET_RESUME', 'DROPLET_BUILD', 'DROPLET_DEBUG', 'DROPLET_CONTAINERS', 'DROPLET_EXCLUDE_DEPS'
             ]
             for var in droplet_vars:
                 content = re.sub(rf'^{re.escape(var)}=.*$', '', content, flags=re.MULTILINE)
@@ -1469,6 +1483,7 @@ CADDY_EMAIL={caddy_email}
                 'prepare_server': 'DROPLET_PREPARE_SERVER',
                 'resume': 'DROPLET_RESUME',
                 'build': 'DROPLET_BUILD',
+                'debug': 'DROPLET_DEBUG',
                 'containers': 'DROPLET_CONTAINERS',
                 'exclude_deps': 'DROPLET_EXCLUDE_DEPS',
             }

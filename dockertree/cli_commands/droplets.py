@@ -936,6 +936,12 @@ def register_commands(cli) -> None:
     @click.option("--code-only", is_flag=True, default=False, help="Push code-only update to pre-existing server (uses stored push config from env.dockertree if available)")
     @click.option("--build", is_flag=True, default=False, help="Rebuild Docker images on the remote server after deployment")
     @click.option(
+        "--debug",
+        is_flag=True,
+        default=False,
+        help="Enable DEBUG mode in production deployment (default: False for production)"
+    )
+    @click.option(
         "--containers",
         help="Comma-separated list of worktree.container patterns to push only specific containers and their volumes (e.g., feature-auth.db,feature-auth.redis)",
     )
@@ -959,6 +965,7 @@ def register_commands(cli) -> None:
         resume: bool,
         code_only: bool,
         build: bool,
+        debug: bool,
         containers: Optional[str],
         exclude_deps: Optional[str],
         json: bool,
@@ -1005,6 +1012,10 @@ def register_commands(cli) -> None:
                 stored_build = stored_config.get('build')
                 if stored_build:
                     build = stored_build.lower() in ('true', '1', 'yes')
+            if not debug:  # Only use stored if False (default)
+                stored_debug = stored_config.get('debug')
+                if stored_debug:
+                    debug = stored_debug.lower() in ('true', '1', 'yes')
             if not containers:
                 containers = stored_config.get('containers')
             if not exclude_deps:
@@ -1091,6 +1102,7 @@ def register_commands(cli) -> None:
                 resume=resume,
                 code_only=code_only,
                 build=build,
+                debug=debug,
                 containers=containers,
                 exclude_deps=exclude_deps_list,
             )
@@ -1114,6 +1126,7 @@ def register_commands(cli) -> None:
                     'prepare_server': prepare_server,
                     'resume': resume,
                     'build': build,
+                    'debug': debug,
                     'containers': containers,
                     'exclude_deps': exclude_deps,
                 }

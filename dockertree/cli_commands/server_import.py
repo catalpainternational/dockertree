@@ -22,10 +22,16 @@ def register_commands(cli) -> None:
     @click.option("--domain", help="Domain for Caddy routing (subdomain.domain.tld)")
     @click.option("--ip", help="IP for HTTP-only routing (no TLS)")
     @click.option("--build", is_flag=True, default=False, help="Rebuild Docker images after import")
+    @click.option(
+        "--debug",
+        is_flag=True,
+        default=False,
+        help="Enable DEBUG mode in production deployment (default: False for production)"
+    )
     @click.option("--start/--no-start", default=True, help="Start services after import (default: True)")
     @add_verbose_option
     @command_wrapper(require_setup=False, require_prerequisites=False)
-    def server_import(package_path: str, branch_name: str, domain: str, ip: str, build: bool, start: bool):
+    def server_import(package_path: str, branch_name: str, domain: str, ip: str, build: bool, debug: bool, start: bool):
         """Import package and start services (runs on remote server).
         
         This command is typically invoked via SSH from the push command.
@@ -41,6 +47,7 @@ def register_commands(cli) -> None:
             domain=domain,
             ip=ip,
             build=build,
+            debug=debug,
             start=start
         )
         

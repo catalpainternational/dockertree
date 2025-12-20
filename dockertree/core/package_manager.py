@@ -43,7 +43,8 @@ class PackageManager:
         self.orchestrator = WorktreeOrchestrator(project_root=self.project_root)
     
     def _apply_domain_or_ip_override(self, worktree_path: Path, domain: Optional[str], 
-                                      ip: Optional[str], env_manager: EnvironmentManager = None) -> bool:
+                                      ip: Optional[str], debug: bool = False,
+                                      env_manager: EnvironmentManager = None) -> bool:
         """Apply domain or IP override to worktree configuration files.
         
         This is a DRY helper method used by both _normal_import() and _standalone_import().
@@ -69,7 +70,7 @@ class PackageManager:
         if domain:
             log_info(f"Applying domain overrides to worktree: {domain}")
             log_info(f"Worktree path: {worktree_path}")
-            success = manager.apply_domain_overrides(worktree_path, domain)
+            success = manager.apply_domain_overrides(worktree_path, domain, debug=debug)
             if not success:
                 log_error(f"Failed to apply domain overrides to worktree at {worktree_path}")
                 log_error(f"This may cause containers to use localhost domain instead of {domain}")
@@ -90,7 +91,7 @@ class PackageManager:
         elif ip:
             log_info(f"Applying IP overrides to worktree: {ip}")
             log_info(f"Worktree path: {worktree_path}")
-            success = manager.apply_ip_overrides(worktree_path, ip)
+            success = manager.apply_ip_overrides(worktree_path, ip, debug=debug)
             if not success:
                 log_error(f"Failed to apply IP overrides to worktree at {worktree_path}")
                 log_error(f"This may cause containers to use localhost domain instead of {ip}")
@@ -260,7 +261,7 @@ class PackageManager:
     def import_package(self, package_path: Path, target_branch: str = None,
                       restore_data: bool = True, standalone: bool = None,
                       target_directory: Path = None, domain: Optional[str] = None,
-                      ip: Optional[str] = None, non_interactive: bool = False) -> Dict[str, Any]:
+                      ip: Optional[str] = None, debug: bool = False, non_interactive: bool = False) -> Dict[str, Any]:
         """Import package with automatic standalone detection.
         
         Args:
@@ -290,9 +291,9 @@ class PackageManager:
 
             # Route to appropriate import method
             if standalone:
-                return self._standalone_import(package_path, target_directory, restore_data, domain, ip, non_interactive)
+                return self._standalone_import(package_path, target_directory, restore_data, domain, ip, debug, non_interactive)
             else:
-                return self._normal_import(package_path, target_branch, restore_data, domain, ip)
+                return self._normal_import(package_path, target_branch, restore_data, domain, ip, debug)
                 
         except Exception as e:
             log_error(f"Error importing package: {e}")
@@ -355,7 +356,7 @@ class PackageManager:
     
     def _normal_import(self, package_path: Path, target_branch: str = None,
                       restore_data: bool = True, domain: Optional[str] = None,
-                      ip: Optional[str] = None) -> Dict[str, Any]:
+                      ip: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
         """Import package to existing project as new worktree.
         
         Args:
@@ -435,7 +436,7 @@ class PackageManager:
                 self._configure_worker_environment(worktree_path, metadata)
             
             # Apply domain/ip overrides if provided (DRY: uses shared helper method)
-            self._apply_domain_or_ip_override(worktree_path, domain, ip)
+            self._apply_domain_or_ip_override(worktree_path, domain, ip, debug=debug)
             
             # Restore volumes if requested
             # restore_volumes() handles stopping containers safely before restore
@@ -490,7 +491,7 @@ class PackageManager:
     
     def _standalone_import(self, package_path: Path, target_directory: Path = None,
                           restore_data: bool = True, domain: Optional[str] = None,
-                          ip: Optional[str] = None, non_interactive: bool = False) -> Dict[str, Any]:
+                          ip: Optional[str] = None, debug: bool = False, non_interactive: bool = False) -> Dict[str, Any]:
         """Import package in standalone mode - extracts complete deployment.
         
         Simply extracts code archive and environment files from package.
@@ -593,7 +594,7 @@ class PackageManager:
             
             # Apply domain/IP overrides to worktree's .dockertree/ if provided
             # The .dockertree/ was extracted with localhost settings, now update for deployment
-            self._apply_domain_or_ip_override(worktree_path, domain, ip, env_manager)
+            self._apply_domain_or_ip_override(worktree_path, domain, ip, debug=debug, env_manager=env_manager)
             
             # Restore volumes if requested
             # IMPORTANT: Stop any running containers first to ensure volumes can be restored safely.

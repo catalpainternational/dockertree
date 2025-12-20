@@ -414,7 +414,7 @@ services:
                     if all(not (isinstance(v, str) and v.split(':',1)[0] == 'sqlite_data') for v in volumes_list):
                         volumes_list.append('sqlite_data:/data')
                 
-                # Replace hardcoded environment variables with variable references
+                # Replace hardcoded environment variables with variable references that have defaults
                 # This allows .env and env.dockertree to override values
                 # List of environment variables that should be configurable (not hardcoded)
                 configurable_env_vars = {
@@ -426,6 +426,39 @@ services:
                     'SECURE_PROXY_SSL_HEADER', 'REDIS_HOST', 'REDIS_URL',
                     'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DB', 'DATABASE_URL',
                 }
+                
+                # Default values for configurable environment variables
+                # Format: ${VAR:-default} - uses default if VAR is not set
+                # These defaults are development-friendly and can be overridden in .env or env.dockertree
+                env_var_defaults = {
+                    'DEBUG': 'True',
+                    'ALLOWED_HOSTS': 'localhost,127.0.0.1,*.localhost,web',
+                    'SECRET_KEY': 'django-insecure-dev-key-change-in-production',
+                    'DJANGO_SECRET_KEY': 'django-insecure-secret-key',
+                    'CORS_ALLOWED_ORIGINS': 'http://localhost:5173,http://localhost:3000',
+                    'FRONTEND_URL': 'http://localhost:5173',
+                    'SITE_DOMAIN': 'localhost:8000',
+                    'WEBAUTHN_RP_ID': 'localhost',
+                    'WEBAUTHN_RP_NAME': 'Kanban Boards',
+                    'WEBAUTHN_ORIGIN': 'http://localhost:5173',
+                    'WEBAUTHN_ALLOWED_ORIGINS': 'http://localhost:5173,http://127.0.0.1:5173',
+                    'VITE_API_URL': 'http://localhost:8000/api',
+                    'VITE_ALLOWED_HOSTS': 'localhost,127.0.0.1,*.localhost',
+                    'USE_SECURE_COOKIES': 'False',
+                    'USE_X_FORWARDED_HOST': 'True',
+                    'CSRF_TRUSTED_ORIGINS': '',
+                    'SECURE_PROXY_SSL_HEADER': '',
+                    'REDIS_HOST': '${COMPOSE_PROJECT_NAME}-redis',
+                    'REDIS_URL': 'redis://${COMPOSE_PROJECT_NAME}-redis:6379/0',
+                    'POSTGRES_USER': 'postgres',
+                    'POSTGRES_PASSWORD': 'postgres',
+                    'POSTGRES_DB': 'kanban',
+                    'DATABASE_URL': '',
+                }
+                
+                # Variables whose defaults contain variable references that should NOT be escaped
+                # These defaults will be evaluated by docker-compose
+                vars_with_var_refs = {'REDIS_HOST', 'REDIS_URL'}
                 
                 # When domain is provided, add ALLOWED_HOSTS directly to ensure it's always available
                 if domain:
@@ -445,17 +478,36 @@ services:
                 
                 if 'environment' in service_config:
                     if isinstance(service_config['environment'], dict):
-                        # Replace hardcoded values with variable references for configurable vars
+                        # Replace hardcoded values with variable references that have defaults
                         env_dict = service_config['environment']
                         for key, value in list(env_dict.items()):
                             if key in configurable_env_vars:
                                 # Only replace if it's a string value that's not already a variable reference
                                 if isinstance(value, str) and not value.startswith('${'):
-                                    # Replace hardcoded value with variable reference
-                                    env_dict[key] = f'${{{key}}}'
+                                    # Replace hardcoded value with variable reference and default
+                                    default_value = env_var_defaults.get(key, '')
+                                    if default_value:
+                                        # Escape $ only if this default doesn't contain variable references
+                                        # Variables like REDIS_HOST need ${COMPOSE_PROJECT_NAME} to be evaluated
+                                        if key in vars_with_var_refs:
+                                            escaped_default = default_value
+                                        else:
+                                            # Escape $ to prevent unwanted variable expansion in literal defaults
+                                            escaped_default = default_value.replace('$', '$$')
+                                        env_dict[key] = f'${{{key}:-{escaped_default}}}'
+                                    else:
+                                        env_dict[key] = f'${{{key}}}'
                                 elif not isinstance(value, str):
-                                    # For non-string values, convert to variable reference
-                                    env_dict[key] = f'${{{key}}}'
+                                    # For non-string values, convert to variable reference with default
+                                    default_value = env_var_defaults.get(key, '')
+                                    if default_value:
+                                        if key in vars_with_var_refs:
+                                            escaped_default = str(default_value)
+                                        else:
+                                            escaped_default = str(default_value).replace('$', '$$')
+                                        env_dict[key] = f'${{{key}:-{escaped_default}}}'
+                                    else:
+                                        env_dict[key] = f'${{{key}}}'
                         
                         env_updates = {
                             'COMPOSE_PROJECT_NAME': '${COMPOSE_PROJECT_NAME}',
@@ -465,7 +517,7 @@ services:
                             env_updates['ALLOWED_HOSTS'] = allowed_hosts
                         service_config['environment'].update(env_updates)
                     elif isinstance(service_config['environment'], list):
-                        # Replace hardcoded values with variable references for configurable vars
+                        # Replace hardcoded values with variable references that have defaults
                         env_list = service_config['environment']
                         new_env_list = []
                         for item in env_list:
@@ -473,7 +525,17 @@ services:
                                 key, value = item.split('=', 1)
                                 # If it's a configurable var and not already a variable reference
                                 if key in configurable_env_vars and not value.startswith('${'):
-                                    new_env_list.append(f'{key}=${{{key}}}')
+                                    # Use default value if available
+                                    default_value = env_var_defaults.get(key, '')
+                                    if default_value:
+                                        # Escape $ only if this default doesn't contain variable references
+                                        if key in vars_with_var_refs:
+                                            escaped_default = default_value
+                                        else:
+                                            escaped_default = default_value.replace('$', '$$')
+                                        new_env_list.append(f'{key}=${{{key}:-{escaped_default}}}')
+                                    else:
+                                        new_env_list.append(f'{key}=${{{key}}}')
                                 else:
                                     new_env_list.append(item)
                             else:
