@@ -983,13 +983,13 @@ CADDY_EMAIL={caddy_email}
                 if 'build' in service_config:
                     if isinstance(service_config['build'], str):
                         if '${PROJECT_ROOT}' in service_config['build']:
-                            service_config['build'] = str(worktree_path)
+                            service_config['build'] = service_config['build'].replace('${PROJECT_ROOT}', str(worktree_path))
                             updated = True
                     elif isinstance(service_config['build'], dict):
                         if 'context' in service_config['build']:
                             context = service_config['build']['context']
                             if isinstance(context, str) and '${PROJECT_ROOT}' in context:
-                                service_config['build']['context'] = str(worktree_path)
+                                service_config['build']['context'] = context.replace('${PROJECT_ROOT}', str(worktree_path))
                                 updated = True
                 
                 # Fix volume mounts for code directories (e.g., /app, /code, /src)
