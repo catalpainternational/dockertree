@@ -249,4 +249,79 @@ def update_allowed_hosts_in_compose(
     return updated
 
 
+def update_vite_allowed_hosts_in_compose(
+    service_config: Dict[str, Any],
+    domain: str,
+    service_name: str
+) -> bool:
+    """
+    Update VITE_ALLOWED_HOSTS in docker-compose.yml environment section for frontend services.
+    
+    This is required for Vite dev server to allow requests from production domains.
+    Only applies to frontend services (detected by service name or VITE_* env vars).
+    
+    Args:
+        service_config: Service configuration from docker-compose.yml
+        domain: Domain to add to VITE_ALLOWED_HOSTS
+        service_name: Name of the service (used to detect frontend services)
+    
+    Returns:
+        True if VITE_ALLOWED_HOSTS was updated, False otherwise
+    """
+    # Only apply to frontend services
+    if service_name not in ['frontend']:
+        # Also check if service has VITE_* environment variables (indicates Vite project)
+        if 'environment' in service_config:
+            env_vars = service_config['environment']
+            has_vite = False
+            if isinstance(env_vars, list):
+                has_vite = any(isinstance(e, str) and e.startswith('VITE_') for e in env_vars)
+            elif isinstance(env_vars, dict):
+                has_vite = any(k.startswith('VITE_') for k in env_vars.keys())
+            if not has_vite:
+                return False
+        else:
+            return False
+    
+    if 'environment' not in service_config:
+        # Ensure environment section exists
+        service_config['environment'] = []
+    
+    # Build VITE_ALLOWED_HOSTS value
+    from ..core.dns_manager import get_base_domain
+    base_domain = get_base_domain(domain)
+    vite_allowed_hosts = f"{domain},*.{base_domain},localhost,127.0.0.1"
+    
+    env_vars = service_config['environment']
+    updated = False
+    
+    # Handle list format: ["VITE_API_URL=http://localhost:8000/api", "VITE_ALLOWED_HOSTS=..."]
+    if isinstance(env_vars, list):
+        for i, env_var in enumerate(env_vars):
+            if isinstance(env_var, str) and env_var.startswith('VITE_ALLOWED_HOSTS='):
+                # Replace existing VITE_ALLOWED_HOSTS
+                env_vars[i] = f"VITE_ALLOWED_HOSTS={vite_allowed_hosts}"
+                updated = True
+                log_info(f"Updated VITE_ALLOWED_HOSTS for {service_name}: {vite_allowed_hosts}")
+                break
+        else:
+            # Add VITE_ALLOWED_HOSTS if it doesn't exist
+            # Try to add it after VITE_API_URL if present
+            vite_api_idx = next((i for i, e in enumerate(env_vars) if isinstance(e, str) and e.startswith('VITE_API_URL=')), -1)
+            if vite_api_idx >= 0:
+                env_vars.insert(vite_api_idx + 1, f"VITE_ALLOWED_HOSTS={vite_allowed_hosts}")
+            else:
+                env_vars.append(f"VITE_ALLOWED_HOSTS={vite_allowed_hosts}")
+            updated = True
+            log_info(f"Added VITE_ALLOWED_HOSTS to {service_name}: {vite_allowed_hosts}")
+    
+    # Handle dict format: {"VITE_API_URL": "http://localhost:8000/api", "VITE_ALLOWED_HOSTS": "..."}
+    elif isinstance(env_vars, dict):
+        env_vars['VITE_ALLOWED_HOSTS'] = vite_allowed_hosts
+        updated = True
+        log_info(f"Updated VITE_ALLOWED_HOSTS for {service_name}: {vite_allowed_hosts}")
+    
+    return updated
+
+
 

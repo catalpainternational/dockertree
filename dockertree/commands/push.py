@@ -116,7 +116,12 @@ class PushManager:
             # Handle DNS management if domain is provided
             if domain and not skip_dns_check:
                 log_info(f"Domain provided: {domain}, managing DNS records...")
-                dns_success = self._handle_dns_management(domain, server, dns_token, False)
+                # Use droplet IP directly if available (more reliable than resolving from server string)
+                dns_server = server
+                if droplet_info and droplet_info.ip_address:
+                    dns_server = droplet_info.ip_address
+                    log_info(f"Using droplet IP directly for DNS: {dns_server}")
+                dns_success = self._handle_dns_management(domain, dns_server, dns_token, create_droplet)
                 if not dns_success:
                     log_warning("DNS management failed, but continuing with push...")
             elif skip_dns_check:
@@ -1609,6 +1614,10 @@ log_error() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
 }
 
+log_warning() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2
+}
+
 log "Refreshing Caddy routes..."
 
 # Find dockertree binary
@@ -1709,6 +1718,10 @@ log_error() {{
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
 }}
 
+log_warning() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2
+}}
+
 # Check if Caddy admin API is accessible
 CADDY_ADMIN="http://localhost:2019"
 if ! curl -s "$CADDY_ADMIN/config/" >/dev/null 2>&1; then
@@ -1803,6 +1816,10 @@ log_success() {{
 
 log_error() {{
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✗ $*" >&2
+}}
+
+log_warning() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠ $*" >&2
 }}
 
 ENV_FILE="{worktree_path}/.dockertree/env.dockertree"

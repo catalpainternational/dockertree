@@ -24,7 +24,7 @@ from ..utils.path_utils import (
     get_env_compose_file_path,
     copy_env_file
 )
-from ..utils.caddy_config import ensure_caddy_labels_and_network, update_allowed_hosts_in_compose
+from ..utils.caddy_config import ensure_caddy_labels_and_network, update_allowed_hosts_in_compose, update_vite_allowed_hosts_in_compose
 from ..core.dns_manager import is_domain
 
 HOST_PORT_RANGES: Dict[str, tuple[int, int]] = {
@@ -831,39 +831,30 @@ CADDY_EMAIL={caddy_email}
                 env_dockertree.write_text(content)
                 log_info(f"Applied domain overrides to env.dockertree: {domain}")
             
-            # Update docker-compose files to add/update Caddy labels and ALLOWED_HOSTS
-            # Check both docker-compose.worktree.yml and docker-compose.yml in worktree directory
+            # Update docker-compose override file to add/update Caddy labels and ALLOWED_HOSTS
+            # IMPORTANT: Only modify the .dockertree/docker-compose.worktree.yml override file,
+            # never modify the base docker-compose.yml file
             from ..utils.path_utils import get_compose_override_path
             import yaml
             from ..utils.file_utils import clean_compose_version_field
             
-            compose_files_to_check = []
-            
-            # Check docker-compose.worktree.yml first (preferred)
+            # Only modify the override file in .dockertree directory
             compose_file = get_compose_override_path(worktree_path)
-            if compose_file and compose_file.exists():
-                compose_files_to_check.append(compose_file)
             
-            # Also check docker-compose.yml in worktree directory (for standalone imports)
-            worktree_compose = worktree_path / "docker-compose.yml"
-            if worktree_compose.exists() and worktree_compose not in compose_files_to_check:
-                compose_files_to_check.append(worktree_compose)
-            
-            if not compose_files_to_check:
-                log_warning(f"Could not find docker-compose file for worktree at {worktree_path}")
+            if not compose_file or not compose_file.exists():
+                log_warning(f"Could not find docker-compose override file for worktree at {worktree_path}")
+                log_warning(f"Expected: {worktree_path / '.dockertree' / 'docker-compose.worktree.yml'}")
             else:
-                for compose_file in compose_files_to_check:
-                    try:
-                        compose_content = compose_file.read_text()
-                        compose_data = yaml.safe_load(compose_content)
-                        
-                        if not compose_data:
-                            log_warning(f"Docker Compose file is empty or invalid: {compose_file}")
-                            continue
-                        elif 'services' not in compose_data:
-                            log_warning(f"Docker Compose file has no 'services' section: {compose_file}")
-                            continue
-                        
+                # Only process the override file, never the base compose file
+                try:
+                    compose_content = compose_file.read_text()
+                    compose_data = yaml.safe_load(compose_content)
+                    
+                    if not compose_data:
+                        log_warning(f"Docker Compose override file is empty or invalid: {compose_file}")
+                    elif 'services' not in compose_data:
+                        log_warning(f"Docker Compose override file has no 'services' section: {compose_file}")
+                    else:
                         # Use shared utility to ensure Caddy labels and network are configured
                         # This will ADD labels if missing, or update them if they exist
                         caddy_updated = ensure_caddy_labels_and_network(
@@ -875,29 +866,34 @@ CADDY_EMAIL={caddy_email}
                         
                         # Also update ALLOWED_HOSTS in environment section for all services
                         allowed_hosts_updated = False
+                        vite_allowed_hosts_updated = False
                         for service_name, service_config in compose_data['services'].items():
                             if update_allowed_hosts_in_compose(service_config, domain):
                                 allowed_hosts_updated = True
-                                log_info(f"Updated ALLOWED_HOSTS for {service_name} in {compose_file.name}")
+                                log_info(f"Updated ALLOWED_HOSTS for {service_name} in override file")
+                            # Update VITE_ALLOWED_HOSTS for frontend services (Vite dev server)
+                            if update_vite_allowed_hosts_in_compose(service_config, domain, service_name):
+                                vite_allowed_hosts_updated = True
+                                log_info(f"Updated VITE_ALLOWED_HOSTS for {service_name} in override file")
                         
-                        if caddy_updated or allowed_hosts_updated:
+                        if caddy_updated or allowed_hosts_updated or vite_allowed_hosts_updated:
                             # Remove version field if it's null (Docker Compose v2 doesn't require it)
                             clean_compose_version_field(compose_data)
                             
                             # Write YAML with proper formatting
                             yaml_content = yaml.dump(compose_data, default_flow_style=False, sort_keys=False, allow_unicode=True)
                             compose_file.write_text(yaml_content)
-                            log_info(f"Updated {compose_file.name} with domain: {domain}")
+                            log_info(f"Updated override file {compose_file.name} with domain: {domain}")
                             log_info(f"Caddy will route {domain} to containers when they start")
                         else:
-                            log_info(f"No updates needed for {compose_file.name} (labels and ALLOWED_HOSTS already configured)")
-                            
-                    except Exception as e:
-                        log_warning(f"Failed to update {compose_file.name}: {e}")
-                        import traceback
-                        log_warning(f"Traceback: {traceback.format_exc()}")
-                        # Don't return False here - env files may have been updated successfully
-                        # Compose file update failure is a warning, not a complete failure
+                            log_info(f"No updates needed for override file (labels and ALLOWED_HOSTS already configured)")
+                        
+                except Exception as e:
+                    log_warning(f"Failed to update override file {compose_file.name}: {e}")
+                    import traceback
+                    log_warning(f"Traceback: {traceback.format_exc()}")
+                    # Don't return False here - env files may have been updated successfully
+                    # Compose file update failure is a warning, not a complete failure
             
             # Return True if we successfully updated env files (compose file update is optional)
             # Env files are the critical part for domain override
