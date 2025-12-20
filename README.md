@@ -183,7 +183,7 @@ Dockertree supports direct passthrough to Docker Compose commands using the patt
 | `droplet regions --show-all` | Include unavailable regions in region list | `dockertree droplet regions --show-all` |
 | `droplet info <id>` | Get droplet information | `dockertree droplet info 12345678` |
 | `droplet destroy <id>` | Destroy a droplet (supports ID or name, comma-separated) | `dockertree droplet destroy 12345678` or `dockertree droplet destroy my-droplet` or `dockertree droplet destroy 123,456,789` |
-| `droplet push [<branch>] <scp_target>` | Push dockertree package to remote server | `dockertree droplet push feature-auth user@server:/path` |
+| `droplet push [<branch>] <scp_target_or_droplet>` | Push dockertree package to remote server (supports progressive SCP patterns) | `dockertree droplet push feature-auth user@server:/path` or `dockertree droplet push feature-auth my-app` |
 
 **Droplet Creation Options:**
 - `branch_name` (optional argument) - Branch/worktree name (auto-detected from current directory if not provided)
@@ -937,7 +937,29 @@ dockertree droplet create test --create-only
 ### Basic Push to Existing Server
 ```bash
 # Export and transfer a package to a remote server via SCP
+# Supports progressive SCP target patterns:
 dockertree droplet push feature-auth user@server:/var/dockertree/packages
+
+# Progressive patterns - Username + domain
+dockertree droplet push feature-auth deploy@example.com
+
+# Progressive patterns - Domain + path
+dockertree droplet push feature-auth example.com:/var/dockertree
+
+# Progressive patterns - Domain only (resolves to IP)
+dockertree droplet push feature-auth example.com
+
+# Progressive patterns - IP + path
+dockertree droplet push feature-auth 192.168.1.100:/var/dockertree
+
+# Progressive patterns - IP only
+dockertree droplet push feature-auth 192.168.1.100
+
+# Droplet by name
+dockertree droplet push feature-auth my-app
+
+# Droplet by ID
+dockertree droplet push feature-auth 12345678
 ```
 
 ### Auto-Import on Remote with Domain and HTTPS
@@ -978,7 +1000,12 @@ dockertree droplet push feature-auth user@server:/var/dockertree/packages \
 dockertree droplet push --code-only
 
 # Code-only update with explicit arguments (overrides stored config)
+# Works with all progressive SCP patterns:
 dockertree droplet push feature-auth user@server:/var/dockertree/packages --code-only
+dockertree droplet push feature-auth my-app --code-only
+dockertree droplet push feature-auth 192.168.1.100 --code-only
+dockertree droplet push feature-auth deploy@example.com --code-only
+dockertree droplet push feature-auth example.com:/var/dockertree --code-only
 
 # Code-only update with domain/IP override
 dockertree droplet push --code-only --domain app.example.com
@@ -1012,6 +1039,129 @@ PUSH_IP=203.0.113.10  # optional (mutually exclusive with domain)
 - Environment configuration changes
 - Database schema migrations
 - Volume data updates
+
+### Progressive SCP Target Patterns
+
+The `droplet push` command supports progressive SCP target patterns, making it easier to deploy without manually constructing SCP targets:
+
+**Supported Patterns:**
+- **Full SCP target**: `user@server:/path` → use as-is (backward compatible)
+- **Username + domain**: `user@example.com` → resolves domain to IP, constructs `user@<ip>:/root`
+- **Domain + path**: `example.com:/path` → resolves domain to IP, constructs `root@<ip>:<path>`
+- **Domain only**: `example.com` → resolves domain to IP, constructs `root@<ip>:/root`
+- **IP + path**: `192.168.1.100:/path` → constructs `root@192.168.1.100:/path`
+- **IP only**: `192.168.1.100` → constructs `root@192.168.1.100:/root`
+- **Droplet ID**: `12345678` → resolves to IP via API, constructs `root@<ip>:/root`
+- **Droplet name**: `my-app` → resolves to IP via API, constructs `root@<ip>:/root`
+
+**Resolution Priority:**
+1. If already an IP address → use directly
+2. Try DNS resolution (domain lookup) → use resolved IP
+3. Try droplet ID/name lookup → use droplet IP
+
+**Domain Setup Fix:**
+When using progressive patterns with `--domain`, the resolved IP from the SCP target is automatically used for DNS management, ensuring DNS records point to the correct server.
+
+### Multi-Project Deployments
+
+Dockertree supports deploying **multiple independent projects** to the same server, each with their own unique URL. This enables efficient resource usage while maintaining complete isolation between projects.
+
+#### How It Works
+
+**Global Caddy Proxy:**
+- A single global Caddy container (`dockertree_caddy_proxy`) runs on the server
+- Monitors **all Docker containers** on the host via `/var/run/docker.sock`
+- Automatically discovers containers with `caddy.proxy` labels from **any project**
+- Routes traffic based on domain/IP specified in container labels
+
+**Container Discovery:**
+- Caddy dynamically scans all containers on the Docker host
+- Finds containers with `caddy.proxy` labels regardless of which project directory they belong to
+- Each project's containers are automatically discovered and routed
+
+**Shared Network:**
+- All project containers join the `dockertree_caddy_proxy` network (external)
+- This enables the global Caddy to route to containers from any project
+- Projects remain isolated but share the routing infrastructure
+
+#### Deployment Example
+
+```bash
+# Deploy Project 1 (e.g., Django app) to server
+cd /var/dockertree/project1
+dockertree droplet push feature-auth user@server:/var/dockertree/packages \
+  --domain app1.example.com
+
+# Deploy Project 2 (e.g., Flask API) to same server
+cd /var/dockertree/project2  
+dockertree droplet push api-v2 user@server:/var/dockertree/packages \
+  --domain api.example.com
+
+# Deploy Project 3 (e.g., Node.js app) to same server
+cd /var/dockertree/project3
+dockertree droplet push main user@server:/var/dockertree/packages \
+  --domain app3.example.com
+```
+
+All three projects will:
+- ✅ Run independently with isolated containers and volumes
+- ✅ Be accessible via their own unique domains
+- ✅ Share the same global Caddy proxy for routing
+- ✅ Not interfere with each other
+
+#### Requirements
+
+1. **Global Caddy Must Be Running**: Ensure `dockertree_caddy_proxy` container is running on the server
+   ```bash
+   # On the server, start global Caddy if not already running
+   dockertree start-proxy
+   ```
+
+2. **Unique Domains/IPs**: Each project must have a unique domain or IP address
+   - ✅ `app1.example.com`, `app2.example.com`, `api.example.com` (all different)
+   - ❌ Cannot use the same domain for multiple projects
+
+3. **Project Isolation**: Projects can be in completely different directories
+   - Standalone mode works perfectly for multi-project deployments
+   - Each project maintains its own `.dockertree/` configuration
+
+4. **Automatic Label Configuration**: Dockertree automatically adds `caddy.proxy` labels to containers
+   - Labels are set based on `--domain` or `--ip` flags during push
+   - No manual configuration needed
+
+#### Benefits
+
+- **Resource Efficiency**: One reverse proxy handles all projects
+- **Complete Isolation**: Each project has its own containers, volumes, and networks
+- **Simple Management**: Deploy each project independently
+- **Flexible**: Mix domain-based HTTPS and IP-based HTTP deployments
+- **Scalable**: Add new projects without affecting existing ones
+
+#### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              Global Caddy Proxy                         │
+│         (dockertree_caddy_proxy)                        │
+│         Ports: 80, 443, 2019                           │
+│                                                         │
+│  Monitors ALL containers via Docker socket              │
+│  Routes based on caddy.proxy labels                     │
+└─────────────────────────────────────────────────────────┘
+                    │
+        ┌───────────┼───────────┐
+        │           │           │
+┌───────▼──────┐ ┌──▼──────┐ ┌──▼──────┐
+│  Project 1   │ │Project 2│ │Project 3│
+│              │ │         │ │         │
+│ app1.example │ │api.exam │ │app3.exam│
+│     .com     │ │  ple.com│ │  ple.com│
+│              │ │         │ │         │
+│ • PostgreSQL │ │• MongoDB│ │• Redis  │
+│ • Redis      │ │• Web    │ │• Web    │
+│ • Web App    │ │• API    │ │• App    │
+└──────────────┘ └─────────┘ └─────────┘
+```
 
 ### DNS Management
 Dockertree can automatically manage DNS records via Digital Ocean DNS API:

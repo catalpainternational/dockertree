@@ -122,3 +122,92 @@ Docker Compose loads environment variables in this order (later overrides earlie
 
 Python's `load_dotenv(override=False)` respects existing environment variables, so Docker-set values are preserved.
 
+## Vite Dev Server Blocking Production Domain (Outstanding Issue - Needs Review)
+
+### Symptom
+- When accessing a deployed site via production domain (e.g., `https://boards.are.temporarily.fun`), Vite dev server returns:
+  ```
+  Blocked request. This host ("boards.are.temporarily.fun") is not allowed.
+  To allow this host, add "boards.are.temporarily.fun" to `server.allowedHosts` in vite.config.js.
+  ```
+- Frontend container is running but requests are blocked by Vite's security feature
+- Issue occurs on production deployments when using real domains (not localhost)
+
+### Root Cause
+Vite's dev server has a built-in security feature that blocks requests from hosts not explicitly listed in `server.allowedHosts`. By default, Vite only allows `localhost` and `127.0.0.1`. When deploying to a production domain, the domain must be added to the allowed hosts list, otherwise Vite blocks all requests.
+
+This is a security feature to prevent DNS rebinding attacks, but it requires explicit configuration for production deployments.
+
+### Solution (Implemented)
+
+#### 1. Update `vite.config.js` to Read from Environment Variable
+Add `allowedHosts` configuration that reads from `VITE_ALLOWED_HOSTS` environment variable:
+
+```javascript
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: '0.0.0.0',
+    port: 8000,
+    // Allow requests from domains specified in VITE_ALLOWED_HOSTS env var
+    // Format: comma-separated list (e.g., "example.com,*.example.com")
+    allowedHosts: process.env.VITE_ALLOWED_HOSTS?.split(',').map(h => h.trim()).filter(Boolean) || [],
+    // ... rest of config
+  },
+})
+```
+
+#### 2. Update `docker-compose.worktree.yml` to Pass Environment Variable
+Add `VITE_ALLOWED_HOSTS` to the frontend service environment:
+
+```yaml
+frontend:
+  environment:
+    - VITE_API_URL=http://${COMPOSE_PROJECT_NAME}.localhost/api
+    - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-localhost,127.0.0.1,*.localhost}
+    # ... other env vars
+```
+
+#### 3. Dockertree Automatically Sets `VITE_ALLOWED_HOSTS` on Deployment
+When using `dockertree push --domain <domain>`, Dockertree's `_update_remote_env_file()` function now automatically sets:
+
+```
+VITE_ALLOWED_HOSTS=<domain>,*.<base-domain>,localhost,127.0.0.1
+```
+
+For example, for domain `boards.are.temporarily.fun`:
+```
+VITE_ALLOWED_HOSTS=boards.are.temporarily.fun,*.are.temporarily.fun,localhost,127.0.0.1
+```
+
+### Verification
+1. Check that `VITE_ALLOWED_HOSTS` is set in `.dockertree/env.dockertree` on the remote server
+2. Verify the environment variable is passed to the frontend container:
+   ```bash
+   docker exec <frontend-container> env | grep VITE_ALLOWED_HOSTS
+   ```
+3. Confirm `vite.config.js` includes the `allowedHosts` configuration
+4. Access the production domain - it should load without the "Blocked request" error
+
+### Outstanding Issues / Needs Review
+
+1. **Backward Compatibility**: The solution defaults to `localhost,127.0.0.1,*.localhost` when `VITE_ALLOWED_HOSTS` is not set, which works for local development. However, this should be verified across all project types.
+
+2. **Production vs Development**: The current solution works for Vite dev server. For production builds, this issue shouldn't occur since production builds don't use the dev server. Consider documenting when this applies (dev mode only).
+
+3. **Wildcard Domain Support**: The solution includes wildcard domains (`*.are.temporarily.fun`), but Vite's `allowedHosts` may have specific requirements for wildcard matching. This needs verification.
+
+4. **Template Updates**: The base `docker-compose.worktree.yml` template in dockertree should be updated to include `VITE_ALLOWED_HOSTS` by default for all new projects.
+
+5. **Documentation**: This should be added to the main deployment documentation, not just troubleshooting, as it's a required configuration for production deployments with Vite.
+
+### Related Files Modified
+- `/Users/ders/projects/dockertree/dockertree/commands/push.py` - Added `VITE_ALLOWED_HOSTS` to `_update_remote_env_file()` and import script
+- Project `vite.config.js` - Added `allowedHosts` configuration
+- Project `.dockertree/docker-compose.worktree.yml` - Added `VITE_ALLOWED_HOSTS` environment variable
+
+### Future Improvements
+- Consider adding a dockertree template/example for Vite projects that includes this configuration
+- Add validation/warning if `VITE_ALLOWED_HOSTS` is missing when deploying with a domain
+- Consider supporting multiple domains in a single deployment
+

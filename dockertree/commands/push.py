@@ -2173,7 +2173,117 @@ if [ -n "$HIT" ]; then
   ROOT="$(dirname "$(dirname "$HIT")")"
   log "Found existing project at: $ROOT"
   cd "$ROOT"
+  
+  # Clean up existing worktree if it exists (enables consecutive pushes)
+  log "Checking for existing worktree for branch '$BRANCH_NAME'..."
+  # Check if worktree directory exists (more reliable than parsing command output)
+  set +e
+  WORKTREE_DIR="$(find "$ROOT" -maxdepth 3 -type d -path "*/worktrees/$BRANCH_NAME" -print -quit 2>/dev/null || true)"
+  set -e
+  
+  if [ -n "$WORKTREE_DIR" ] && [ -d "$WORKTREE_DIR" ]; then
+    log "Worktree for branch '$BRANCH_NAME' already exists at: $WORKTREE_DIR"
+    log "Cleaning up existing worktree and volumes before import..."
+    # Remove worktree (keeps branch, removes volumes and containers)
+    set +e
+    if "$DTBIN" remove "$BRANCH_NAME" --force >/dev/null 2>&1; then
+      log_success "Existing worktree and volumes removed"
+    else
+      log_warning "Failed to remove existing worktree via dockertree, attempting manual cleanup..."
+    fi
+    # Always ensure worktree directory is removed (critical for consecutive pushes)
+    # Remove directory first, then clean up git references
+    if [ -d "$WORKTREE_DIR" ]; then
+      log "Removing worktree directory: $WORKTREE_DIR"
+      # Stop any containers that might be using this directory
+      cd "$ROOT" 2>/dev/null || true
+      # Try to stop containers for this branch if they exist
+      docker ps --filter "name=$BRANCH_NAME" --format "{{.Names}}" 2>/dev/null | while read -r container; do
+        if [ -n "$container" ]; then
+          docker stop "$container" >/dev/null 2>&1 || true
+        fi
+      done
+      # Now remove the directory
+      rm -rf "$WORKTREE_DIR" 2>/dev/null || true
+      # Verify it's gone
+      if [ -d "$WORKTREE_DIR" ]; then
+        log_warning "Worktree directory still exists after removal attempt"
+        # Try one more time with force
+        rm -rf "$WORKTREE_DIR" 2>/dev/null || true
+      else
+        log "Worktree directory removed successfully"
+      fi
+    fi
+    # Always clean up git worktree references to ensure no stale entries
+    # This is critical for consecutive pushes to work correctly
+    if command -v git >/dev/null 2>&1 && [ -d "$ROOT/.git" ]; then
+      cd "$ROOT"
+      # First, try to remove worktree by path if we know it
+      if [ -n "$WORKTREE_DIR" ]; then
+        git worktree remove "$WORKTREE_DIR" --force >/dev/null 2>&1 || true
+      fi
+      # Prune stale worktree references (removes entries where path doesn't exist)
+      git worktree prune >/dev/null 2>&1 || true
+      # Try to explicitly remove worktree by finding it in git's worktree list
+      # Look for worktrees associated with this branch
+      WT_INFO=$(git worktree list --porcelain 2>/dev/null | grep -B 2 "branch.*$BRANCH_NAME" | grep "^worktree" | head -1 | cut -d' ' -f2- || true)
+      if [ -n "$WT_INFO" ]; then
+        # Remove the worktree reference explicitly (even if directory is gone)
+        git worktree remove "$WT_INFO" --force >/dev/null 2>&1 || true
+      fi
+      # Final prune to ensure everything is clean
+      git worktree prune >/dev/null 2>&1 || true
+      # Verify worktree is actually gone before proceeding
+      if git worktree list 2>/dev/null | grep -q "\[$BRANCH_NAME\]"; then
+        log_warning "Worktree reference still exists after cleanup, attempting final removal..."
+        # Try to find and remove by iterating through worktree list
+        git worktree list 2>/dev/null | while IFS= read -r line; do
+          if echo "$line" | grep -q "\[$BRANCH_NAME\]"; then
+            WT_PATH=$(echo "$line" | cut -d' ' -f1)
+            if [ -n "$WT_PATH" ]; then
+              git worktree remove "$WT_PATH" --force >/dev/null 2>&1 || true
+            fi
+          fi
+        done
+        git worktree prune >/dev/null 2>&1 || true
+      fi
+      log "Git worktree references cleaned up"
+    fi
+    set -e
+    
+    # Final verification: ensure worktree directory is completely gone before import
+    # This is critical - if directory exists, import will fail
+    if [ -d "$WORKTREE_DIR" ]; then
+      log_error "CRITICAL: Worktree directory still exists: $WORKTREE_DIR"
+      log_error "This will cause import to fail. Attempting final removal..."
+      # Last attempt: stop all related containers and force remove
+      cd "$ROOT" 2>/dev/null || true
+      docker ps -a --filter "name=$BRANCH_NAME" --format "{{.Names}}" 2>/dev/null | xargs -r docker stop >/dev/null 2>&1 || true
+      docker ps -a --filter "name=$BRANCH_NAME" --format "{{.Names}}" 2>/dev/null | xargs -r docker rm >/dev/null 2>&1 || true
+      sleep 2  # Wait for containers to fully stop
+      rm -rf "$WORKTREE_DIR" 2>/dev/null || true
+      if [ -d "$WORKTREE_DIR" ]; then
+        log_error "FATAL: Cannot remove worktree directory. Import will fail."
+        log_error "Please manually remove: $WORKTREE_DIR"
+        exit 1
+      else
+        log "Worktree directory finally removed"
+      fi
+    fi
+  else
+    log "No existing worktree found for branch '$BRANCH_NAME'"
+  fi
+  
   log "Running import in normal mode (existing project)..."
+  # Final check: ensure worktree directory doesn't exist before import
+  if [ -d "$ROOT/worktrees/$BRANCH_NAME" ]; then
+    log_warning "Worktree directory still exists before import, removing..."
+    rm -rf "$ROOT/worktrees/$BRANCH_NAME" 2>/dev/null || true
+    # Clean up git references one more time
+    if command -v git >/dev/null 2>&1 && [ -d "$ROOT/.git" ]; then
+      cd "$ROOT" && git worktree prune >/dev/null 2>&1 || true
+    fi
+  fi
   "$DTBIN" packages import "$PKG_FILE" {import_flags_usage} --non-interactive
   IMPORT_MODE="normal"
 else
