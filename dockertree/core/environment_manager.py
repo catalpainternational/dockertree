@@ -336,8 +336,11 @@ CADDY_EMAIL={DEFAULT_ENV_VARS['CADDY_EMAIL']}
         
         project_name = sanitize_project_name(project_name)
         compose_project_name = f"{project_name}-{branch_name}"
-        site_domain = f"{compose_project_name}.localhost"  # RFC-compliant hostname
+        site_domain = f"http://{compose_project_name}.localhost"  # RFC-compliant hostname with protocol
         allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
+        
+        # Derive WebAuthn values from SITE_DOMAIN (DRY approach)
+        webauthn_values = self._derive_webauthn_from_site_domain(site_domain)
         
         base_content = f"""# Dockertree environment configuration for {branch_name}
 COMPOSE_PROJECT_NAME={compose_project_name}
@@ -346,7 +349,10 @@ SITE_DOMAIN={site_domain}
 ALLOWED_HOSTS={allowed_hosts}
 DEBUG=True
 USE_X_FORWARDED_HOST=True
-CSRF_TRUSTED_ORIGINS=http://{site_domain}
+CSRF_TRUSTED_ORIGINS={site_domain}
+WEBAUTHN_RP_ID={webauthn_values['webauthn_rp_id']}
+WEBAUTHN_ORIGIN={webauthn_values['webauthn_origin']}
+WEBAUTHN_ALLOWED_ORIGINS={webauthn_values['webauthn_allowed_origins']}
 """
         host_port_section = self._build_host_port_section(branch_name)
         if host_port_section:
@@ -413,6 +419,51 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
         # For production domains (not localhost, not IP), use secure cookies
         # This handles cases where SITE_DOMAIN is just the domain without protocol
         return is_domain(domain)
+    
+    def _derive_webauthn_from_site_domain(self, site_domain: str) -> Dict[str, str]:
+        """Derive WebAuthn environment variables from SITE_DOMAIN.
+        
+        This is a generic helper that works for any project using WEBAUTHN_* variables
+        in their docker-compose.yml files. The derived values are:
+        - WEBAUTHN_RP_ID: Domain without protocol (e.g., 'test.temporarily.fun')
+        - WEBAUTHN_ORIGIN: Full URL with protocol (e.g., 'https://test.temporarily.fun')
+        - WEBAUTHN_ALLOWED_ORIGINS: Same as origin (can be extended later)
+        
+        Args:
+            site_domain: SITE_DOMAIN value with protocol (e.g., 'https://test.temporarily.fun' or 'http://192.241.132.78')
+            
+        Returns:
+            Dictionary with keys: 'webauthn_rp_id', 'webauthn_origin', 'webauthn_allowed_origins'
+        """
+        from ..config.settings import extract_domain_from_site_domain
+        webauthn_rp_id = extract_domain_from_site_domain(site_domain)
+        webauthn_origin = site_domain
+        webauthn_allowed_origins = site_domain
+        
+        return {
+            'webauthn_rp_id': webauthn_rp_id,
+            'webauthn_origin': webauthn_origin,
+            'webauthn_allowed_origins': webauthn_allowed_origins
+        }
+    
+    def _update_env_var_in_content(self, content: str, var_name: str, value: str) -> str:
+        """Update or add an environment variable in content string.
+        
+        Args:
+            content: Environment file content
+            var_name: Variable name (e.g., 'WEBAUTHN_RP_ID')
+            value: Variable value
+            
+        Returns:
+            Updated content string
+        """
+        import re
+        pattern = rf'^{var_name}=.*$'
+        if re.search(pattern, content, flags=re.MULTILINE):
+            content = re.sub(pattern, f'{var_name}={value}', content, flags=re.MULTILINE)
+        else:
+            content += f"\n{var_name}={value}\n"
+        return content
     
     def get_domain_name(self, branch_name: str) -> str:
         """Get the domain name for a worktree.
@@ -687,11 +738,8 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
         # Determine secure cookie setting
         use_secure_cookies = self._should_use_secure_cookies(site_domain)
         
-        # Extract domain for WebAuthn RP_ID (DRY approach - use helper from settings)
-        from ..config.settings import extract_domain_from_site_domain
-        webauthn_rp_id = extract_domain_from_site_domain(site_domain)
-        webauthn_origin = site_domain
-        webauthn_allowed_origins = webauthn_origin
+        # Derive WebAuthn values from SITE_DOMAIN (DRY approach)
+        webauthn_values = self._derive_webauthn_from_site_domain(site_domain)
         
         base_content = f"""# Dockertree environment configuration for {branch_name}
 # Domain override: {domain}
@@ -705,9 +753,9 @@ CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
 USE_SECURE_COOKIES={str(use_secure_cookies)}
 BUILD_MODE=prod
 CADDY_EMAIL={caddy_email}
-WEBAUTHN_RP_ID={webauthn_rp_id}
-WEBAUTHN_ORIGIN={webauthn_origin}
-WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
+WEBAUTHN_RP_ID={webauthn_values['webauthn_rp_id']}
+WEBAUTHN_ORIGIN={webauthn_values['webauthn_origin']}
+WEBAUTHN_ALLOWED_ORIGINS={webauthn_values['webauthn_allowed_origins']}
 """
         host_port_section = self._build_host_port_section(branch_name)
         if host_port_section:
@@ -845,6 +893,12 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
                     content = re.sub(r'BUILD_MODE=.*', 'BUILD_MODE=prod', content, flags=re.MULTILINE)
                 else:
                     content += "\nBUILD_MODE=prod\n"
+                
+                # Update WebAuthn variables derived from SITE_DOMAIN
+                webauthn_values = self._derive_webauthn_from_site_domain(https_url)
+                content = self._update_env_var_in_content(content, 'WEBAUTHN_RP_ID', webauthn_values['webauthn_rp_id'])
+                content = self._update_env_var_in_content(content, 'WEBAUTHN_ORIGIN', webauthn_values['webauthn_origin'])
+                content = self._update_env_var_in_content(content, 'WEBAUTHN_ALLOWED_ORIGINS', webauthn_values['webauthn_allowed_origins'])
                 
                 env_dockertree.write_text(content)
                 log_info(f"Applied domain overrides to env.dockertree: {domain}")
@@ -1186,6 +1240,12 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
                     content = re.sub(r'BUILD_MODE=.*', 'BUILD_MODE=prod', content, flags=re.MULTILINE)
                 else:
                     content += "\nBUILD_MODE=prod\n"
+                
+                # Update WebAuthn variables derived from SITE_DOMAIN
+                webauthn_values = self._derive_webauthn_from_site_domain(http_url)
+                content = self._update_env_var_in_content(content, 'WEBAUTHN_RP_ID', webauthn_values['webauthn_rp_id'])
+                content = self._update_env_var_in_content(content, 'WEBAUTHN_ORIGIN', webauthn_values['webauthn_origin'])
+                content = self._update_env_var_in_content(content, 'WEBAUTHN_ALLOWED_ORIGINS', webauthn_values['webauthn_allowed_origins'])
                 
                 env_dockertree.write_text(content)
                 log_info(f"Applied IP overrides to env.dockertree: {ip}")
