@@ -6,7 +6,6 @@ host key caching, and unified remote command execution.
 """
 
 import subprocess
-import tempfile
 import os
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
@@ -26,9 +25,17 @@ class SSHConnectionManager:
         self._temp_dir: Optional[Path] = None
     
     def _get_temp_dir(self) -> Path:
-        """Get or create temporary directory for SSH control sockets."""
+        """Get or create temporary directory for SSH control sockets.
+        
+        Uses /tmp/ with a short path to avoid Unix socket path length limits (~104 bytes on macOS).
+        """
         if self._temp_dir is None:
-            self._temp_dir = Path(tempfile.mkdtemp(prefix="dockertree-ssh-"))
+            # Use /tmp with short path to avoid Unix socket length limits (~104 bytes)
+            import secrets
+            short_id = secrets.token_hex(4)  # 8 characters
+            temp_path = Path(f"/tmp/dockertree-{short_id}")
+            temp_path.mkdir(parents=True, exist_ok=True)
+            self._temp_dir = temp_path
         return self._temp_dir
     
     def _get_control_path(self, username: str, server: str) -> str:

@@ -16,6 +16,60 @@ WEB_SERVICE_NAMES = ['web', 'app', 'frontend', 'api']
 DEFAULT_WEB_PORT = 8000
 
 
+def _detect_service_port(service_config: Dict[str, Any]) -> int:
+    """
+    Detect the service's port from expose or ports configuration.
+    
+    Priority:
+    1. First port from 'expose' list (container port)
+    2. Container port from 'ports' mapping (e.g., "8000:8000" -> 8000)
+    3. Default to DEFAULT_WEB_PORT (8000)
+    
+    Args:
+        service_config: Service configuration from docker-compose.yml
+    
+    Returns:
+        Detected port number
+    """
+    # Check 'expose' first (container ports only, no host mapping)
+    if 'expose' in service_config:
+        expose_ports = service_config['expose']
+        if isinstance(expose_ports, list) and expose_ports:
+            # Get first exposed port
+            first_port = expose_ports[0]
+            if isinstance(first_port, (int, str)):
+                try:
+                    port = int(str(first_port).split('/')[0])  # Handle "8000/tcp" format
+                    return port
+                except (ValueError, AttributeError):
+                    pass
+    
+    # Check 'ports' (host:container mappings)
+    if 'ports' in service_config:
+        ports = service_config['ports']
+        if isinstance(ports, list) and ports:
+            first_port = ports[0]
+            if isinstance(first_port, str):
+                # Handle "8000:8000" or "8000" format
+                # Extract container port (right side of colon, or the whole thing if no colon)
+                if ':' in first_port:
+                    container_port = first_port.split(':')[-1]
+                else:
+                    container_port = first_port
+                # Remove protocol suffix if present (e.g., "8000/tcp")
+                container_port = container_port.split('/')[0]
+                try:
+                    port = int(container_port)
+                    return port
+                except (ValueError, AttributeError):
+                    pass
+            elif isinstance(first_port, int):
+                return first_port
+    
+    # Default fallback
+    return DEFAULT_WEB_PORT
+
+
 def ensure_caddy_labels_and_network(
     compose_data: Dict[str, Any],
     domain: Optional[str] = None,
@@ -63,6 +117,17 @@ def ensure_caddy_labels_and_network(
             # Skip if no domain/IP and localhost pattern disabled
             continue
         
+        # Detect service port from expose or ports configuration
+        service_port = _detect_service_port(service_config)
+        
+        # Get container name pattern (will be resolved by Docker Compose at runtime)
+        # Pattern: ${COMPOSE_PROJECT_NAME}-{service_name}
+        container_name_pattern = f"${{COMPOSE_PROJECT_NAME}}-{service_name}"
+        
+        # Build reverse proxy target: container_name:port
+        # The Caddy dynamic config script will resolve ${COMPOSE_PROJECT_NAME} to actual container name
+        reverse_proxy_target = f"{container_name_pattern}:{service_port}"
+        
         # Ensure labels list exists
         existing_labels = service_config.setdefault('labels', [])
         
@@ -71,43 +136,55 @@ def ensure_caddy_labels_and_network(
             existing_labels = [f"{k}={v}" for k, v in existing_labels.items()]
             service_config['labels'] = existing_labels
         
-        # Build new labels
-        # Note: We don't set caddy.proxy.reverse_proxy here because:
-        # 1. Service names (web:8000) don't resolve on external networks across Compose projects
-        # 2. Container name patterns (${COMPOSE_PROJECT_NAME}-web) don't match actual names (test-web-1)
-        # 3. The Caddy dynamic config script automatically uses container['Names'] as fallback
-        #    which gives us the actual unique container name (e.g., test-web-1:8000)
-        new_labels = [
-            f"caddy.proxy={proxy_domain}"
-            # Note: Health check disabled by default. Add manually if needed:
-            # "caddy.proxy.health_check=/health-check/"
-            # Note: reverse_proxy target is auto-detected from container name by Caddy script
-        ]
+        # Build proxy domain label
+        proxy_domain_label = f"caddy.proxy={proxy_domain}"
         
-        # Add or update labels
-        for label in new_labels:
-            label_key = label.split('=')[0] if '=' in label else label
-            # Find existing label index (if any)
-            existing_index = None
-            for i, existing_label in enumerate(existing_labels):
-                if existing_label.startswith(label_key + '=') or existing_label == label_key:
-                    existing_index = i
-                    break
-            
-            if existing_index is not None:
-                # Label exists - update it only if we have a production domain/IP
-                # (don't overwrite custom labels with localhost pattern)
-                if domain or ip:
-                    old_value = existing_labels[existing_index]
-                    existing_labels[existing_index] = label
-                    updated = True
-                    log_info(f"Updated Caddy label for {service_name}: {old_value} -> {label}")
-                # else: keep existing label (localhost pattern shouldn't overwrite)
-            else:
-                # Label doesn't exist - add it
-                existing_labels.append(label)
+        # Build reverse proxy label with detected port
+        # We always set/update this label because port detection is critical
+        reverse_proxy_label = f"caddy.proxy.reverse_proxy={reverse_proxy_target}"
+        
+        # Handle proxy domain label (only update on production deployments)
+        proxy_domain_key = "caddy.proxy"
+        proxy_domain_index = None
+        for i, existing_label in enumerate(existing_labels):
+            if existing_label.startswith(proxy_domain_key + '=') or existing_label == proxy_domain_key:
+                proxy_domain_index = i
+                break
+        
+        if proxy_domain_index is not None:
+            # Label exists - update it only if we have a production domain/IP
+            # (don't overwrite custom labels with localhost pattern)
+            if domain or ip:
+                old_value = existing_labels[proxy_domain_index]
+                existing_labels[proxy_domain_index] = proxy_domain_label
                 updated = True
-                log_info(f"Added Caddy label to {service_name}: {label}")
+                log_info(f"Updated Caddy proxy domain label for {service_name}: {old_value} -> {proxy_domain_label}")
+            # else: keep existing label (localhost pattern shouldn't overwrite)
+        else:
+            # Label doesn't exist - add it
+            existing_labels.append(proxy_domain_label)
+            updated = True
+            log_info(f"Added Caddy proxy domain label to {service_name}: {proxy_domain_label}")
+        
+        # Handle reverse proxy label (always set/update because port detection is critical)
+        reverse_proxy_key = "caddy.proxy.reverse_proxy"
+        reverse_proxy_index = None
+        for i, existing_label in enumerate(existing_labels):
+            if existing_label.startswith(reverse_proxy_key + '=') or existing_label == reverse_proxy_key:
+                reverse_proxy_index = i
+                break
+        
+        if reverse_proxy_index is not None:
+            # Label exists - always update it to ensure correct port
+            old_value = existing_labels[reverse_proxy_index]
+            existing_labels[reverse_proxy_index] = reverse_proxy_label
+            updated = True
+            log_info(f"Updated Caddy reverse proxy label for {service_name}: {old_value} -> {reverse_proxy_label}")
+        else:
+            # Label doesn't exist - add it
+            existing_labels.append(reverse_proxy_label)
+            updated = True
+            log_info(f"Added Caddy reverse proxy label to {service_name}: {reverse_proxy_label} (port: {service_port})")
         
         # Connect web services to dockertree_caddy_proxy network
         # Important: Web containers need BOTH:
