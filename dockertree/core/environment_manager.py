@@ -703,6 +703,7 @@ DEBUG=False
 USE_X_FORWARDED_HOST=True
 CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
 USE_SECURE_COOKIES={str(use_secure_cookies)}
+BUILD_MODE=prod
 CADDY_EMAIL={caddy_email}
 WEBAUTHN_RP_ID={webauthn_rp_id}
 WEBAUTHN_ORIGIN={webauthn_origin}
@@ -838,6 +839,12 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
                     content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
                 else:
                     content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
+                
+                # Set BUILD_MODE=prod for production deployments
+                if 'BUILD_MODE=' in content:
+                    content = re.sub(r'BUILD_MODE=.*', 'BUILD_MODE=prod', content, flags=re.MULTILINE)
+                else:
+                    content += "\nBUILD_MODE=prod\n"
                 
                 env_dockertree.write_text(content)
                 log_info(f"Applied domain overrides to env.dockertree: {domain}")
@@ -1173,6 +1180,12 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
                     content = re.sub(r'USE_SECURE_COOKIES=.*', f'USE_SECURE_COOKIES={str(use_secure_cookies)}', content, flags=re.MULTILINE)
                 else:
                     content += f"\nUSE_SECURE_COOKIES={str(use_secure_cookies)}\n"
+                
+                # Set BUILD_MODE=prod for production deployments
+                if 'BUILD_MODE=' in content:
+                    content = re.sub(r'BUILD_MODE=.*', 'BUILD_MODE=prod', content, flags=re.MULTILINE)
+                else:
+                    content += "\nBUILD_MODE=prod\n"
                 
                 env_dockertree.write_text(content)
                 log_info(f"Applied IP overrides to env.dockertree: {ip}")
