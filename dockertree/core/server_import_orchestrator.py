@@ -295,12 +295,36 @@ class ServerImportOrchestrator:
         log_warning(f"Volumes need restoration: {verification['volumes_missing']} missing, "
                    f"{verification['empty_volumes']} empty")
         
+        # Convert package_path to absolute path to avoid path resolution issues
+        # when cwd is different from where the package file is located
+        package_file = Path(package_path)
+        if not package_file.is_absolute():
+            # Try to resolve relative to original location first, then current directory
+            if not package_file.exists():
+                # Try resolving from /root (common location for server imports)
+                root_package = Path("/root") / package_file
+                if root_package.exists():
+                    package_file = root_package.resolve()
+                else:
+                    # Try resolving from current working directory
+                    package_file = Path.cwd() / package_file
+            package_file = package_file.resolve()
+        else:
+            package_file = package_file.resolve()
+        
+        # Verify the absolute path exists
+        if not package_file.exists():
+            log_error(f"Package file not found at absolute path: {package_file}")
+            return False
+        
+        package_path_absolute = str(package_file)
+        
         if is_standalone:
             # In standalone mode, use direct dockertree command
             log_info("Restoring volumes using dockertree command...")
             try:
                 result = subprocess.run(
-                    ["dockertree", "volumes", "restore", branch_name, package_path],
+                    ["dockertree", "volumes", "restore", branch_name, package_path_absolute],
                     cwd=project_root,
                     capture_output=True,
                     text=True,
@@ -321,7 +345,7 @@ class ServerImportOrchestrator:
             log_info("Restoring volumes using dockertree command...")
             try:
                 result = subprocess.run(
-                    ["dockertree", "volumes", "restore", branch_name, package_path],
+                    ["dockertree", "volumes", "restore", branch_name, package_path_absolute],
                     cwd=project_root,
                     capture_output=True,
                     text=True,
