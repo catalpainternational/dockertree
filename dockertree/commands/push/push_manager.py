@@ -7,6 +7,7 @@ This module orchestrates the complete push workflow: export, transfer, and remot
 import subprocess
 import socket
 import re
+import shlex
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 
@@ -277,11 +278,16 @@ class PushManager:
             if build:
                 cmd_parts.append("--build")
             
-            # Build SSH command
+            # Build SSH command - properly escape arguments for bash -lc
+            # bash -lc expects a single quoted string, so we need to escape
+            # special characters in each argument and join them with spaces
+            escaped_parts = [shlex.quote(part) for part in cmd_parts]
+            command_string = " ".join(escaped_parts)
+            
             ssh_cmd = self.ssh.build_ssh_command(
                 username,
                 server,
-                " ".join(f'"{part}"' for part in cmd_parts),
+                command_string,
                 use_control_master=True
             )
             
