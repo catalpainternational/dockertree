@@ -422,12 +422,39 @@ class ServerImportOrchestrator:
                 log_error(f"Docker Compose file not found: {compose_file}")
                 return False
             
-            from ..config.settings import get_project_name, sanitize_project_name
-            project_name = sanitize_project_name(get_project_name())
-            compose_project_name = f"{project_name}-{branch_name}"
+            from ..utils.env_loader import load_env_file
+            from ..utils.path_utils import get_env_compose_file_path
+            import os
+            
+            # Read COMPOSE_PROJECT_NAME from env.dockertree (already set correctly during import)
+            env_file_path = get_env_compose_file_path(worktree_path)
+            env_vars = load_env_file(env_file_path)
+            compose_project_name = env_vars.get("COMPOSE_PROJECT_NAME")
+            
+            # Fallback: reconstruct if not found in env.dockertree using self.project_root
+            if not compose_project_name:
+                from ..config.settings import DOCKERTREE_DIR, sanitize_project_name
+                import yaml
+                
+                # Get project name from self.project_root's config.yml
+                project_name = None
+                config_path = self.project_root / DOCKERTREE_DIR / "config.yml"
+                if config_path.exists():
+                    try:
+                        with open(config_path) as f:
+                            config = yaml.safe_load(f) or {}
+                            project_name = config.get("project_name")
+                    except Exception:
+                        pass
+                
+                # Fallback to project root directory name if config doesn't have project_name
+                if not project_name:
+                    project_name = self.project_root.name
+                
+                project_name = sanitize_project_name(project_name)
+                compose_project_name = f"{project_name}-{branch_name}"
             
             # Set environment variables
-            import os
             os.environ["COMPOSE_PROJECT_NAME"] = compose_project_name
             os.environ["PROJECT_ROOT"] = str(worktree_path)
             
