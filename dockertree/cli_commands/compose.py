@@ -24,7 +24,7 @@ def register_commands(cli) -> None:
     @click.argument("branch_name")
     @add_verbose_option
     @command_wrapper()
-    def passthrough(branch_name: str):
+    def compose(branch_name: str):
         """Run docker compose command with automatic override file resolution."""
         ctx = click.get_current_context()
         compose_args_list = ctx.args
@@ -46,5 +46,4 @@ def register_commands(cli) -> None:
         success = docker_manager.run_compose_passthrough(branch_name, compose_args_list)
         if not success:
             raise DockertreeCommandError(f"Failed to run docker compose command for worktree '{branch_name}'")
-
 

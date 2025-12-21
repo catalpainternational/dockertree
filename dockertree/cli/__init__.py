@@ -45,11 +45,11 @@ class DockertreeCLI(click.Group):
             if args[1] in COMPOSE_PASSTHROUGH_COMMANDS or args[1].startswith("-"):
                 worktree_name = args[0]
                 compose_args = args[1:]
-                ctx.meta["passthrough"] = {
+                ctx.meta["compose"] = {
                     "worktree_name": worktree_name,
                     "compose_args": compose_args,
                 }
-                new_args = ["passthrough", worktree_name] + compose_args
+                new_args = ["compose", worktree_name] + compose_args
                 return super().parse_args(ctx, new_args)
 
         elif args[0] in {"up", "down"}:

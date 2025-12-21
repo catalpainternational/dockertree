@@ -321,7 +321,7 @@ The system uses a fallback hierarchy:
 **Responsibility**: Provide a thin root CLI plus feature-specific registrars.
 
 **Key Features**:
-- `dockertree/cli.py` now focuses solely on argument parsing (worktree-first transformations, passthrough detection, alias handling) and delegates real command registration to `register_all_commands`.
+- `dockertree/cli.py` now focuses solely on argument parsing (worktree-first transformations, compose command detection, alias handling) and delegates real command registration to `register_all_commands`.
 - Each feature area registers its commands from `dockertree/cli_commands/<feature>.py` via a `register_commands(cli)` hook. Adding a new feature no longer bloats `cli.py`.
 - Shared decorators in `dockertree/cli/helpers.py` expose `add_verbose_option`, `add_json_option`, and a `command_wrapper` that performs prerequisite checks and formats results.
 - Commands raise `DockertreeCommandError` (from `dockertree/exceptions.py`) on failure; the wrapper converts these into consistent human and JSON responses.

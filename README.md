@@ -115,7 +115,7 @@ Dockertree CLI provides complete environment isolation through:
 
 **Important**: Branch names must match exactly. The `delete` and `remove` commands check worktrees, branches, and docker volumes for exact matches only. If no exact match is found, an error message will show what was checked.
 
-### Docker Compose Passthrough
+### Docker Compose Commands
 
 Dockertree supports direct passthrough to Docker Compose commands using the pattern: `dockertree <worktree_name> <compose-command>`
 
@@ -851,7 +851,9 @@ dockertree delete temp-* --force
 ## 📚 Additional Documentation
 
 - **[📖 Full Documentation Site](https://catalpainternational.github.io/dockertree)** - Complete documentation with search and navigation
+- **[Project Setup Guide](documentation/PROJECT_SETUP.md)** - Best practices for configuring your project for Dockertree
 - **[Architecture Guide](documentation/ARCHITECTURE.md)** - Detailed system architecture and component relationships
+- **[Troubleshooting Guide](documentation/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Design Documents](design_documents/)** - Original design and implementation plans
 - **[Test Documentation](tests/)** - Comprehensive test suite and coverage
 - **[Configuration Reference](config/)** - All configuration files and options
@@ -895,7 +897,7 @@ The dockertree CLI follows a modular architecture designed for easy extension:
 - ✅ Dynamic routing with Caddy
 - ✅ Volume management and backup
 - ✅ Git worktree integration
-- ✅ Docker Compose passthrough commands
+- ✅ Docker Compose commands
 - ✅ Comprehensive error handling
 - ✅ Rich console output
 - ✅ Type safety throughout
