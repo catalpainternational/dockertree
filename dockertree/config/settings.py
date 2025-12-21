@@ -320,14 +320,39 @@ def get_allowed_hosts_for_worktree(branch_name: str) -> str:
     subdomain = f"{project_name}-{branch_name}.localhost"
     return build_allowed_hosts_with_container(branch_name, [subdomain, "*.localhost"])
 
+# Helper function to extract domain from SITE_DOMAIN (DRY)
+def extract_domain_from_site_domain(site_domain: str) -> str:
+    """Extract domain from SITE_DOMAIN by removing protocol.
+    
+    Args:
+        site_domain: SITE_DOMAIN value (e.g., 'http://boards-test-local.localhost' or 'https://app.example.com')
+        
+    Returns:
+        Domain without protocol (e.g., 'boards-test-local.localhost' or 'app.example.com')
+    """
+    domain = site_domain
+    # Remove protocol if present
+    if domain.startswith('https://'):
+        domain = domain[8:]
+    elif domain.startswith('http://'):
+        domain = domain[7:]
+    # Remove trailing slash if present
+    domain = domain.rstrip('/')
+    return domain
+
 # Environment file generation
 def generate_env_compose_content(branch_name: str) -> str:
     """Generate env.dockertree content for a worktree."""
     project_root = get_project_root()
     project_name = sanitize_project_name(get_project_name())  # Converts underscores to hyphens
     compose_project_name = f"{project_name}-{branch_name}"
-    site_domain = f"{compose_project_name}.localhost"  # RFC-compliant hostname
+    site_domain = f"http://{compose_project_name}.localhost"  # RFC-compliant hostname with protocol
     allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
+    
+    # Extract domain for WebAuthn RP_ID (DRY approach)
+    webauthn_rp_id = extract_domain_from_site_domain(site_domain)
+    webauthn_origin = site_domain
+    webauthn_allowed_origins = webauthn_origin
     
     return f"""# Dockertree environment configuration for {branch_name}
 COMPOSE_PROJECT_NAME={compose_project_name}
@@ -336,8 +361,11 @@ SITE_DOMAIN={site_domain}
 ALLOWED_HOSTS={allowed_hosts}
 DEBUG=True
 USE_X_FORWARDED_HOST=True
-CSRF_TRUSTED_ORIGINS=http://{site_domain}
+CSRF_TRUSTED_ORIGINS={site_domain}
 USE_SECURE_COOKIES=False
+WEBAUTHN_RP_ID={webauthn_rp_id}
+WEBAUTHN_ORIGIN={webauthn_origin}
+WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
 """
 
 # Volume naming

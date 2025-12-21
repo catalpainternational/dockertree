@@ -687,6 +687,12 @@ CSRF_TRUSTED_ORIGINS=http://{site_domain}
         # Determine secure cookie setting
         use_secure_cookies = self._should_use_secure_cookies(site_domain)
         
+        # Extract domain for WebAuthn RP_ID (DRY approach - use helper from settings)
+        from ..config.settings import extract_domain_from_site_domain
+        webauthn_rp_id = extract_domain_from_site_domain(site_domain)
+        webauthn_origin = site_domain
+        webauthn_allowed_origins = webauthn_origin
+        
         base_content = f"""# Dockertree environment configuration for {branch_name}
 # Domain override: {domain}
 COMPOSE_PROJECT_NAME={compose_project_name}
@@ -698,6 +704,9 @@ USE_X_FORWARDED_HOST=True
 CSRF_TRUSTED_ORIGINS=https://{domain} http://{domain} https://*.{base_domain}
 USE_SECURE_COOKIES={str(use_secure_cookies)}
 CADDY_EMAIL={caddy_email}
+WEBAUTHN_RP_ID={webauthn_rp_id}
+WEBAUTHN_ORIGIN={webauthn_origin}
+WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
 """
         host_port_section = self._build_host_port_section(branch_name)
         if host_port_section:
