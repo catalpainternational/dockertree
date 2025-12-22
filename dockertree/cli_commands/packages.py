@@ -28,12 +28,13 @@ def register_commands(cli) -> None:
     @click.option("--include-code/--no-code", default=True, help="Include git archive of code in package (default: True)")
     @click.option("--compressed/--no-compress", default=True, help="Compress package to .tar.gz format (default: True)")
     @click.option("--skip-volumes", is_flag=True, default=False, help="Skip volume backup (fallback when volume backup fails)")
+    @click.option("--use-staging-certificates", is_flag=True, default=False, help="Use Let's Encrypt staging certificates (doesn't count against rate limits)")
     @add_json_option
     @add_verbose_option
     @command_wrapper(require_setup=True, require_prerequisites=True)
-    def export_package(branch_name: str, output_dir: str, include_code: bool, compressed: bool, skip_volumes: bool, json: bool):
+    def export_package(branch_name: str, output_dir: str, include_code: bool, compressed: bool, skip_volumes: bool, json: bool, use_staging_certificates: bool):
         package_commands = PackageCommands()
-        success = package_commands.export(branch_name, Path(output_dir), include_code, compressed, skip_volumes)
+        success = package_commands.export(branch_name, Path(output_dir), include_code, compressed, skip_volumes, use_staging_certificates)
         if not success:
             raise DockertreeCommandError(f"Failed to export package for {branch_name}")
         log_success(f"Package exported successfully for {branch_name}")

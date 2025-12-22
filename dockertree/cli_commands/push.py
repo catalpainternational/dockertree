@@ -41,6 +41,7 @@ def register_commands(cli) -> None:
     @click.option("--containers", help="Comma-separated list of 'worktree.container' patterns to push only specific containers")
     @click.option("--exclude-deps", multiple=True, help="Services to exclude from dependencies (can be specified multiple times)")
     @click.option("--vpc-uuid", help="VPC UUID for VPC deployment")
+    @click.option("--use-staging-certificates", is_flag=True, default=False, help="Use Let's Encrypt staging certificates (doesn't count against rate limits)")
     @add_json_option
     @add_verbose_option
     @command_wrapper(require_setup=True, require_prerequisites=True)
@@ -68,6 +69,7 @@ def register_commands(cli) -> None:
         exclude_deps: tuple,
         vpc_uuid: Optional[str],
         json: bool,
+        use_staging_certificates: bool,
     ):
         """Push package to remote server for deployment.
         
@@ -113,7 +115,8 @@ def register_commands(cli) -> None:
                 exclude_deps=exclude_deps_list,
                 vpc_uuid=vpc_uuid,
                 droplet_info=None,  # Will be set if droplet is created
-                central_droplet_info=None  # Will be set if VPC deployment
+                central_droplet_info=None,  # Will be set if VPC deployment
+                use_staging_certificates=use_staging_certificates,
             )
             
             if not success:

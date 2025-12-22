@@ -29,9 +29,10 @@ def register_commands(cli) -> None:
         help="Enable DEBUG mode in production deployment (default: False for production)"
     )
     @click.option("--start/--no-start", default=True, help="Start services after import (default: True)")
+    @click.option("--use-staging-certificates", is_flag=True, default=False, help="Use Let's Encrypt staging certificates (doesn't count against rate limits)")
     @add_verbose_option
     @command_wrapper(require_setup=False, require_prerequisites=False)
-    def server_import(package_path: str, branch_name: str, domain: str, ip: str, build: bool, debug: bool, start: bool):
+    def server_import(package_path: str, branch_name: str, domain: str, ip: str, build: bool, debug: bool, start: bool, use_staging_certificates: bool):
         """Import package and start services (runs on remote server).
         
         This command is typically invoked via SSH from the push command.

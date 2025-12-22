@@ -259,20 +259,26 @@ class CaddyDynamicConfig:
             # Determine if we should use staging certificates
             should_use_staging = use_staging
             if should_use_staging is None:
-                # Auto-detect: check for rate limit errors
-                should_use_staging = False
-                for domain in domains:
-                    if self.check_caddy_logs_for_rate_limit(domain):
-                        should_use_staging = True
-                        logger.warning(f"Rate limit detected for {domain}, using staging certificates")
-                        break
-                    # Also check current certificate status
-                    cert_status = self.check_caddy_certificate_status(domain)
-                    if cert_status == "staging":
-                        # Already using staging, keep it
-                        should_use_staging = True
-                        logger.info(f"Already using staging certificates for {domain}")
-                        break
+                # Check for environment variable to force staging mode (for testing)
+                env_staging = os.getenv("USE_STAGING_CERTIFICATES", "").lower()
+                if env_staging in ("1", "true", "yes", "on"):
+                    should_use_staging = True
+                    logger.info("USE_STAGING_CERTIFICATES environment variable set, using staging certificates")
+                else:
+                    # Auto-detect: check for rate limit errors
+                    should_use_staging = False
+                    for domain in domains:
+                        if self.check_caddy_logs_for_rate_limit(domain):
+                            should_use_staging = True
+                            logger.warning(f"Rate limit detected for {domain}, using staging certificates")
+                            break
+                        # Also check current certificate status
+                        cert_status = self.check_caddy_certificate_status(domain)
+                        if cert_status == "staging":
+                            # Already using staging, keep it
+                            should_use_staging = True
+                            logger.info(f"Already using staging certificates for {domain}")
+                            break
             
             # Build issuer configuration
             issuer_config = {

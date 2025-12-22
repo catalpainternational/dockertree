@@ -342,7 +342,8 @@ class PushManager:
                     exclude_deps: Optional[List[str]] = None,
                     vpc_uuid: Optional[str] = None,
                     droplet_info: Optional[DropletInfo] = None,
-                    central_droplet_info: Optional[DropletInfo] = None) -> bool:
+                    central_droplet_info: Optional[DropletInfo] = None,
+                    use_staging_certificates: bool = False) -> bool:
         """Export and push package to remote server via SCP.
         
         Args:
@@ -518,6 +519,13 @@ class PushManager:
                 except ValueError as e:
                     log_error(f"Invalid container selection: {e}")
                     return False
+            
+            # Set staging certificate flag if requested (before export)
+            if use_staging_certificates:
+                from ...core.environment_manager import EnvironmentManager
+                env_manager = EnvironmentManager(project_root=self.project_root)
+                if not env_manager.set_staging_certificate_flag(branch_name, value=True):
+                    log_warning("Failed to set USE_STAGING_CERTIFICATES flag, but continuing with export...")
             
             # Export package only if not already on server
             if not package_already_on_server:

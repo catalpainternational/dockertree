@@ -303,6 +303,7 @@ def register_commands(cli) -> None:
     )
     @click.option("--vpc-uuid", help="VPC UUID for the droplet. If not provided, will use the default VPC for the region.")
     @click.option("--central-droplet-name", help="Name of central droplet to reuse VPC UUID from (for worker deployments)")
+    @click.option("--use-staging-certificates", is_flag=True, default=False, help="Use Let's Encrypt staging certificates (doesn't count against rate limits)")
     @add_json_option
     @add_verbose_option
     def droplet_create(
@@ -332,6 +333,7 @@ def register_commands(cli) -> None:
         exclude_deps: Optional[str],
         vpc_uuid: Optional[str],
         central_droplet_name: Optional[str],
+        use_staging_certificates: bool,
     ):
         from dockertree.core.droplet_manager import DropletManager
         from dockertree.utils.logging import format_elapsed_time
@@ -624,6 +626,7 @@ def register_commands(cli) -> None:
                     build=build,
                     droplet_info=droplet_info,
                     central_droplet_info=central_droplet_info,
+                    use_staging_certificates=use_staging_certificates,
                 )
             except click.exceptions.ClickException as exc:
                 import traceback
@@ -949,6 +952,7 @@ def register_commands(cli) -> None:
         "--exclude-deps",
         help="Comma-separated list of service names to exclude from dependency resolution (e.g., db,redis). Useful when deploying workers that connect to remote services.",
     )
+    @click.option("--use-staging-certificates", is_flag=True, default=False, help="Use Let's Encrypt staging certificates (doesn't count against rate limits)")
     @add_json_option
     @add_verbose_option
     def droplet_push(
@@ -969,6 +973,7 @@ def register_commands(cli) -> None:
         containers: Optional[str],
         exclude_deps: Optional[str],
         json: bool,
+        use_staging_certificates: bool,
     ):
         start_time = time.time()
         try:
@@ -1092,6 +1097,7 @@ def register_commands(cli) -> None:
                 ip=ip,
                 prepare_server=prepare_server,
                 dns_token=dns_token,
+                use_staging_certificates=use_staging_certificates,
                 skip_dns_check=skip_dns_check,
                 create_droplet=False,
                 droplet_name=None,
@@ -1105,6 +1111,7 @@ def register_commands(cli) -> None:
                 debug=debug,
                 containers=containers,
                 exclude_deps=exclude_deps_list,
+                use_staging_certificates=use_staging_certificates,
             )
             elapsed_time = time.time() - start_time
             if not success:

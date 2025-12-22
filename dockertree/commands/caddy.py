@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ..config.settings import get_project_root, get_script_dir
 from ..core.docker_manager import DockerManager
+from ..utils.path_utils import get_env_compose_file_path
 from ..utils.logging import log_info, log_success, log_warning, log_error
 from ..utils.validation import validate_container_running, validate_container_exists, validate_volume_exists
 
@@ -69,9 +70,15 @@ class CaddyManager:
             f.write(compose_content)
             temp_compose = Path(f.name)
         
+        # Try to find env.dockertree file to pass USE_STAGING_CERTIFICATES
+        env_file = get_env_compose_file_path(self.project_root)
+        if not env_file.exists():
+            env_file = None
+        
         try:
             success = self.docker_manager.start_services(
                 temp_compose, 
+                env_file=env_file,
                 project_name="dockertree-proxy"
             )
         finally:

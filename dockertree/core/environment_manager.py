@@ -761,6 +761,82 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_values['webauthn_allowed_origins']}
         if host_port_section:
             base_content = f"{base_content}\n{host_port_section}"
         return base_content
+    def _update_volumes_for_production(self, compose_data: Dict, worktree_path: Path) -> bool:
+        """Update volumes in compose data for production mode.
+        
+        In production mode (BUILD_MODE=prod), frontend services should use built files
+        from the Docker image rather than bind-mounted source code. This method removes
+        source code bind mounts for frontend services while preserving named volumes.
+        
+        Args:
+            compose_data: Docker Compose data structure
+            worktree_path: Path to worktree directory
+            
+        Returns:
+            True if volumes were updated, False otherwise
+        """
+        updated = False
+        
+        if 'services' not in compose_data:
+            return False
+        
+        # Common frontend service names
+        frontend_service_names = ['frontend', 'web', 'client', 'app']
+        
+        for service_name, service_config in compose_data['services'].items():
+            # Check if this is a frontend service (by name or by build context)
+            is_frontend = False
+            if service_name.lower() in frontend_service_names:
+                is_frontend = True
+            elif 'build' in service_config:
+                build_config = service_config['build']
+                if isinstance(build_config, dict) and 'context' in build_config:
+                    context = build_config['context']
+                    if isinstance(context, str) and any(frontend_name in context.lower() 
+                                                       for frontend_name in ['frontend', 'client', 'web']):
+                        is_frontend = True
+            
+            if is_frontend and 'volumes' in service_config:
+                volumes = service_config['volumes']
+                new_volumes = []
+                
+                for volume in volumes:
+                    if isinstance(volume, str):
+                        # Keep named volumes (e.g., /app/node_modules) and volume references
+                        # Remove bind mounts to source code directories
+                        if volume.startswith('/') and ':' in volume:
+                            # This is a bind mount (host:container or /path:container)
+                            # Check if it's a source code mount (contains common source paths)
+                            source_path = volume.split(':')[0]
+                            if any(path in source_path.lower() for path in ['frontend', 'client', 'web', 'src']):
+                                # This is a source code bind mount - remove it in production
+                                log_info(f"Removing source code bind mount for {service_name}: {volume}")
+                                updated = True
+                                continue
+                        # Keep named volumes and other volume types
+                        new_volumes.append(volume)
+                    elif isinstance(volume, dict):
+                        # Handle dict-style volume definitions
+                        if 'type' in volume and volume['type'] == 'bind':
+                            target = volume.get('target', '')
+                            if any(path in target.lower() for path in ['/app', '/code', '/src']):
+                                # This is a source code bind mount - remove it in production
+                                log_info(f"Removing source code bind mount for {service_name}: {volume}")
+                                updated = True
+                                continue
+                        # Keep other volume types (named volumes, tmpfs, etc.)
+                        new_volumes.append(volume)
+                    else:
+                        # Keep other volume formats
+                        new_volumes.append(volume)
+                
+                if updated:
+                    service_config['volumes'] = new_volumes
+                    if not new_volumes:
+                        # Remove volumes key if empty
+                        del service_config['volumes']
+        
+        return updated
     
     def apply_domain_overrides(self, worktree_path: Path, domain: str, debug: bool = False) -> bool:
         """Apply domain overrides to existing environment files.
@@ -939,6 +1015,7 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_values['webauthn_allowed_origins']}
                         # Also update ALLOWED_HOSTS in environment section for all services
                         allowed_hosts_updated = False
                         vite_allowed_hosts_updated = False
+                        volumes_updated = False
                         for service_name, service_config in compose_data['services'].items():
                             if update_allowed_hosts_in_compose(service_config, domain):
                                 allowed_hosts_updated = True
@@ -948,7 +1025,24 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_values['webauthn_allowed_origins']}
                                 vite_allowed_hosts_updated = True
                                 log_info(f"Updated VITE_ALLOWED_HOSTS for {service_name} in override file")
                         
-                        if caddy_updated or allowed_hosts_updated or vite_allowed_hosts_updated:
+                        # Update volumes for production mode (remove source code bind mounts for frontend)
+                        # Check BUILD_MODE from env.dockertree
+                        from ..utils.path_utils import get_env_compose_file_path
+                        env_dockertree = get_env_compose_file_path(worktree_path)
+                        build_mode = None
+                        if env_dockertree.exists():
+                            env_content = env_dockertree.read_text()
+                            for line in env_content.splitlines():
+                                if line.startswith('BUILD_MODE='):
+                                    build_mode = line.split('=', 1)[1].strip()
+                                    break
+                        
+                        if build_mode == 'prod':
+                            volumes_updated = self._update_volumes_for_production(compose_data, worktree_path)
+                            if volumes_updated:
+                                log_info("Updated volumes for production mode (removed source code bind mounts)")
+                        
+                        if caddy_updated or allowed_hosts_updated or vite_allowed_hosts_updated or volumes_updated:
                             # Remove version field if it's null (Docker Compose v2 doesn't require it)
                             clean_compose_version_field(compose_data)
                             
@@ -1281,7 +1375,12 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_values['webauthn_allowed_origins']}
                                             updated = True
                                             log_info(f"Updated Caddy label for {service_name}: {ip}")
                         
-                        if updated:
+                        # Update volumes for production mode (remove source code bind mounts for frontend)
+                        volumes_updated = self._update_volumes_for_production(compose_data, worktree_path)
+                        if volumes_updated:
+                            log_info("Updated volumes for production mode (removed source code bind mounts)")
+                        
+                        if updated or volumes_updated:
                             # Remove version field if it's null (Docker Compose v2 doesn't require it)
                             from ..utils.file_utils import clean_compose_version_field
                             clean_compose_version_field(compose_data)
@@ -1584,4 +1683,54 @@ WEBAUTHN_ALLOWED_ORIGINS={webauthn_values['webauthn_allowed_origins']}
             return True
         except Exception as e:
             log_warning(f"Failed to save droplet configuration: {e}")
+            return False
+    
+    def set_staging_certificate_flag(self, branch_name: str, value: bool = True) -> bool:
+        """Set USE_STAGING_CERTIFICATES flag in worktree's env.dockertree file.
+        
+        Args:
+            branch_name: Branch name for the worktree
+            value: If True, sets USE_STAGING_CERTIFICATES=1. If False, removes it.
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        from ..config.settings import get_worktree_paths
+        import re
+        
+        try:
+            worktree_path, legacy_path = get_worktree_paths(branch_name)
+            env_path = get_env_compose_file_path(worktree_path)
+            if not env_path.exists() and legacy_path.exists():
+                env_path = get_env_compose_file_path(legacy_path)
+            
+            # Ensure .dockertree directory exists
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Read existing content or create new
+            if env_path.exists():
+                content = env_path.read_text()
+            else:
+                content = f"# Dockertree environment configuration for {branch_name}\n"
+            
+            # Remove existing USE_STAGING_CERTIFICATES line if present
+            content = re.sub(r'^USE_STAGING_CERTIFICATES=.*$', '', content, flags=re.MULTILINE)
+            
+            # Remove multiple blank lines
+            content = re.sub(r'\n\n\n+', '\n\n', content)
+            
+            # Add the flag if value is True
+            if value:
+                # Check if we need to add a newline before adding the flag
+                if content and not content.endswith('\n'):
+                    content += '\n'
+                content += "USE_STAGING_CERTIFICATES=1\n"
+                log_info(f"Set USE_STAGING_CERTIFICATES=1 in {env_path}")
+            else:
+                log_info(f"Removed USE_STAGING_CERTIFICATES from {env_path}")
+            
+            env_path.write_text(content)
+            return True
+        except Exception as e:
+            log_warning(f"Failed to set staging certificate flag: {e}")
             return False

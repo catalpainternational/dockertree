@@ -23,6 +23,8 @@ services:
   caddy-monitor:
     image: python:3.11-slim
     container_name: caddy_monitor
+    environment:
+      USE_STAGING_CERTIFICATES: ${USE_STAGING_CERTIFICATES:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - {MONITOR_SCRIPT_PATH}:/app/monitor.py

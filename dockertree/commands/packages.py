@@ -20,7 +20,8 @@ class PackageCommands:
         self.package_manager = PackageManager()
     
     def export(self, branch_name: str, output_dir: Path, 
-              include_code: bool, compressed: bool, skip_volumes: bool = False) -> bool:
+              include_code: bool, compressed: bool, skip_volumes: bool = False,
+              use_staging_certificates: bool = False) -> bool:
         """Export package - CLI interface with logging.
         
         Args:
@@ -29,6 +30,7 @@ class PackageCommands:
             include_code: Whether to include git archive of code
             compressed: Whether to compress the final package
             skip_volumes: Whether to skip volume backup (fallback option)
+            use_staging_certificates: Whether to set USE_STAGING_CERTIFICATES=1 in env.dockertree
             
         Returns:
             True if export succeeded, False otherwise
@@ -37,6 +39,13 @@ class PackageCommands:
         
         if skip_volumes:
             log_warning("Skipping volume backup (--skip-volumes flag enabled)")
+        
+        # Set staging certificate flag if requested (before export)
+        if use_staging_certificates:
+            from ..core.environment_manager import EnvironmentManager
+            env_manager = EnvironmentManager()
+            if not env_manager.set_staging_certificate_flag(branch_name, value=True):
+                log_warning("Failed to set USE_STAGING_CERTIFICATES flag, but continuing with export...")
         
         result = self.package_manager.export_package(
             branch_name, output_dir, include_code, compressed, skip_volumes

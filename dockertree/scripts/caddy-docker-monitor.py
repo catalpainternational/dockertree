@@ -158,14 +158,28 @@ class CaddyDockerMonitor:
                 caddy_email = f"admin@{first_domain}"
                 logger.warning(f"CADDY_EMAIL not set. Using default: {caddy_email}")
             
+            # Check for environment variable to force staging mode (for testing)
+            env_staging = os.getenv("USE_STAGING_CERTIFICATES", "").lower()
+            use_staging = env_staging in ("1", "true", "yes", "on")
+            
+            issuer_config = {
+                "module": "acme",
+                "email": caddy_email
+            }
+            
+            # Add staging CA endpoint if needed
+            if use_staging:
+                issuer_config["ca"] = "https://acme-staging-v02.api.letsencrypt.org/directory"
+                logger.info(f"Using Let's Encrypt staging endpoint for domains: {', '.join(domains)}")
+                logger.warning("Staging certificates will show browser warnings but allow HTTPS to work")
+            else:
+                logger.info(f"Using Let's Encrypt production endpoint for domains: {', '.join(domains)}")
+            
             config["apps"]["tls"] = {
                 "automation": {
                     "policies": [{
                         "subjects": domains,
-                        "issuers": [{
-                            "module": "acme",
-                            "email": caddy_email
-                        }]
+                        "issuers": [issuer_config]
                     }]
                 }
             }
