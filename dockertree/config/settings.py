@@ -349,11 +349,6 @@ def generate_env_compose_content(branch_name: str) -> str:
     site_domain = f"http://{compose_project_name}.localhost"  # RFC-compliant hostname with protocol
     allowed_hosts = get_allowed_hosts_for_worktree(branch_name)
     
-    # Extract domain for WebAuthn RP_ID (DRY approach)
-    webauthn_rp_id = extract_domain_from_site_domain(site_domain)
-    webauthn_origin = site_domain
-    webauthn_allowed_origins = webauthn_origin
-    
     return f"""# Dockertree environment configuration for {branch_name}
 COMPOSE_PROJECT_NAME={compose_project_name}
 PROJECT_ROOT={project_root}
@@ -363,9 +358,6 @@ DEBUG=True
 USE_X_FORWARDED_HOST=True
 CSRF_TRUSTED_ORIGINS={site_domain}
 USE_SECURE_COOKIES=False
-WEBAUTHN_RP_ID={webauthn_rp_id}
-WEBAUTHN_ORIGIN={webauthn_origin}
-WEBAUTHN_ALLOWED_ORIGINS={webauthn_allowed_origins}
 """
 
 # Volume naming

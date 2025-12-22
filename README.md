@@ -540,13 +540,24 @@ Error: HTTP 429 urn:ietf:params:acme:error:rateLimited - too many certificates (
 
 2. **Automatic Fix (Long-term)**: Dockertree's dynamic configuration script (`caddy-dynamic-config.py`) now automatically detects rate limit errors and falls back to staging certificates. The script checks Caddy logs for rate limit patterns and automatically switches to staging when detected.
 
-3. **Staging Certificates**: 
+3. **Force Staging Mode for Testing**: You can force staging certificates for testing without hitting rate limits by setting the `USE_STAGING_CERTIFICATES` environment variable:
+   ```bash
+   # Option 1: Set in your shell before running dockertree commands
+   export USE_STAGING_CERTIFICATES=1
+   
+   # Option 2: Add to your .dockertree/env.dockertree file (recommended for droplet create/push)
+   echo "USE_STAGING_CERTIFICATES=1" >> .dockertree/env.dockertree
+   ```
+   **For `droplet create` and `droplet push`**: Add `USE_STAGING_CERTIFICATES=1` to your `.dockertree/env.dockertree` file before exporting. This ensures the setting is included in the package and will be used on the remote server. This is perfect for testing environments where you don't want to consume your production certificate quota. Staging certificates don't count against Let's Encrypt's rate limits.
+
+4. **Staging Certificates**: 
    - Staging certificates work for HTTPS but show browser security warnings
    - Users can proceed after accepting the warning
    - Connection is still encrypted, just not trusted by default
    - Switch back to production certificates after rate limit expires (check Caddy logs for "retry after" timestamp)
+   - **Staging certificates don't count against Let's Encrypt rate limits** - perfect for testing!
 
-4. **Monitor Certificate Health**: The `caddy-docker-monitor.py` script monitors certificate health and logs warnings when rate limits are detected.
+5. **Monitor Certificate Health**: The `caddy-docker-monitor.py` script monitors certificate health and logs warnings when rate limits are detected.
 
 **Note**: Rate limits expire after 168 hours (7 days) from the first certificate issuance. Check Caddy logs for the exact expiration time.
 

@@ -420,7 +420,6 @@ services:
                 configurable_env_vars = {
                     'DEBUG', 'ALLOWED_HOSTS', 'SECRET_KEY', 'DJANGO_SECRET_KEY',
                     'CORS_ALLOWED_ORIGINS', 'FRONTEND_URL', 'SITE_DOMAIN',
-                    'WEBAUTHN_RP_ID', 'WEBAUTHN_RP_NAME', 'WEBAUTHN_ORIGIN', 'WEBAUTHN_ALLOWED_ORIGINS',
                     'VITE_API_URL', 'VITE_ALLOWED_HOSTS',
                     'USE_SECURE_COOKIES', 'USE_X_FORWARDED_HOST', 'CSRF_TRUSTED_ORIGINS',
                     'SECURE_PROXY_SSL_HEADER', 'REDIS_HOST', 'REDIS_URL',
@@ -438,10 +437,6 @@ services:
                     'CORS_ALLOWED_ORIGINS': 'http://localhost:5173,http://localhost:3000',
                     'FRONTEND_URL': 'http://localhost:5173',
                     'SITE_DOMAIN': 'localhost:8000',
-                    'WEBAUTHN_RP_ID': 'localhost',
-                    'WEBAUTHN_RP_NAME': 'Kanban Boards',
-                    'WEBAUTHN_ORIGIN': 'http://localhost:5173',
-                    'WEBAUTHN_ALLOWED_ORIGINS': 'http://localhost:5173,http://127.0.0.1:5173',
                     'VITE_API_URL': 'http://localhost:8000/api',
                     'VITE_ALLOWED_HOSTS': 'localhost,127.0.0.1,*.localhost',
                     'USE_SECURE_COOKIES': 'False',
