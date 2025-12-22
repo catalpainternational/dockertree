@@ -1111,7 +1111,6 @@ def register_commands(cli) -> None:
                 debug=debug,
                 containers=containers,
                 exclude_deps=exclude_deps_list,
-                use_staging_certificates=use_staging_certificates,
             )
             elapsed_time = time.time() - start_time
             if not success:
